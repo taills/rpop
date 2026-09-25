@@ -327,6 +327,9 @@ func validate(x store.Site) error {
 	if x.Config.ListenPort < 1 || x.Config.ListenPort > 65535 {
 		return fmt.Errorf("listenPort must be 1-65535")
 	}
+	if x.Config.AccessLog.MaxBodyBytes < -1 {
+		return fmt.Errorf("accessLog.maxBodyBytes must be -1 or a non-negative byte limit")
+	}
 	if _, err := normalizedHostnames(x.Config.Hostnames); err != nil {
 		return err
 	}

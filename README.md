@@ -67,7 +67,7 @@ sites:
 
 - TLS `InsecureSkipVerify` is intentionally opt-in and disables upstream certificate verification; do not use it as a routine workaround.
 - Secrets are stored as SQLite BLOBs but are **not encrypted at rest** yet. Protect DB backups and filesystem access; add a key-management/encryption layer before production use.
-- Access-log bodies may contain credentials, personal information, or business data. Body capture is bounded (default 1 MiB, hard maximum 8 MiB); sensitive headers are redacted by default. Restrict access to log files and disable body logging when it is not needed.
+- Access-log bodies may contain credentials, personal information, or business data. Body capture defaults to 1 MiB; positive limits are capped at 8 MiB, while `maxBodyBytes: -1` disables truncation. Unlimited capture can consume substantial memory, and access-log entries may still be dropped if the asynchronous log queue is saturated; sensitive headers are redacted by default. Restrict access to log files and disable body logging when it is not needed.
 - Metrics are currently in-memory and reset on process restart; request logs are asynchronously written to the zap log file with a `site_id` field for filtering. `droppedAccessLogCount` reports log events dropped when the bounded queue is saturated.
 - Each site currently forwards through its first configured upstream; health checks, failover/load balancing, config versioning/rollback, and graceful zero-downtime listener replacement remain follow-up work.
 - The custom `dialAddress` is applied in direct mode; custom destination resolution through an upstream proxy requires an explicit policy and is not silently implemented.

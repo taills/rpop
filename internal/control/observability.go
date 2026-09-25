@@ -34,12 +34,12 @@ type accessLogEvent struct {
 }
 
 func (c *Control) reserveAccessLog(size int64) bool {
-	if size < 0 || size > maxQueuedAccessLogBytes {
+	if size < 0 {
 		return false
 	}
 	for {
 		current := c.queuedLogBytes.Load()
-		if current+size > maxQueuedAccessLogBytes {
+		if current > 0 && current+size > maxQueuedAccessLogBytes {
 			return false
 		}
 		if c.queuedLogBytes.CompareAndSwap(current, current+size) {
@@ -182,7 +182,9 @@ func (b *bodyCapture) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.total += int64(len(p))
-	if remain := b.limit - int64(len(b.data)); remain > 0 {
+	if b.limit < 0 {
+		b.data = append(b.data, p...)
+	} else if remain := b.limit - int64(len(b.data)); remain > 0 {
 		n := int64(len(p))
 		if n > remain {
 			n = remain
@@ -265,7 +267,7 @@ func (c *Control) metricsForSite(siteID string) *siteMetrics {
 
 func (c *Control) observeSite(siteID string, settings store.AccessLogConfig, next http.Handler) http.Handler {
 	limit := settings.MaxBodyBytes
-	if limit <= 0 {
+	if limit == 0 || limit < -1 {
 		limit = defaultBodyLogLimit
 	}
 	if limit > maxBodyLogLimit {

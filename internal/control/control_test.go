@@ -1,6 +1,7 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -164,6 +165,39 @@ func TestAccessLoggingAndMetrics(t *testing.T) {
 	if !strings.Contains(strings.TrimSpace(string(mustJSON(t, ctx["request_headers"]))), "REDACTED") {
 		t.Fatalf("authorization header was not redacted: %#v", ctx["request_headers"])
 	}
+}
+
+func TestUnlimitedBodyCaptureDoesNotTruncate(t *testing.T) {
+	capture := newBodyCapture(-1)
+	chunk := bytes.Repeat([]byte{'x'}, 32<<10)
+	target := maxBodyLogLimit + 1
+	var written int64
+	for written < target {
+		n := int64(len(chunk))
+		if n > target-written {
+			n = target - written
+		}
+		if _, err := capture.Write(chunk[:n]); err != nil {
+			t.Fatal(err)
+		}
+		written += n
+	}
+	data, total, truncated := capture.snapshot()
+	if total != target || int64(len(data)) != target || truncated {
+		t.Fatalf("unlimited capture truncated body: total=%d stored=%d truncated=%v", total, len(data), truncated)
+	}
+}
+
+func TestAccessLogQueueAllowsSingleOversizedEvent(t *testing.T) {
+	c := &Control{accessLogQueue: make(chan accessLogEvent, 1)}
+	size := maxQueuedAccessLogBytes + 1
+	if !c.reserveAccessLog(size) {
+		t.Fatal("expected empty queue to admit one oversized full-body log")
+	}
+	if c.reserveAccessLog(1) {
+		t.Fatal("expected oversized queued body to prevent unbounded additional queueing")
+	}
+	c.queuedLogBytes.Add(-size)
 }
 
 func mustJSON(t *testing.T, value any) []byte {
