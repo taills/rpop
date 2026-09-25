@@ -1,0 +1,28 @@
+.app-shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-canvas);
+  min-width: 0;
+}
+.app-shell__body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+.app-shell__main {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+}
+
+/* 纯横版二级条 sticky 时主区无侧栏，全宽 */
+.app-shell.is-nav-horizontal .app-shell__main {
+  width: 100%;
+}
+
+/* 竖版：顶栏更“工具条”化，无一级菜单时 brand 更紧 */
+.app-shell.is-nav-vertical .app-shell__body {
+  /* side nav 自带宽度 */
+}

@@ -1,0 +1,104 @@
+.ui-table-shell {
+  background: var(--bg-card);
+  border-radius: var(--radius-md);
+}
+.ui-table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+}
+.ui-table-scroll::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+.ui-table-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-secondary);
+  border-radius: 8px;
+}
+.ui-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.ui-table.is-equal,
+.ui-table.is-fixed {
+  table-layout: fixed;
+}
+.ui-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: linear-gradient(180deg, var(--table-head-from), var(--table-head-to));
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border-primary);
+  white-space: nowrap;
+  user-select: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ui-table__th {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  overflow: hidden;
+}
+.ui-table__sort {
+  opacity: 0.4;
+  font-size: 10px;
+}
+.ui-table tbody td {
+  padding: 12px 14px;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-primary);
+  vertical-align: middle;
+  background: var(--bg-card);
+  transition: background 0.12s ease;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ui-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.ui-table.is-hoverable tbody tr:hover td {
+  background: var(--table-row-hover);
+}
+.ui-table__row.is-selected td {
+  background: var(--soft-blue);
+}
+.ui-table td.is-center,
+.ui-table th.is-center {
+  text-align: center;
+}
+.ui-table td.is-right,
+.ui-table th.is-right {
+  text-align: right;
+}
+.ui-table__empty-cell {
+  padding: 0 !important;
+}
+.ui-table__empty {
+  padding: 40px 20px;
+  text-align: center;
+}
+.ui-table__empty-icon {
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 10px;
+  border-radius: 16px;
+  display: grid;
+  place-items: center;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+}
+.ui-table__empty-title {
+  color: var(--text-secondary);
+  font-size: var(--fs-md);
+  font-weight: 600;
+}

@@ -1,0 +1,31 @@
+.ui-seg {
+  display: inline-flex;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  padding: 2px;
+  border: 1px solid var(--border-primary);
+}
+.ui-seg__btn {
+  border: none;
+  background: transparent;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, box-shadow 0.12s;
+}
+.ui-seg__btn:hover:not(.on) {
+  color: var(--text-primary);
+}
+.ui-seg__btn.on {
+  background: var(--bg-card);
+  color: var(--text-accent);
+  font-weight: 600;
+  box-shadow: var(--shadow-xs), inset 0 0 0 1px var(--border-active);
+}
+.ui-seg__btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}

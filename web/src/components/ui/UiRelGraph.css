@@ -1,0 +1,15 @@
+.ui-rel-graph {
+  width: 100%;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(circle at 30% 20%, var(--soft-blue), transparent 40%),
+    radial-gradient(circle at 80% 70%, var(--soft-purple), transparent 35%),
+    var(--bg-card);
+  overflow: hidden;
+}
+.ui-rel-graph__svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}

@@ -1,0 +1,343 @@
+/**
+ * ProtoUI Kit · 语义 Token
+ * 组件只读语义变量，主题通过 [data-theme] 覆盖，实现一键切换。
+ * 业务页禁止硬编码颜色，一律走 var(--*)。
+ */
+
+:root,
+[data-theme='ocean'] {
+  /* 层级背景 */
+  --bg-canvas: #f3f6fb;
+  --bg-primary: #f3f6fb;
+  --bg-secondary: #ffffff;
+  --bg-card: #ffffff;
+  --bg-tertiary: #f1f5f9;
+  --bg-card-hover: #f8fafc;
+  --bg-input: #f8fafc;
+  --bg-nav: #0b1220;
+  --bg-nav-elevated: #111827;
+  --bg-mask: rgba(15, 23, 42, 0.48);
+
+  /* 边框 */
+  --border-primary: #e2e8f0;
+  --border-secondary: #cbd5e1;
+  --border-strong: #94a3b8;
+  --border-active: #3b82f6;
+
+  /* 文字 */
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
+  --text-muted: #94a3b8;
+  --text-inverse: #f8fafc;
+  --text-accent: #2563eb;
+
+  /* 品牌 / 强调（主题核心） */
+  --accent: #3b82f6;
+  --accent-blue: #3b82f6;
+  --accent-blue-600: #2563eb;
+  --accent-blue-700: #1d4ed8;
+  --accent-cyan: #0891b2;
+  --accent-red: #dc2626;
+  --accent-orange: #ea580c;
+  --accent-yellow: #ca8a04;
+  --accent-green: #16a34a;
+  --accent-purple: #7c3aed;
+  --accent-teal: #0f766e;
+
+  /* 渐变（随主题 accent 推导，覆盖层可改） */
+  --grad-primary: linear-gradient(135deg, var(--accent) 0%, var(--accent-blue-600) 55%, var(--accent-blue-700) 100%);
+  --grad-accent: linear-gradient(135deg, var(--accent-teal), #0d9488);
+  --grad-ai: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-purple) 100%);
+  --grad-danger: linear-gradient(135deg, #e11d48, #be123c);
+  --grad-nav-brand: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+
+  /* 语义软底 */
+  --soft-blue: rgba(59, 130, 246, 0.12);
+  --soft-purple: rgba(124, 58, 237, 0.12);
+  --soft-red: rgba(220, 38, 38, 0.12);
+  --soft-orange: rgba(234, 88, 12, 0.12);
+  --soft-green: rgba(22, 163, 74, 0.12);
+  --soft-yellow: rgba(202, 138, 4, 0.14);
+  --soft-cyan: rgba(8, 145, 178, 0.12);
+  --soft-teal: rgba(15, 118, 110, 0.12);
+  --soft-muted: rgba(148, 163, 184, 0.16);
+
+  /* 实心标签色（白字底） */
+  --tag-type: #4c8dff;
+  --tag-risk-critical: #f06a6a;
+  --tag-risk-high: #f59e5b;
+  --tag-risk-medium: #efb84a;
+  --tag-risk-low: #3db8c9;
+  --tag-success: #4cc38a;
+  --tag-warn: #f59e5b;
+  --tag-info: #5b9dd9;
+  --tag-ai: #7b8ff0;
+  --tag-purple: #9b87f5;
+  --tag-muted: #9aa7bd;
+
+  /* 阴影 */
+  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 4px 16px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 16px 40px rgba(15, 23, 42, 0.14);
+  --shadow-focus: 0 0 0 3px rgba(59, 130, 246, 0.22);
+  --focus-ring: 0 0 0 3px rgba(59, 130, 246, 0.22);
+
+  /* 圆角 */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 999px;
+
+  /* 字号：--type-scale 由 data-type-scale 档位覆盖，组件只读语义 token */
+  --type-scale: 1;
+  --fs-caption: calc(11px * var(--type-scale));
+  --fs-xs: calc(11px * var(--type-scale));
+  --fs-sm: calc(12px * var(--type-scale));
+  --fs-md: calc(13px * var(--type-scale));
+  --fs-lg: calc(14px * var(--type-scale));
+  --fs-xl: calc(16px * var(--type-scale));
+  --fs-title: calc(22px * var(--type-scale));
+  --fs-stat-sm: calc(22px * var(--type-scale));
+  --fs-stat: calc(28px * var(--type-scale));
+  --fs-display: calc(26px * var(--type-scale));
+
+  /* 字体族 */
+  --font-ui: 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', system-ui, sans-serif;
+  --font-display: 'AlimamaShuHeiTi', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-num: 'DIN', 'MetroDF', 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* 表格/面板细节 */
+  --table-head-from: #f8fafc;
+  --table-head-to: #f1f5f9;
+  --table-row-hover: #f8fbff;
+  --panel-title-bar: var(--grad-primary);
+  --page-glow-1: rgba(59, 130, 246, 0.07);
+  --page-glow-2: rgba(124, 58, 237, 0.05);
+  --btn-primary-shadow: rgba(37, 99, 235, 0.28);
+  --mode: light;
+}
+
+/* ===== 字体档位 ===== */
+[data-type-scale='compact'] {
+  --type-scale: 0.92;
+}
+[data-type-scale='standard'] {
+  --type-scale: 1;
+}
+[data-type-scale='comfortable'] {
+  --type-scale: 1.08;
+}
+[data-type-scale='large'] {
+  --type-scale: 1.16;
+}
+
+/* ===== 主题：浅色·靛蓝 ===== */
+[data-theme='indigo'] {
+  --bg-canvas: #f4f4fb;
+  --bg-primary: #f4f4fb;
+  --bg-tertiary: #eceef8;
+  --bg-card-hover: #f7f7ff;
+  --bg-input: #f7f7ff;
+  --accent: #6366f1;
+  --accent-blue: #6366f1;
+  --accent-blue-600: #4f46e5;
+  --accent-blue-700: #4338ca;
+  --border-active: #6366f1;
+  --text-accent: #4f46e5;
+  --soft-blue: rgba(99, 102, 241, 0.12);
+  --shadow-focus: 0 0 0 3px rgba(99, 102, 241, 0.22);
+  --focus-ring: 0 0 0 3px rgba(99, 102, 241, 0.22);
+  --page-glow-1: rgba(99, 102, 241, 0.08);
+  --page-glow-2: rgba(139, 92, 246, 0.05);
+  --btn-primary-shadow: rgba(79, 70, 229, 0.28);
+  --table-row-hover: #f5f5ff;
+  --table-head-from: #f5f5ff;
+  --table-head-to: #eceef8;
+}
+
+/* ===== 主题：浅色·翡翠绿 ===== */
+[data-theme='emerald'] {
+  --bg-canvas: #f3f8f5;
+  --bg-primary: #f3f8f5;
+  --bg-tertiary: #e8f3ec;
+  --bg-card-hover: #f5faf7;
+  --bg-input: #f5faf7;
+  --accent: #059669;
+  --accent-blue: #059669;
+  --accent-blue-600: #047857;
+  --accent-blue-700: #065f46;
+  --border-active: #059669;
+  --text-accent: #047857;
+  --accent-teal: #0f766e;
+  --soft-blue: rgba(5, 150, 105, 0.12);
+  --shadow-focus: 0 0 0 3px rgba(5, 150, 105, 0.22);
+  --focus-ring: 0 0 0 3px rgba(5, 150, 105, 0.22);
+  --page-glow-1: rgba(5, 150, 105, 0.08);
+  --page-glow-2: rgba(13, 148, 136, 0.05);
+  --btn-primary-shadow: rgba(4, 120, 87, 0.28);
+  --table-row-hover: #f3faf6;
+  --table-head-from: #f3faf6;
+  --table-head-to: #e8f3ec;
+}
+
+/* ===== 主题：深色·石板 ===== */
+[data-theme='slate'] {
+  --bg-canvas: #0f172a;
+  --bg-primary: #0f172a;
+  --bg-secondary: #1e293b;
+  --bg-card: #1e293b;
+  --bg-tertiary: #243044;
+  --bg-card-hover: #273549;
+  --bg-input: #243044;
+  --bg-nav: #0b1220;
+  --bg-nav-elevated: #111827;
+  --bg-mask: rgba(2, 6, 23, 0.62);
+  --border-primary: #334155;
+  --border-secondary: #475569;
+  --border-strong: #64748b;
+  --border-active: #38bdf8;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --text-inverse: #0f172a;
+  --text-accent: #38bdf8;
+  --accent: #38bdf8;
+  --accent-blue: #38bdf8;
+  --accent-blue-600: #0ea5e9;
+  --accent-blue-700: #0284c7;
+  --accent-purple: #a78bfa;
+  --grad-primary: linear-gradient(135deg, #38bdf8 0%, #0ea5e9 55%, #0284c7 100%);
+  --soft-blue: rgba(56, 189, 248, 0.14);
+  --soft-purple: rgba(167, 139, 250, 0.14);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 20px 48px rgba(0, 0, 0, 0.45);
+  --shadow-focus: 0 0 0 3px rgba(56, 189, 248, 0.28);
+  --focus-ring: 0 0 0 3px rgba(56, 189, 248, 0.28);
+  --page-glow-1: rgba(56, 189, 248, 0.08);
+  --page-glow-2: rgba(167, 139, 250, 0.06);
+  --btn-primary-shadow: rgba(14, 165, 233, 0.3);
+  --table-head-from: #243044;
+  --table-head-to: #1e293b;
+  --table-row-hover: #273549;
+  --tag-type: #38bdf8;
+  --tag-info: #7dd3fc;
+  --tag-ai: #a5b4fc;
+  --tag-purple: #c4b5fd;
+  --tag-muted: #94a3b8;
+  --mode: dark;
+}
+
+/* ===== 主题：深色·海军 ===== */
+[data-theme='navy'] {
+  --bg-canvas: #0b1220;
+  --bg-primary: #0b1220;
+  --bg-secondary: #121a2e;
+  --bg-card: #121a2e;
+  --bg-tertiary: #182238;
+  --bg-card-hover: #1b2740;
+  --bg-input: #182238;
+  --bg-nav: #070d18;
+  --bg-nav-elevated: #0f172a;
+  --bg-mask: rgba(2, 6, 23, 0.68);
+  --border-primary: #243552;
+  --border-secondary: #334a6d;
+  --border-strong: #4d6a94;
+  --border-active: #3b82f6;
+  --text-primary: #e8eef9;
+  --text-secondary: #93a4c3;
+  --text-muted: #64748b;
+  --text-inverse: #f8fafc;
+  --text-accent: #60a5fa;
+  --accent: #3b82f6;
+  --accent-blue: #3b82f6;
+  --accent-blue-600: #60a5fa;
+  --accent-blue-700: #2563eb;
+  --accent-purple: #818cf8;
+  --accent-cyan: #22d3ee;
+  --grad-primary: linear-gradient(135deg, #3b82f6 0%, #2563eb 50%, #1d4ed8 100%);
+  --soft-blue: rgba(59, 130, 246, 0.16);
+  --soft-purple: rgba(129, 140, 248, 0.16);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 24px 56px rgba(0, 0, 0, 0.5);
+  --shadow-focus: 0 0 0 3px rgba(59, 130, 246, 0.32);
+  --focus-ring: 0 0 0 3px rgba(59, 130, 246, 0.32);
+  --page-glow-1: rgba(59, 130, 246, 0.1);
+  --page-glow-2: rgba(129, 140, 248, 0.08);
+  --btn-primary-shadow: rgba(37, 99, 235, 0.35);
+  --table-head-from: #182238;
+  --table-head-to: #121a2e;
+  --table-row-hover: #1b2740;
+  --tag-type: #60a5fa;
+  --tag-info: #93c5fd;
+  --tag-ai: #a5b4fc;
+  --tag-purple: #c4b5fd;
+  --tag-muted: #94a3b8;
+  --mode: dark;
+}
+
+/* ===== 主题：深色·紫电 ===== */
+[data-theme='violet'] {
+  --bg-canvas: #120f1f;
+  --bg-primary: #120f1f;
+  --bg-secondary: #1c1730;
+  --bg-card: #1c1730;
+  --bg-tertiary: #251f3c;
+  --bg-card-hover: #2b2446;
+  --bg-input: #251f3c;
+  --bg-nav: #0c0a16;
+  --bg-nav-elevated: #161228;
+  --bg-mask: rgba(8, 4, 20, 0.68);
+  --border-primary: #3a2f5c;
+  --border-secondary: #4d3f78;
+  --border-strong: #6d5a9e;
+  --border-active: #a78bfa;
+  --text-primary: #f3eefc;
+  --text-secondary: #b0a4d0;
+  --text-muted: #7d7299;
+  --text-inverse: #1a1430;
+  --text-accent: #c4b5fd;
+  --accent: #8b5cf6;
+  --accent-blue: #8b5cf6;
+  --accent-blue-600: #7c3aed;
+  --accent-blue-700: #6d28d9;
+  --accent-purple: #c084fc;
+  --accent-cyan: #22d3ee;
+  --grad-primary: linear-gradient(135deg, #a78bfa 0%, #8b5cf6 50%, #7c3aed 100%);
+  --grad-ai: linear-gradient(135deg, #38bdf8 0%, #c084fc 100%);
+  --soft-blue: rgba(139, 92, 246, 0.16);
+  --soft-purple: rgba(192, 132, 252, 0.16);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.42);
+  --shadow-lg: 0 24px 56px rgba(0, 0, 0, 0.52);
+  --shadow-focus: 0 0 0 3px rgba(167, 139, 250, 0.32);
+  --focus-ring: 0 0 0 3px rgba(167, 139, 250, 0.32);
+  --page-glow-1: rgba(139, 92, 246, 0.12);
+  --page-glow-2: rgba(56, 189, 248, 0.06);
+  --btn-primary-shadow: rgba(124, 58, 237, 0.35);
+  --table-head-from: #251f3c;
+  --table-head-to: #1c1730;
+  --table-row-hover: #2b2446;
+  --tag-type: #a78bfa;
+  --tag-info: #7dd3fc;
+  --tag-ai: #c4b5fd;
+  --tag-purple: #e9d5ff;
+  --tag-muted: #a1a1aa;
+  --mode: dark;
+}
+
+/* 深色主题通用：描边按钮 hover 等 */
+[data-theme='slate'] .ui-btn--outline:hover:not(:disabled),
+[data-theme='navy'] .ui-btn--outline:hover:not(:disabled),
+[data-theme='violet'] .ui-btn--outline:hover:not(:disabled) {
+  background: var(--bg-card-hover);
+  border-color: var(--accent);
+  color: var(--text-accent);
+}

@@ -1,0 +1,92 @@
+.ui-select {
+  position: relative;
+  width: 100%;
+}
+.ui-select__trigger {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+}
+.ui-select.open .ui-select__trigger,
+.ui-select__trigger:focus-visible {
+  outline: none;
+  background: var(--bg-card);
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+.ui-select.disabled .ui-select__trigger {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ui-select__value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-select__trigger.is-placeholder .ui-select__value {
+  color: var(--text-muted);
+}
+.ui-select__caret {
+  color: var(--text-muted);
+  display: inline-flex;
+  transition: transform 0.15s;
+}
+.ui-select__caret.open {
+  transform: rotate(180deg);
+}
+.ui-select__panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: 4px;
+  max-height: 240px;
+  overflow: auto;
+}
+.ui-select__option {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.ui-select__option:hover {
+  background: var(--bg-tertiary);
+}
+.ui-select__option.on {
+  background: var(--soft-blue);
+  color: var(--text-accent);
+  font-weight: 600;
+}
+.ui-select__empty {
+  padding: 12px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}

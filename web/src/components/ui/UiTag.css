@@ -1,0 +1,52 @@
+.ui-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 20px;
+  color: #fff;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.ui-tag__icon {
+  flex-shrink: 0;
+  opacity: 0.95;
+}
+.ui-tag--type {
+  background: var(--tag-type);
+}
+.ui-tag--risk-critical {
+  background: var(--tag-risk-critical);
+}
+.ui-tag--risk-high {
+  background: var(--tag-risk-high);
+}
+.ui-tag--risk-medium {
+  background: var(--tag-risk-medium);
+}
+.ui-tag--risk-low {
+  background: var(--tag-risk-low);
+}
+.ui-tag--success {
+  background: var(--tag-success);
+}
+.ui-tag--warn {
+  background: var(--tag-warn);
+}
+.ui-tag--info {
+  background: var(--tag-info);
+}
+.ui-tag--ai {
+  background: var(--tag-ai);
+}
+.ui-tag--purple {
+  background: var(--tag-purple);
+}
+.ui-tag--muted,
+.ui-tag--default {
+  background: var(--tag-muted);
+}

@@ -1,0 +1,36 @@
+.ui-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  font-family: var(--font-num);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+.ui-badge.is-brand,
+.ui-badge.is-info {
+  background: var(--soft-blue);
+  color: var(--text-accent);
+}
+.ui-badge.is-danger {
+  background: var(--soft-red);
+  color: var(--accent-red);
+}
+.ui-badge.is-warn {
+  background: var(--soft-orange);
+  color: var(--accent-orange);
+}
+.ui-badge.is-success {
+  background: var(--soft-green);
+  color: var(--accent-green);
+}
+.ui-badge.is-ai {
+  background: var(--soft-purple);
+  color: var(--accent-purple);
+}

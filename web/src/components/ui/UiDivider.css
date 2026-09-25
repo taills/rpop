@@ -1,0 +1,32 @@
+.ui-divider {
+  height: 1px;
+  background: var(--border-primary);
+  margin: 12px 0;
+  width: 100%;
+}
+.ui-divider.is-vertical {
+  width: 1px;
+  height: 14px;
+  margin: 0 8px;
+  display: inline-block;
+  vertical-align: middle;
+}
+.ui-divider.is-labeled {
+  height: auto;
+  background: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ui-divider.is-labeled::before,
+.ui-divider.is-labeled::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-primary);
+}
+.ui-divider__label {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}

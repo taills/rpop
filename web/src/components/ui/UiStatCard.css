@@ -1,0 +1,451 @@
+/* ===== 结构层：默认浅底可读 ===== */
+.ui-stat {
+  --stat-num-size: var(--fs-stat);
+  --stat-num-color: var(--text-primary);
+  --stat-label-color: var(--text-secondary);
+  --stat-hint-color: var(--text-muted);
+  --stat-icon-bg: var(--bg-tertiary);
+  --stat-icon-color: var(--text-secondary);
+  --stat-glow-opacity: 0.45;
+  position: relative;
+  overflow: hidden;
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px 12px;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s, background 0.15s;
+  min-width: 0;
+}
+.ui-stat.is-size-sm {
+  --stat-num-size: var(--fs-stat-sm);
+  padding: 10px 12px 10px;
+  border-radius: var(--radius-md);
+}
+.ui-stat.is-size-lg {
+  --stat-num-size: calc(var(--fs-stat) * 1.12);
+  padding: 16px 18px 14px;
+  border-radius: var(--radius-xl);
+}
+.ui-stat.is-variant-compact {
+  --stat-num-size: var(--fs-stat-sm);
+  --stat-glow-opacity: 0.2;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  box-shadow: none;
+}
+.ui-stat.is-variant-compact .ui-stat__hint {
+  display: none;
+}
+
+.ui-stat[role='button'],
+.ui-stat.is-interactive {
+  cursor: pointer;
+}
+.ui-stat[role='button']:hover,
+.ui-stat[role='button']:focus-visible,
+.ui-stat.is-interactive:hover,
+.ui-stat.is-interactive:focus-visible {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+/* ===== 变体容器 ===== */
+.ui-stat.is-variant-flat {
+  box-shadow: none;
+  --stat-glow-opacity: 0;
+}
+.ui-stat.is-variant-filled {
+  background: var(--bg-tertiary);
+  box-shadow: none;
+  --stat-glow-opacity: 0;
+}
+.ui-stat.is-variant-glass {
+  background: color-mix(in srgb, var(--bg-card) 78%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow-md);
+  --stat-glow-opacity: 0;
+}
+.ui-stat.is-variant-dashed {
+  border-style: dashed;
+  border-color: var(--border-secondary);
+  box-shadow: none;
+  background: var(--bg-card-hover);
+  --stat-glow-opacity: 0;
+  --stat-num-color: var(--text-muted);
+  --stat-label-color: var(--text-muted);
+}
+.ui-stat.is-variant-dark {
+  --stat-glow-opacity: 0;
+  background:
+    radial-gradient(720px 160px at 0% 0%, var(--page-glow-1), transparent 55%),
+    linear-gradient(160deg, #1a2438 0%, #121a2e 55%, #0b1220 100%);
+  border-color: rgba(148, 163, 184, 0.22);
+  color: #e8eef9;
+  box-shadow: var(--shadow-md);
+  --stat-num-color: #f8fafc;
+  --stat-label-color: #cbd5e1;
+  --stat-hint-color: #94a3b8;
+  --stat-icon-bg: rgba(255, 255, 255, 0.08);
+  --stat-icon-color: var(--accent);
+}
+.ui-stat.is-variant-gradient {
+  --stat-glow-opacity: 0;
+  /* 内容在左侧，左段加深，保证白字对比度；高光只保留右上角 */
+  background:
+    radial-gradient(90% 70% at 100% 0%, rgba(255, 255, 255, 0.12), transparent 46%),
+    linear-gradient(100deg, #1d4ed8 0%, #2563eb 42%, #3b82f6 100%);
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 8px 22px var(--btn-primary-shadow);
+  --stat-num-color: #fff;
+  --stat-label-color: rgba(255, 255, 255, 0.92);
+  --stat-hint-color: rgba(255, 255, 255, 0.78);
+  --stat-icon-bg: rgba(255, 255, 255, 0.22);
+  --stat-icon-color: #fff;
+}
+.ui-stat.is-variant-gradient.is-tone-success {
+  background:
+    radial-gradient(90% 70% at 100% 0%, rgba(255, 255, 255, 0.12), transparent 46%),
+    linear-gradient(100deg, #047857 0%, #059669 42%, #10b981 100%);
+  box-shadow: 0 8px 22px rgba(4, 120, 87, 0.32);
+}
+.ui-stat.is-variant-gradient.is-tone-warn {
+  background:
+    radial-gradient(90% 70% at 100% 0%, rgba(255, 255, 255, 0.12), transparent 46%),
+    linear-gradient(100deg, #c2410c 0%, #ea580c 42%, #f59e0b 100%);
+  box-shadow: 0 8px 22px rgba(234, 88, 12, 0.32);
+}
+.ui-stat.is-variant-gradient.is-tone-danger {
+  background:
+    radial-gradient(90% 70% at 100% 0%, rgba(255, 255, 255, 0.1), transparent 46%),
+    linear-gradient(100deg, #9f1239 0%, #be123c 40%, #e11d48 100%);
+  box-shadow: 0 8px 22px rgba(190, 18, 60, 0.32);
+}
+.ui-stat.is-variant-gradient.is-tone-ai,
+.ui-stat.is-variant-gradient.is-tone-purple {
+  background:
+    radial-gradient(90% 70% at 100% 0%, rgba(255, 255, 255, 0.1), transparent 46%),
+    linear-gradient(100deg, #5b21b6 0%, #6d28d9 42%, #8b5cf6 100%);
+  box-shadow: 0 8px 22px rgba(109, 40, 217, 0.34);
+}
+.ui-stat.is-variant-gradient.is-tone-cyan {
+  background:
+    radial-gradient(90% 70% at 100% 0%, rgba(255, 255, 255, 0.12), transparent 46%),
+    linear-gradient(100deg, #0e7490 0%, #0891b2 42%, #22d3ee 100%);
+  box-shadow: 0 8px 22px rgba(8, 145, 178, 0.32);
+}
+
+/* ===== 浅底 tone：只影响数字/图标，保证对比度 ===== */
+.ui-stat.is-tone-brand,
+.ui-stat.is-tone-accent {
+  --stat-num-color: var(--text-accent);
+  --stat-icon-bg: var(--soft-blue);
+  --stat-icon-color: var(--text-accent);
+}
+.ui-stat.is-tone-success {
+  --stat-num-color: var(--accent-green);
+  --stat-icon-bg: var(--soft-green);
+  --stat-icon-color: var(--accent-green);
+}
+.ui-stat.is-tone-warn {
+  --stat-num-color: var(--accent-orange);
+  --stat-icon-bg: var(--soft-orange);
+  --stat-icon-color: var(--accent-orange);
+}
+.ui-stat.is-tone-danger {
+  --stat-num-color: var(--accent-red);
+  --stat-icon-bg: var(--soft-red);
+  --stat-icon-color: var(--accent-red);
+}
+.ui-stat.is-tone-ai,
+.ui-stat.is-tone-purple {
+  --stat-num-color: var(--accent-purple);
+  --stat-icon-bg: var(--soft-purple);
+  --stat-icon-color: var(--accent-purple);
+}
+.ui-stat.is-tone-cyan {
+  --stat-num-color: var(--accent-cyan);
+  --stat-icon-bg: var(--soft-cyan);
+  --stat-icon-color: var(--accent-cyan);
+}
+.ui-stat.is-tone-neutral {
+  --stat-num-color: var(--text-primary);
+  --stat-icon-bg: var(--bg-tertiary);
+  --stat-icon-color: var(--text-secondary);
+}
+
+/* tinted 语义软底 */
+.ui-stat.is-variant-tinted {
+  --stat-glow-opacity: 0.12;
+}
+.ui-stat.is-variant-tinted.is-tone-brand,
+.ui-stat.is-variant-tinted.is-tone-accent {
+  background: linear-gradient(180deg, var(--soft-blue), transparent 52%), var(--bg-card);
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--border-primary));
+  --stat-num-color: var(--text-accent);
+  --stat-icon-bg: var(--bg-card);
+  --stat-icon-color: var(--text-accent);
+}
+.ui-stat.is-variant-tinted.is-tone-success {
+  background: linear-gradient(180deg, var(--soft-green), transparent 52%), var(--bg-card);
+  border-color: color-mix(in srgb, var(--accent-green) 30%, var(--border-primary));
+  --stat-num-color: var(--accent-green);
+  --stat-icon-bg: var(--bg-card);
+  --stat-icon-color: var(--accent-green);
+}
+.ui-stat.is-variant-tinted.is-tone-warn {
+  background: linear-gradient(180deg, var(--soft-orange), transparent 52%), var(--bg-card);
+  border-color: color-mix(in srgb, var(--accent-orange) 30%, var(--border-primary));
+  --stat-num-color: var(--accent-orange);
+  --stat-icon-bg: var(--bg-card);
+  --stat-icon-color: var(--accent-orange);
+}
+.ui-stat.is-variant-tinted.is-tone-danger {
+  background: linear-gradient(180deg, var(--soft-red), transparent 52%), var(--bg-card);
+  border-color: color-mix(in srgb, var(--accent-red) 30%, var(--border-primary));
+  --stat-num-color: var(--accent-red);
+  --stat-icon-bg: var(--bg-card);
+  --stat-icon-color: var(--accent-red);
+}
+.ui-stat.is-variant-tinted.is-tone-ai,
+.ui-stat.is-variant-tinted.is-tone-purple {
+  background: linear-gradient(180deg, var(--soft-purple), transparent 52%), var(--bg-card);
+  border-color: color-mix(in srgb, var(--accent-purple) 30%, var(--border-primary));
+  --stat-num-color: var(--accent-purple);
+  --stat-icon-bg: var(--bg-card);
+  --stat-icon-color: var(--accent-purple);
+}
+.ui-stat.is-variant-tinted.is-tone-cyan {
+  background: linear-gradient(180deg, var(--soft-cyan), transparent 52%), var(--bg-card);
+  border-color: color-mix(in srgb, var(--accent-cyan) 30%, var(--border-primary));
+  --stat-num-color: var(--accent-cyan);
+  --stat-icon-bg: var(--bg-card);
+  --stat-icon-color: var(--accent-cyan);
+}
+
+/* banner 左色条 */
+.ui-stat.is-variant-banner,
+.ui-stat.is-layout-banner {
+  padding-left: 16px;
+}
+.ui-stat.is-variant-banner::before,
+.ui-stat.is-layout-banner::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--grad-primary);
+  z-index: 1;
+}
+.ui-stat.is-tone-warn.is-variant-banner::before {
+  background: var(--accent-orange);
+}
+.ui-stat.is-tone-danger.is-variant-banner::before {
+  background: var(--accent-red);
+}
+.ui-stat.is-tone-success.is-variant-banner::before {
+  background: var(--accent-green);
+}
+.ui-stat.is-tone-ai.is-variant-banner::before,
+.ui-stat.is-tone-purple.is-variant-banner::before {
+  background: var(--grad-ai);
+}
+
+/* layout */
+.ui-stat.is-layout-inline .ui-stat__top {
+  margin-bottom: 4px;
+}
+
+/* ===== 文字层：只读 CSS 变量，避免 tone 覆盖渐变白字 ===== */
+.ui-stat__label {
+  font-size: var(--fs-sm);
+  color: var(--stat-label-color);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ui-stat__icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: var(--stat-icon-bg);
+  color: var(--stat-icon-color);
+  flex-shrink: 0;
+}
+.ui-stat__num {
+  font-size: var(--stat-num-size);
+  font-weight: 700;
+  color: var(--stat-num-color);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  position: relative;
+  z-index: 1;
+  min-height: 1.15em;
+}
+.ui-stat__num.is-placeholder {
+  color: var(--stat-hint-color);
+  font-weight: 600;
+  opacity: 0.85;
+}
+.ui-stat__hint {
+  margin-top: 6px;
+  font-size: var(--fs-xs);
+  color: var(--stat-hint-color);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  position: relative;
+  z-index: 1;
+  min-height: 1.2em;
+}
+.ui-stat__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  position: relative;
+  z-index: 1;
+}
+.ui-stat__label-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ui-stat__trend {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-family: var(--font-num);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: var(--radius-pill);
+  flex-shrink: 0;
+}
+.ui-stat__trend.is-up {
+  background: var(--soft-green);
+  color: var(--accent-green);
+}
+.ui-stat__trend.is-down {
+  background: var(--soft-red);
+  color: var(--accent-red);
+}
+/* 渐变/深色上的 trend 胶囊 */
+.ui-stat.is-variant-gradient .ui-stat__trend.is-up,
+.ui-stat.is-variant-gradient .ui-stat__trend.is-down,
+.ui-stat.is-variant-dark .ui-stat__trend.is-up,
+.ui-stat.is-variant-dark .ui-stat__trend.is-down {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+.ui-stat__chev {
+  opacity: 0.75;
+  flex-shrink: 0;
+}
+
+/* 光晕：默认很轻，深色/渐变/虚线关闭 */
+.ui-stat__glow {
+  position: absolute;
+  right: -28px;
+  top: -32px;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--stat-icon-bg), transparent 68%);
+  opacity: var(--stat-glow-opacity, 0.35);
+  pointer-events: none;
+  z-index: 0;
+  filter: blur(2px);
+}
+.ui-stat.is-variant-gradient .ui-stat__glow,
+.ui-stat.is-variant-dark .ui-stat__glow,
+.ui-stat.is-variant-dashed .ui-stat__glow {
+  display: none;
+}
+
+/* 进度条 */
+.ui-stat__progress-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 3px;
+  z-index: 2;
+  background: color-mix(in srgb, var(--border-primary) 70%, transparent);
+}
+.ui-stat__progress-bar {
+  height: 100%;
+  background: var(--stat-icon-color);
+  opacity: 0.9;
+  border-radius: 0 2px 2px 0;
+}
+.ui-stat.is-variant-gradient .ui-stat__progress-track,
+.ui-stat.is-variant-dark .ui-stat__progress-track {
+  background: rgba(255, 255, 255, 0.15);
+}
+.ui-stat.is-variant-gradient .ui-stat__progress-bar,
+.ui-stat.is-variant-dark .ui-stat__progress-bar {
+  background: #fff;
+  opacity: 0.85;
+}
+
+/* ===== 反色变体最终覆盖（必须在 tone 变量之后） ===== */
+.ui-stat.is-variant-gradient {
+  --stat-num-color: #ffffff;
+  --stat-label-color: rgba(255, 255, 255, 0.92);
+  --stat-hint-color: rgba(255, 255, 255, 0.78);
+  --stat-icon-bg: rgba(255, 255, 255, 0.22);
+  --stat-icon-color: #ffffff;
+  --stat-glow-opacity: 0;
+  color: #ffffff;
+}
+.ui-stat.is-variant-dark {
+  --stat-num-color: #f8fafc;
+  --stat-label-color: #cbd5e1;
+  --stat-hint-color: #94a3b8;
+  --stat-icon-bg: rgba(255, 255, 255, 0.08);
+  --stat-icon-color: var(--accent);
+  --stat-glow-opacity: 0;
+  color: #e8eef9;
+}
+
+/* 直接上色，避免任何 tone 规则/继承干扰渐变卡数字对比度 */
+.ui-stat.is-variant-gradient .ui-stat__num,
+.ui-stat.is-variant-gradient .ui-stat__label,
+.ui-stat.is-variant-gradient .ui-stat__hint,
+.ui-stat.is-variant-gradient .ui-stat__hint-text,
+.ui-stat.is-variant-gradient .ui-stat__num.is-placeholder {
+  color: #ffffff !important;
+  text-shadow: none;
+  -webkit-text-fill-color: #ffffff;
+}
+.ui-stat.is-variant-dark .ui-stat__num,
+.ui-stat.is-variant-dark .ui-stat__num.is-placeholder {
+  color: #f8fafc !important;
+  text-shadow: none;
+  -webkit-text-fill-color: #f8fafc;
+}
+.ui-stat.is-variant-dark .ui-stat__label {
+  color: #cbd5e1 !important;
+  -webkit-text-fill-color: #cbd5e1;
+}
+.ui-stat.is-variant-dark .ui-stat__hint,
+.ui-stat.is-variant-dark .ui-stat__hint-text {
+  color: #94a3b8 !important;
+  -webkit-text-fill-color: #94a3b8;
+}
+.ui-stat.is-variant-gradient .ui-stat__glow,
+.ui-stat.is-variant-dark .ui-stat__glow {
+  display: none !important;
+}

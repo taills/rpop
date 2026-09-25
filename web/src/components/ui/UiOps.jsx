@@ -1,0 +1,28 @@
+import './UiOps.css'
+import { Fragment } from 'react'
+import UiLink from './UiLink'
+
+export default function UiOps({
+  items = [],
+  /** 默认列表操作不显红字；确认弹窗才用 danger 实心 */
+  allowRed = false,
+  max = 0,
+}) {
+  const visible = max > 0 ? items.slice(0, max) : items
+
+  return (
+    <div className="ui-ops">
+      {visible.map((item, i) => (
+        <Fragment key={i}>
+          {item.divider && i > 0 && <span className="ui-ops__sep" />}
+          <UiLink
+            tone={item.tone === 'danger' && !allowRed ? 'muted' : item.tone || 'primary'}
+            onClick={() => item.onClick?.()}
+          >
+            {item.label}
+          </UiLink>
+        </Fragment>
+      ))}
+    </div>
+  )
+}

@@ -1,0 +1,28 @@
+.ui-desc {
+  margin: 0;
+  display: grid;
+  gap: 10px 16px;
+}
+.ui-desc.is-1 {
+  grid-template-columns: 1fr;
+}
+.ui-desc.is-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.ui-desc.is-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.ui-desc__item {
+  min-width: 0;
+}
+.ui-desc__label {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+.ui-desc__value {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  word-break: break-all;
+}

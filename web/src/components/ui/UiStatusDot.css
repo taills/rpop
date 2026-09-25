@@ -1,0 +1,31 @@
+.ui-status-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.ui-status-dot__mark {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  box-shadow: 0 0 0 2px var(--bg-tertiary);
+}
+.ui-status-dot.is-success .ui-status-dot__mark {
+  background: var(--accent-green);
+}
+.ui-status-dot.is-warn .ui-status-dot__mark {
+  background: var(--accent-orange);
+}
+.ui-status-dot.is-danger .ui-status-dot__mark {
+  background: var(--accent-red);
+}
+.ui-status-dot.is-brand .ui-status-dot__mark,
+.ui-status-dot.is-info .ui-status-dot__mark {
+  background: var(--accent);
+}
+.ui-status-dot.is-ai .ui-status-dot__mark {
+  background: var(--accent-purple);
+}

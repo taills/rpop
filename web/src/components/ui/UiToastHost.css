@@ -1,0 +1,105 @@
+.ui-toast-stack {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 4000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(340px, calc(100vw - 32px));
+  pointer-events: none;
+}
+.ui-toast {
+  pointer-events: auto;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
+  box-shadow: var(--shadow-md);
+  font-size: var(--fs-sm);
+}
+.ui-toast__icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+.ui-toast.is-success .ui-toast__icon {
+  background: var(--soft-green);
+  color: var(--accent-green);
+}
+.ui-toast.is-error .ui-toast__icon {
+  background: var(--soft-red);
+  color: var(--accent-red);
+}
+.ui-toast.is-warn .ui-toast__icon {
+  background: var(--soft-orange);
+  color: var(--accent-orange);
+}
+.ui-toast.is-info .ui-toast__icon {
+  background: var(--soft-blue);
+  color: var(--text-accent);
+}
+.ui-toast__body {
+  min-width: 0;
+  flex: 1;
+}
+.ui-toast__title {
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+}
+.ui-toast__msg {
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+.ui-toast__x {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+}
+.ui-toast__x:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+.ui-toast-enter-active,
+.ui-toast-leave-active {
+  transition: all 0.18s ease;
+}
+.ui-toast-enter-from {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+.ui-toast-leave-to {
+  opacity: 0;
+  transform: translateX(12px);
+}
+
+/* React 版：无 TransitionGroup，进场动画直接挂在节点上 */
+.ui-toast {
+  animation: toast-in 0.18s ease;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

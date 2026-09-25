@@ -1,0 +1,20 @@
+@font-face {
+  font-family: YouSheBiaoTiHei;
+  src: url('/fonts/YouSheBiaoTiHei.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: MetroDF;
+  src: url('/fonts/MetroDF.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: DIN;
+  src: url('/fonts/DIN.otf') format('opentype');
+  font-display: swap;
+}
+@font-face {
+  font-family: AlimamaShuHeiTi;
+  src: url('/fonts/AlimamaShuHeiTi-Bold.ttf') format('truetype');
+  font-display: swap;
+}

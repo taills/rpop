@@ -1,0 +1,21 @@
+# Go
+/bin/
+/rpop
+*.test
+*.out
+
+# Runtime data
+/data/
+/logs/
+*.db
+*.db-shm
+*.db-wal
+
+# Frontend
+web/node_modules/
+web/dist/
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/

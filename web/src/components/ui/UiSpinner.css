@@ -1,0 +1,29 @@
+.ui-spinner {
+  display: inline-flex;
+  color: var(--accent);
+}
+.ui-spinner__ring {
+  display: block;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: ui-spin 0.7s linear infinite;
+}
+.ui-spinner.is-sm .ui-spinner__ring {
+  width: 12px;
+  height: 12px;
+}
+.ui-spinner.is-md .ui-spinner__ring {
+  width: 18px;
+  height: 18px;
+}
+.ui-spinner.is-lg .ui-spinner__ring {
+  width: 28px;
+  height: 28px;
+  border-width: 3px;
+}
+@keyframes ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
