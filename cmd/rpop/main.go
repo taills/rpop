@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 	"go.uber.org/zap"
@@ -89,8 +90,15 @@ func main() {
 		}
 	}()
 	<-ctx.Done()
-	service.StopAll()
-	if err := server.Shutdown(context.Background()); err != nil {
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("control API shutdown failed", zap.Error(err))
 	}
+	cancelShutdown()
+	service.StopAll()
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := service.DrainAccessLogs(drainCtx); err != nil {
+		logger.Warn("access log drain timed out", zap.Error(err))
+	}
+	cancelDrain()
 }

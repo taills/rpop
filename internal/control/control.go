@@ -11,9 +11,9 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -25,21 +25,43 @@ import (
 const HeaderTimeout = 8 * time.Second
 
 type Control struct {
-	store *store.Store
-	log   *zap.Logger
-	mu    sync.Mutex
-	runs  map[string]*running
+	store          *store.Store
+	log            *zap.Logger
+	mu             sync.Mutex
+	opMu           sync.Mutex
+	runs           map[string]*running
+	listeners      map[string]*listenerGroup
+	metrics        sync.Map
+	accessLogQueue chan accessLogEvent
+	queuedLogBytes atomic.Int64
 }
 type running struct {
-	server   *http.Server
-	listener net.Listener
+	groupKey string
+	route    *siteRuntime
+}
+type siteRuntime struct {
+	id          string
+	handler     http.Handler
+	hostnames   []string
+	certificate *tls.Certificate
+}
+type listenerGroup struct {
+	mu           sync.RWMutex
+	key, address string
+	tlsEnabled   bool
+	server       *http.Server
+	listener     net.Listener
+	routes       map[string]*siteRuntime
+	byHost       map[string]*siteRuntime
 }
 type apiError struct {
 	Error string `json:"error"`
 }
 
 func New(s *store.Store, l *zap.Logger) *Control {
-	return &Control{store: s, log: l, runs: map[string]*running{}}
+	c := &Control{store: s, log: l, runs: map[string]*running{}, listeners: map[string]*listenerGroup{}, accessLogQueue: make(chan accessLogEvent, 256)}
+	go c.accessLogLoop()
+	return c
 }
 func (c *Control) Handler() http.Handler {
 	m := http.NewServeMux()
@@ -148,6 +170,14 @@ func (c *Control) site(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := parts[2]
+	if len(parts) == 4 && parts[3] == "metrics" && r.Method == http.MethodGet {
+		if _, err := c.store.Get(r.Context(), id); err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, c.metricsForSite(id).snapshot())
+		return
+	}
 	if len(parts) == 5 && parts[3] == "secrets" {
 		c.secret(w, r, id, parts[4])
 		return
@@ -162,15 +192,34 @@ func (c *Control) site(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
+		c.opMu.Lock()
+		defer c.opMu.Unlock()
+		c.mu.Lock()
+		active := c.runs[id] != nil
+		c.mu.Unlock()
+		var previous store.Site
+		if active {
+			previousSite, getErr := c.store.Get(r.Context(), id)
+			if getErr != nil {
+				writeError(w, getErr)
+				return
+			}
+			previous = previousSite
+		}
 		if err := c.store.Save(r.Context(), x); err != nil {
 			writeError(w, err)
 			return
 		}
-		c.mu.Lock()
-		active := c.runs[id] != nil
-		c.mu.Unlock()
 		if active {
-			if err := c.start(r.Context(), id); err != nil {
+			if err := c.startLocked(r.Context(), id); err != nil {
+				if rollbackErr := c.store.Save(r.Context(), previous); rollbackErr != nil {
+					writeError(w, fmt.Errorf("site update failed: %v; restoring previous config failed: %w", err, rollbackErr))
+					return
+				}
+				if rollbackErr := c.startLocked(r.Context(), id); rollbackErr != nil {
+					writeError(w, fmt.Errorf("site update failed: %v; restoring previous runtime failed: %w", err, rollbackErr))
+					return
+				}
 				writeError(w, err)
 				return
 			}
@@ -184,6 +233,7 @@ func (c *Control) site(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
+		c.metrics.Delete(id)
 		w.WriteHeader(204)
 		return
 	}
@@ -208,58 +258,11 @@ func (c *Control) site(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 405, apiError{"method not allowed"})
 }
 func (c *Control) start(ctx context.Context, id string) error {
-	x, e := c.store.Get(ctx, id)
-	if e != nil {
-		return e
-	}
-	if e = validate(x); e != nil {
-		return e
-	}
-	// Reload currently uses a brief stop/start window so the address can be rebound.
-	if e = c.stop(id); e != nil {
-		return e
-	}
-	addr := net.JoinHostPort(x.Config.ListenAddress, strconv.Itoa(x.Config.ListenPort))
-	ln, e := net.Listen("tcp", addr)
-	if e != nil {
-		return e
-	}
-	handler, e := c.proxyHandler(ctx, id, x.Config)
-	if e != nil {
-		ln.Close()
-		return e
-	}
-	s := &http.Server{Handler: handler, ReadHeaderTimeout: HeaderTimeout, IdleTimeout: 60 * time.Second}
-	if x.Config.TLS {
-		certPEM, e := c.store.Secret(ctx, id, x.Config.CertificateSecret)
-		if e != nil {
-			ln.Close()
-			return e
-		}
-		keyPEM, e := c.store.Secret(ctx, id, x.Config.PrivateKeySecret)
-		if e != nil {
-			ln.Close()
-			return e
-		}
-		cert, e := tls.X509KeyPair(certPEM, keyPEM)
-		if e != nil {
-			ln.Close()
-			return e
-		}
-		s.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}
-		ln = tls.NewListener(ln, s.TLSConfig)
-	}
-	c.mu.Lock()
-	c.runs[id] = &running{server: s, listener: ln}
-	c.mu.Unlock()
-	go func() {
-		if e := s.Serve(ln); e != nil && !errors.Is(e, http.ErrServerClosed) {
-			c.log.Error("site server stopped", zap.String("site", id), zap.Error(e))
-		}
-	}()
-	c.log.Info("site started", zap.String("site", id), zap.String("address", addr))
-	return nil
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	return c.startLocked(ctx, id)
 }
+
 func (c *Control) StartAutoSites(ctx context.Context) error {
 	sites, err := c.store.AutoStartSites(ctx)
 	if err != nil {
@@ -274,6 +277,8 @@ func (c *Control) StartAutoSites(ctx context.Context) error {
 }
 
 func (c *Control) StopAll() {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
 	c.mu.Lock()
 	ids := make([]string, 0, len(c.runs))
 	for id := range c.runs {
@@ -281,23 +286,16 @@ func (c *Control) StopAll() {
 	}
 	c.mu.Unlock()
 	for _, id := range ids {
-		_ = c.stop(id)
+		_ = c.stopLocked(id)
 	}
 }
 
 func (c *Control) stop(id string) error {
-	c.mu.Lock()
-	x := c.runs[id]
-	delete(c.runs, id)
-	c.mu.Unlock()
-	if x == nil {
-		return nil
-	}
-	e := x.server.Shutdown(context.Background())
-	_ = x.listener.Close()
-	c.log.Info("site stopped", zap.String("site", id))
-	return e
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	return c.stopLocked(id)
 }
+
 func (c *Control) proxyHandler(ctx context.Context, id string, cfg store.Config) (http.Handler, error) {
 	if len(cfg.Upstreams) == 0 {
 		return nil, fmt.Errorf("at least one upstream is required")
@@ -310,13 +308,14 @@ func (c *Control) proxyHandler(ctx context.Context, id string, cfg store.Config)
 	if e != nil {
 		return nil, e
 	}
-	return &httputil.ReverseProxy{
+	proxy := &httputil.ReverseProxy{
 		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(u)
 			pr.Out.Host = u.Host
 		},
-	}, nil
+	}
+	return c.observeSite(id, cfg.AccessLog, proxy), nil
 }
 func validate(x store.Site) error {
 	if strings.TrimSpace(x.ID) == "" || strings.TrimSpace(x.Name) == "" {
@@ -327,6 +326,9 @@ func validate(x store.Site) error {
 	}
 	if x.Config.ListenPort < 1 || x.Config.ListenPort > 65535 {
 		return fmt.Errorf("listenPort must be 1-65535")
+	}
+	if _, err := normalizedHostnames(x.Config.Hostnames); err != nil {
+		return err
 	}
 	for _, u := range x.Config.Upstreams {
 		if _, e := url.ParseRequestURI(u.URL); e != nil {

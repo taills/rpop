@@ -11,13 +11,20 @@ type Upstream struct {
 	DialAddress        string `json:"dialAddress,omitempty" yaml:"dialAddress,omitempty"`
 	ServerName         string `json:"serverName,omitempty" yaml:"serverName,omitempty"`
 }
+type AccessLogConfig struct {
+	IncludeBodies           bool  `json:"includeBodies,omitempty" yaml:"includeBodies,omitempty"`
+	IncludeSensitiveHeaders bool  `json:"includeSensitiveHeaders,omitempty" yaml:"includeSensitiveHeaders,omitempty"`
+	MaxBodyBytes            int64 `json:"maxBodyBytes,omitempty" yaml:"maxBodyBytes,omitempty"`
+}
 type Config struct {
-	ListenAddress     string     `json:"listenAddress" yaml:"listenAddress"`
-	ListenPort        int        `json:"listenPort" yaml:"listenPort"`
-	TLS               bool       `json:"tls,omitempty" yaml:"tls,omitempty"`
-	CertificateSecret string     `json:"certificateSecret,omitempty" yaml:"certificateSecret,omitempty"`
-	PrivateKeySecret  string     `json:"privateKeySecret,omitempty" yaml:"privateKeySecret,omitempty"`
-	Upstreams         []Upstream `json:"upstreams" yaml:"upstreams"`
+	Hostnames         []string        `json:"hostnames,omitempty" yaml:"hostnames,omitempty"`
+	ListenAddress     string          `json:"listenAddress" yaml:"listenAddress"`
+	ListenPort        int             `json:"listenPort" yaml:"listenPort"`
+	TLS               bool            `json:"tls,omitempty" yaml:"tls,omitempty"`
+	CertificateSecret string          `json:"certificateSecret,omitempty" yaml:"certificateSecret,omitempty"`
+	PrivateKeySecret  string          `json:"privateKeySecret,omitempty" yaml:"privateKeySecret,omitempty"`
+	Upstreams         []Upstream      `json:"upstreams" yaml:"upstreams"`
+	AccessLog         AccessLogConfig `json:"accessLog,omitempty" yaml:"accessLog,omitempty"`
 }
 type Site struct {
 	ID        string `json:"id" yaml:"id"`
