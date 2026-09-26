@@ -32,7 +32,8 @@ export function applySections(site, sections) {
     clientKeySecret: mtls && !upstream.clientCertificateId ? upstream.clientKeySecret || '' : '',
     insecureSkipVerify: https && Boolean(upstream.insecureSkipVerify),
   }
-  const accessLog = { ...site.config.accessLog, adapterId: sections.accessLog ? site.config.accessLog?.adapterId || '' : '' }
+  // An emptied body-limit field is saved as 0, which the server treats as the 1 MiB default.
+  const accessLog = { ...site.config.accessLog, adapterId: sections.accessLog ? site.config.accessLog?.adapterId || '' : '', maxBodyBytes: Number(site.config.accessLog?.maxBodyBytes) || 0 }
   const tls = Boolean(site.config.tls)
   return {
     ...site,

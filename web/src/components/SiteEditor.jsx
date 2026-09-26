@@ -128,7 +128,7 @@ export default function SiteEditor({ site, isNew, sections, catalog, saving, err
             </label>
             <label className="check"><input type="checkbox" checked={!!accessLog.includeSensitiveHeaders} onChange={event => setAccessLog({ includeSensitiveHeaders: event.target.checked })}/> 记录敏感 Header 原值 <span>关闭时脱敏 Authorization、Cookie 等字段</span></label>
             <OptionToggle checked={!!accessLog.includeBodies} onChange={includeBodies => setAccessLog({ includeBodies })} label="记录完整请求与响应 Body" hint="可能包含个人或业务敏感信息">
-              <label className="wide">Body 日志上限（字节，-1 表示无限）<input type="number" min="-1" max="8388608" value={accessLog.maxBodyBytes || 1048576} onChange={event => setAccessLog({ maxBodyBytes: Number(event.target.value) })}/><span>默认 1 MiB，正数最大 8 MiB；-1 不截断，但会增加内存占用</span></label>
+              <label className="wide">Body 日志上限（字节，-1 表示无限）<input type="number" min="-1" max="8388608" value={accessLog.maxBodyBytes ?? 1048576} onChange={event => setAccessLog({ maxBodyBytes: event.target.value === '' ? '' : Number(event.target.value) })}/><span>留空或 0 使用默认 1 MiB，正数最大 8 MiB；-1 不截断，但会增加内存占用</span></label>
             </OptionToggle>
           </OptionToggle>
         </FormSection>
