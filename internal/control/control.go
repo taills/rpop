@@ -19,6 +19,7 @@ import (
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 
+	"github.com/rpop-project/rpop/internal/accesslog"
 	"github.com/rpop-project/rpop/internal/store"
 )
 
@@ -34,6 +35,11 @@ type Control struct {
 	metrics        sync.Map
 	accessLogQueue chan accessLogEvent
 	queuedLogBytes atomic.Int64
+	accessLogs     *accesslog.Registry
+	authMu         sync.Mutex
+	setupMu        sync.Mutex
+	sessions       map[string]time.Time
+	loginAttempts  map[string]loginAttempt
 }
 type running struct {
 	groupKey string
@@ -59,17 +65,26 @@ type apiError struct {
 }
 
 func New(s *store.Store, l *zap.Logger) *Control {
-	c := &Control{store: s, log: l, runs: map[string]*running{}, listeners: map[string]*listenerGroup{}, accessLogQueue: make(chan accessLogEvent, 256)}
+	c := &Control{store: s, log: l, runs: map[string]*running{}, listeners: map[string]*listenerGroup{}, accessLogQueue: make(chan accessLogEvent, 256), sessions: make(map[string]time.Time), loginAttempts: make(map[string]loginAttempt)}
 	go c.accessLogLoop()
 	return c
 }
 func (c *Control) Handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("/api/health", c.health)
+	m.HandleFunc("/api/auth/status", c.authStatus)
+	m.HandleFunc("/api/auth/setup", c.authSetup)
+	m.HandleFunc("/api/auth/login", c.authLogin)
+	m.HandleFunc("/api/auth/logout", c.authLogout)
+	m.HandleFunc("/api/auth/password", c.authChangePassword)
+	m.HandleFunc("/api/logging", c.loggingConfig)
+	m.HandleFunc("/api/logging/adapters", c.loggingAdapters)
+	m.HandleFunc("/api/logging/adapters/", c.loggingAdapter)
+	m.HandleFunc("/api/logs", c.searchLogs)
 	m.HandleFunc("/api/config.yaml", c.yamlConfig)
 	m.HandleFunc("/api/sites", c.sites)
 	m.HandleFunc("/api/sites/", c.site)
-	return m
+	return c.authMiddleware(m)
 }
 
 type yamlConfig struct {
@@ -107,8 +122,14 @@ func (c *Control) yamlConfig(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 400, apiError{err.Error()})
 			return
 		}
+		c.opMu.Lock()
+		defer c.opMu.Unlock()
 		for _, site := range cfg.Sites {
 			if err := validate(site); err != nil {
+				writeError(w, fmt.Errorf("site %q: %w", site.ID, err))
+				return
+			}
+			if err := c.validateAccessLogAdapter(site); err != nil {
 				writeError(w, fmt.Errorf("site %q: %w", site.ID, err))
 				return
 			}
@@ -153,6 +174,12 @@ func (c *Control) sites(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
+		c.opMu.Lock()
+		defer c.opMu.Unlock()
+		if err := c.validateAccessLogAdapter(x); err != nil {
+			writeError(w, err)
+			return
+		}
 		if err := c.store.Save(r.Context(), x); err != nil {
 			writeError(w, err)
 			return
@@ -194,6 +221,10 @@ func (c *Control) site(w http.ResponseWriter, r *http.Request) {
 		}
 		c.opMu.Lock()
 		defer c.opMu.Unlock()
+		if err := c.validateAccessLogAdapter(x); err != nil {
+			writeError(w, err)
+			return
+		}
 		c.mu.Lock()
 		active := c.runs[id] != nil
 		c.mu.Unlock()

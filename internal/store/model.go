@@ -12,9 +12,10 @@ type Upstream struct {
 	ServerName         string `json:"serverName,omitempty" yaml:"serverName,omitempty"`
 }
 type AccessLogConfig struct {
-	IncludeBodies           bool  `json:"includeBodies,omitempty" yaml:"includeBodies,omitempty"`
-	IncludeSensitiveHeaders bool  `json:"includeSensitiveHeaders,omitempty" yaml:"includeSensitiveHeaders,omitempty"`
-	MaxBodyBytes            int64 `json:"maxBodyBytes,omitempty" yaml:"maxBodyBytes,omitempty"`
+	AdapterID               string `json:"adapterId,omitempty" yaml:"adapterId,omitempty"`
+	IncludeBodies           bool   `json:"includeBodies,omitempty" yaml:"includeBodies,omitempty"`
+	IncludeSensitiveHeaders bool   `json:"includeSensitiveHeaders,omitempty" yaml:"includeSensitiveHeaders,omitempty"`
+	MaxBodyBytes            int64  `json:"maxBodyBytes,omitempty" yaml:"maxBodyBytes,omitempty"`
 }
 type Config struct {
 	Hostnames         []string        `json:"hostnames,omitempty" yaml:"hostnames,omitempty"`

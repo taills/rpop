@@ -23,6 +23,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 
+	"github.com/rpop-project/rpop/internal/accesslog"
 	"github.com/rpop-project/rpop/internal/store"
 )
 
@@ -46,6 +47,100 @@ func (w *gateWriteSyncer) unblock() {
 	}
 }
 
+func setupAdminForTest(t *testing.T, handler http.Handler) *http.Cookie {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(`{"password":"test-admin-password-2026"}`))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("admin setup returned %d: %s", response.Code, response.Body.String())
+	}
+	cookies := response.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("admin setup did not issue an authentication cookie")
+	}
+	return cookies[0]
+}
+
+func TestAdminAuthenticationSetupLoginLogoutAndPasswordChange(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := store.Migrate(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	handler := New(store.New(db), zap.NewNop()).Handler()
+	call := func(method, path, body string, cookie *http.Cookie) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		if cookie != nil {
+			request.AddCookie(cookie)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	cookieFrom := func(t *testing.T, response *httptest.ResponseRecorder) *http.Cookie {
+		t.Helper()
+		cookies := response.Result().Cookies()
+		if len(cookies) == 0 {
+			t.Fatal("authentication response omitted session cookie")
+		}
+		return cookies[0]
+	}
+	if response := call(http.MethodGet, "/api/sites", "", nil); response.Code != http.StatusPreconditionRequired {
+		t.Fatalf("unconfigured API status=%d", response.Code)
+	}
+	if response := call(http.MethodPost, "/api/auth/setup", `{"password":"short"}`, nil); response.Code != http.StatusBadRequest {
+		t.Fatalf("weak password status=%d", response.Code)
+	}
+	const oldPassword = "test-admin-password-2026"
+	setup := call(http.MethodPost, "/api/auth/setup", `{"password":"`+oldPassword+`"}`, nil)
+	if setup.Code != http.StatusOK {
+		t.Fatalf("setup status=%d: %s", setup.Code, setup.Body.String())
+	}
+	setupCookie := cookieFrom(t, setup)
+	if response := call(http.MethodGet, "/api/sites", "", setupCookie); response.Code != http.StatusOK {
+		t.Fatalf("authenticated site list status=%d", response.Code)
+	}
+	if response := call(http.MethodPost, "/api/auth/setup", `{"password":"`+oldPassword+`"}`, nil); response.Code != http.StatusConflict {
+		t.Fatalf("repeated setup status=%d", response.Code)
+	}
+	if response := call(http.MethodPost, "/api/auth/logout", "{}", setupCookie); response.Code != http.StatusOK {
+		t.Fatalf("logout status=%d", response.Code)
+	}
+	if response := call(http.MethodGet, "/api/sites", "", setupCookie); response.Code != http.StatusUnauthorized {
+		t.Fatalf("logged-out site list status=%d", response.Code)
+	}
+	if response := call(http.MethodPost, "/api/auth/login", `{"password":"wrong-password"}`, nil); response.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong password status=%d", response.Code)
+	}
+	login := call(http.MethodPost, "/api/auth/login", `{"password":"`+oldPassword+`"}`, nil)
+	if login.Code != http.StatusOK {
+		t.Fatalf("login status=%d", login.Code)
+	}
+	loginCookie := cookieFrom(t, login)
+	const newPassword = "new-admin-password-2026"
+	change := call(http.MethodPut, "/api/auth/password", `{"currentPassword":"`+oldPassword+`","newPassword":"`+newPassword+`"}`, loginCookie)
+	if change.Code != http.StatusOK {
+		t.Fatalf("password change status=%d: %s", change.Code, change.Body.String())
+	}
+	changedCookie := cookieFrom(t, change)
+	if response := call(http.MethodGet, "/api/sites", "", loginCookie); response.Code != http.StatusUnauthorized {
+		t.Fatalf("old session survived password change: status=%d", response.Code)
+	}
+	if response := call(http.MethodGet, "/api/sites", "", changedCookie); response.Code != http.StatusOK {
+		t.Fatalf("new session rejected after password change: status=%d", response.Code)
+	}
+	if response := call(http.MethodPost, "/api/auth/login", `{"password":"`+oldPassword+`"}`, nil); response.Code != http.StatusUnauthorized {
+		t.Fatalf("old password remained valid: status=%d", response.Code)
+	}
+	if response := call(http.MethodPost, "/api/auth/login", `{"password":"`+newPassword+`"}`, nil); response.Code != http.StatusOK {
+		t.Fatalf("new password rejected: status=%d", response.Code)
+	}
+}
+
 func TestYAMLConfigImportExport(t *testing.T) {
 	db, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
@@ -56,19 +151,221 @@ func TestYAMLConfigImportExport(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := New(store.New(db), zap.NewNop())
+	handler := c.Handler()
+	cookie := setupAdminForTest(t, handler)
 	upstream := "ht" + "tp://127.0.0.1:9000"
 	body := "sites:\n  - id: app\n    name: App\n    autoStart: true\n    config:\n      listenAddress: 127.0.0.1\n      listenPort: 8089\n      upstreams:\n        - url: " + upstream + "\n"
 	request := httptest.NewRequest("PUT", "/api/config.yaml", strings.NewReader(body))
 	response := httptest.NewRecorder()
-	c.Handler().ServeHTTP(response, request)
+	request.AddCookie(cookie)
+	handler.ServeHTTP(response, request)
 	if response.Code != 200 {
 		t.Fatalf("import status %d: %s", response.Code, response.Body.String())
 	}
 	request = httptest.NewRequest("GET", "/api/config.yaml", nil)
+	request.AddCookie(cookie)
 	response = httptest.NewRecorder()
-	c.Handler().ServeHTTP(response, request)
+	handler.ServeHTTP(response, request)
 	if response.Code != 200 || !strings.Contains(response.Body.String(), "listenPort: 8089") || !strings.Contains(response.Body.String(), "autoStart: true") {
 		t.Fatalf("export mismatch: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestLoggingConfigAndSearchAPI(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := store.Migrate(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewWithLogDir(store.New(db), zap.NewNop(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.CloseAccessLogs(context.Background())
+	handler := service.Handler()
+	unauthenticated := httptest.NewRecorder()
+	handler.ServeHTTP(unauthenticated, httptest.NewRequest(http.MethodGet, "/api/logging", nil))
+	if unauthenticated.Code != http.StatusPreconditionRequired {
+		t.Fatalf("expected setup-required response, got %d", unauthenticated.Code)
+	}
+	cookie := setupAdminForTest(t, handler)
+	request := httptest.NewRequest(http.MethodGet, "/api/logging", nil)
+	request.AddCookie(cookie)
+	configResponse := httptest.NewRecorder()
+	handler.ServeHTTP(configResponse, request)
+	if configResponse.Code != http.StatusOK || !strings.Contains(configResponse.Body.String(), `"adapter":"file"`) {
+		t.Fatalf("default logging config: %d %s", configResponse.Code, configResponse.Body.String())
+	}
+	if strings.Contains(configResponse.Body.String(), "secretAccessKey") {
+		t.Fatal("logging config response exposed S3 credentials")
+	}
+	update := `{"adapter":"file","file":{"rotation":"size","maxSizeBytes":1048576,"compress":true,"keepFiles":4},"clickhouse":{"database":"default","table":"access_logs"},"s3":{"region":"us-east-1","prefix":"rpop/access","forcePathStyle":true}}`
+	request = httptest.NewRequest(http.MethodPut, "/api/logging", strings.NewReader(update))
+	request.AddCookie(cookie)
+	updated := httptest.NewRecorder()
+	handler.ServeHTTP(updated, request)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("logging config update: %d %s", updated.Code, updated.Body.String())
+	}
+	createAdapter := httptest.NewRequest(http.MethodPost, "/api/logging/adapters", strings.NewReader(`{"name":"Secondary file","config":{"adapter":"file","file":{"rotation":"size","maxSizeBytes":1048576,"compress":false,"keepFiles":0}}}`))
+	createAdapter.AddCookie(cookie)
+	created := httptest.NewRecorder()
+	handler.ServeHTTP(created, createAdapter)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create same-type adapter: %d %s", created.Code, created.Body.String())
+	}
+	var adapterResult struct {
+		Adapters []struct {
+			ID     string `json:"id"`
+			Config struct {
+				Adapter string `json:"adapter"`
+			} `json:"config"`
+		} `json:"adapters"`
+		SavedAdapterID string `json:"savedAdapterId"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &adapterResult); err != nil {
+		t.Fatal(err)
+	}
+	if len(adapterResult.Adapters) != 2 || adapterResult.SavedAdapterID == "" || adapterResult.Adapters[0].Config.Adapter != "file" || adapterResult.Adapters[1].Config.Adapter != "file" {
+		t.Fatalf("same-type adapters were not returned: %#v", adapterResult)
+	}
+	unknownSite := httptest.NewRequest(http.MethodPost, "/api/sites", strings.NewReader(`{"id":"bad-log-site","name":"Bad log site","config":{"listenAddress":"127.0.0.1","listenPort":9001,"upstreams":[{"url":"http://127.0.0.1:9002"}],"accessLog":{"adapterId":"missing"}}}`))
+	unknownSite.AddCookie(cookie)
+	unknownSiteResponse := httptest.NewRecorder()
+	handler.ServeHTTP(unknownSiteResponse, unknownSite)
+	if unknownSiteResponse.Code != http.StatusBadRequest {
+		t.Fatalf("unknown adapter site status=%d: %s", unknownSiteResponse.Code, unknownSiteResponse.Body.String())
+	}
+	if err := service.store.Save(context.Background(), store.Site{ID: "search-site", Name: "Search site", Config: store.Config{AccessLog: store.AccessLogConfig{AdapterID: "default"}}}); err != nil {
+		t.Fatal(err)
+	}
+	observed := service.observeSite("search-site", store.AccessLogConfig{AdapterID: "default"}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Result", "ok")
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	observed.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/find-me", nil))
+	if err := service.DrainAccessLogs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	missingAdapter := httptest.NewRequest(http.MethodGet, "/api/logs", nil)
+	missingAdapter.AddCookie(cookie)
+	missingAdapterResponse := httptest.NewRecorder()
+	handler.ServeHTTP(missingAdapterResponse, missingAdapter)
+	if missingAdapterResponse.Code != http.StatusBadRequest {
+		t.Fatalf("missing adapter selection status=%d", missingAdapterResponse.Code)
+	}
+	secondAdapterSearch := httptest.NewRequest(http.MethodGet, "/api/logs?adapterId="+adapterResult.SavedAdapterID, nil)
+	secondAdapterSearch.AddCookie(cookie)
+	secondAdapterResult := httptest.NewRecorder()
+	handler.ServeHTTP(secondAdapterResult, secondAdapterSearch)
+	if secondAdapterResult.Code != http.StatusOK {
+		t.Fatalf("second adapter search status=%d: %s", secondAdapterResult.Code, secondAdapterResult.Body.String())
+	}
+	removeBoundAdapter := httptest.NewRequest(http.MethodDelete, "/api/logging/adapters/default", nil)
+	removeBoundAdapter.AddCookie(cookie)
+	removeBoundResponse := httptest.NewRecorder()
+	handler.ServeHTTP(removeBoundResponse, removeBoundAdapter)
+	if removeBoundResponse.Code != http.StatusConflict {
+		t.Fatalf("delete bound adapter status=%d: %s", removeBoundResponse.Code, removeBoundResponse.Body.String())
+	}
+	wrongAdapter := httptest.NewRequest(http.MethodGet, "/api/logs?siteId=search-site&adapterId="+adapterResult.SavedAdapterID, nil)
+	wrongAdapter.AddCookie(cookie)
+	wrongAdapterResponse := httptest.NewRecorder()
+	handler.ServeHTTP(wrongAdapterResponse, wrongAdapter)
+	if wrongAdapterResponse.Code != http.StatusBadRequest {
+		t.Fatalf("mismatched site adapter status=%d", wrongAdapterResponse.Code)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/logs?siteId=search-site&q=find-me", nil)
+	request.AddCookie(cookie)
+	result := httptest.NewRecorder()
+	handler.ServeHTTP(result, request)
+	if result.Code != http.StatusOK {
+		t.Fatalf("log search status=%d: %s", result.Code, result.Body.String())
+	}
+	var page struct {
+		Total   int `json:"total"`
+		Records []struct {
+			SiteID string `json:"siteId"`
+			Path   string `json:"path"`
+			Status int    `json:"status"`
+		} `json:"records"`
+	}
+	if err := json.Unmarshal(result.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || len(page.Records) != 1 || page.Records[0].SiteID != "search-site" || page.Records[0].Path != "/find-me" || page.Records[0].Status != http.StatusAccepted {
+		t.Fatalf("unexpected log search: %#v", page)
+	}
+}
+
+func TestNewWithLogDirMigratesLegacyAdapterAndSiteSelection(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := store.Migrate(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	s := store.New(db)
+	if err := s.Save(context.Background(), store.Site{ID: "legacy-site", Name: "Legacy", Config: store.Config{AccessLog: store.AccessLogConfig{IncludeBodies: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	legacyConfig := []byte(`{"adapter":"file","file":{"rotation":"hour","maxSizeBytes":1048576,"compress":false,"keepFiles":7},"clickhouse":{"database":"default","table":"access_logs"},"s3":{"region":"us-east-1","prefix":"rpop/access"}}`)
+	if err := s.SetSetting(context.Background(), legacyLoggingSettingKey, legacyConfig); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewWithLogDir(s, zap.NewNop(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.CloseAccessLogs(context.Background())
+	migrated, err := s.Get(context.Background(), "legacy-site")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrated.Config.AccessLog.AdapterID != "default" {
+		t.Fatalf("legacy site was not bound to default adapter: %#v", migrated.Config.AccessLog)
+	}
+	adapters := service.accessLogs.List()
+	if len(adapters) != 1 || adapters[0].ID != "default" || adapters[0].Config.File.Rotation != "hour" || adapters[0].Config.File.KeepFiles != 7 {
+		t.Fatalf("legacy log configuration was not preserved: %#v", adapters)
+	}
+}
+
+func TestAccessLogsRemainDisabledWithoutSiteAdapterSelection(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := store.Migrate(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewWithLogDir(store.New(db), zap.NewNop(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.CloseAccessLogs(context.Background())
+	handler := service.observeSite("disabled-site", store.AccessLogConfig{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	if err := service.DrainAccessLogs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.accessLogs.Search(context.Background(), "default", accesslog.Query{SiteID: "disabled-site", Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 0 {
+		t.Fatalf("site without adapter emitted access logs: %#v", result)
+	}
+	if metrics := service.metricsForSite("disabled-site").snapshot(); metrics.RequestCount != 1 {
+		t.Fatalf("metrics should remain enabled without access logs: %#v", metrics)
 	}
 }
 
@@ -87,7 +384,7 @@ func TestAccessLogSinkDoesNotBlockProxyResponses(t *testing.T) {
 	defer sink.unblock()
 	logger := zap.New(zapcore.NewCore(zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()), sink, zap.InfoLevel))
 	c := New(store.New(db), logger)
-	handler, err := c.proxyHandler(context.Background(), "async-log", store.Config{Upstreams: []store.Upstream{{URL: upstream.URL}}})
+	handler, err := c.proxyHandler(context.Background(), "async-log", store.Config{Upstreams: []store.Upstream{{URL: upstream.URL}}, AccessLog: store.AccessLogConfig{AdapterID: "test"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +433,7 @@ func TestAccessLoggingAndMetrics(t *testing.T) {
 	defer upstream.Close()
 	core, logs := observer.New(zap.InfoLevel)
 	c := New(store.New(db), zap.New(core))
-	handler, err := c.proxyHandler(context.Background(), "site-a", store.Config{Upstreams: []store.Upstream{{URL: upstream.URL}}, AccessLog: store.AccessLogConfig{IncludeBodies: true, MaxBodyBytes: 64}})
+	handler, err := c.proxyHandler(context.Background(), "site-a", store.Config{Upstreams: []store.Upstream{{URL: upstream.URL}}, AccessLog: store.AccessLogConfig{AdapterID: "test", IncludeBodies: true, MaxBodyBytes: 64}})
 	if err != nil {
 		t.Fatal(err)
 	}

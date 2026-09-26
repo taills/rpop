@@ -16,6 +16,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/rpop-project/rpop/internal/accesslog"
 	"github.com/rpop-project/rpop/internal/store"
 )
 
@@ -26,7 +27,8 @@ const (
 )
 
 type accessLogEvent struct {
-	fields                    []zap.Field
+	record                    accesslog.Record
+	adapterID                 string
 	requestBody, responseBody *bodyCapture
 	includeBodies             bool
 	bytes                     int64
@@ -54,12 +56,20 @@ func (c *Control) accessLogLoop() {
 			close(event.barrier)
 			continue
 		}
-		fields := event.fields
+		record := event.record
 		if event.includeBodies {
-			fields = append(fields, bodyFields("request", event.requestBody)...)
-			fields = append(fields, bodyFields("response", event.responseBody)...)
+			record.RequestBody, record.RequestBodyEncoding, record.RequestBodyTotalBytes, record.RequestBodyTruncated = capturedBody(event.requestBody)
+			record.ResponseBody, record.ResponseBodyEncoding, record.ResponseBodyTotalBytes, record.ResponseBodyTruncated = capturedBody(event.responseBody)
 		}
-		c.log.Info("site HTTP access", fields...)
+		if c.accessLogs != nil {
+			if err := c.accessLogs.Write(context.Background(), event.adapterID, record); err != nil {
+				c.log.Error("write access log", zap.String("site_id", record.SiteID), zap.Error(err))
+				c.metricsForSite(record.SiteID).dropLog()
+			}
+		} else {
+			fields := accessLogFields(record)
+			c.log.Info("site HTTP access", fields...)
+		}
 		c.queuedLogBytes.Add(-event.bytes)
 	}
 }
@@ -266,6 +276,8 @@ func (c *Control) metricsForSite(siteID string) *siteMetrics {
 }
 
 func (c *Control) observeSite(siteID string, settings store.AccessLogConfig, next http.Handler) http.Handler {
+	loggingEnabled := strings.TrimSpace(settings.AdapterID) != ""
+	includeBodies := loggingEnabled && settings.IncludeBodies
 	limit := settings.MaxBodyBytes
 	if limit == 0 || limit < -1 {
 		limit = defaultBodyLogLimit
@@ -273,7 +285,7 @@ func (c *Control) observeSite(siteID string, settings store.AccessLogConfig, nex
 	if limit > maxBodyLogLimit {
 		limit = maxBodyLogLimit
 	}
-	if !settings.IncludeBodies {
+	if !includeBodies {
 		limit = 0
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -282,7 +294,7 @@ func (c *Control) observeSite(siteID string, settings store.AccessLogConfig, nex
 		m.begin()
 		var requestBody *bodyCapture
 		var requestBytes atomic.Uint64
-		if settings.IncludeBodies {
+		if includeBodies {
 			requestBody = newBodyCapture(limit)
 			if r.Body != nil {
 				r.Body = &teeReadCloser{ReadCloser: r.Body, tee: requestBody}
@@ -291,7 +303,7 @@ func (c *Control) observeSite(siteID string, settings store.AccessLogConfig, nex
 			r.Body = &countingReadCloser{ReadCloser: r.Body, bytes: &requestBytes}
 		}
 		var responseBody *bodyCapture
-		if settings.IncludeBodies {
+		if includeBodies {
 			responseBody = newBodyCapture(limit)
 		}
 		rw := &observedResponseWriter{ResponseWriter: w, body: responseBody}
@@ -319,20 +331,22 @@ func (c *Control) observeSite(siteID string, settings store.AccessLogConfig, nex
 		if requestBody != nil {
 			requestBytesCount = uint64(requestBody.totalBytes())
 		}
-		requestBytesInt64 := int64(requestBytesCount)
 		m.finish(rw.status, requestBytesCount, rw.bytes, ttfb, elapsed, gotTTFB)
+		if !loggingEnabled {
+			return
+		}
 		requestHeaders := loggedHeaders(r.Header, settings.IncludeSensitiveHeaders)
 		responseHeaders := loggedHeaders(rw.Header(), settings.IncludeSensitiveHeaders)
-		fields := []zap.Field{zap.String("site_id", siteID), zap.String("method", r.Method), zap.String("path", r.URL.RequestURI()), zap.String("protocol", r.Proto), zap.Any("request_headers", requestHeaders), zap.Int("status", rw.status), zap.Any("response_headers", responseHeaders), zap.Int64("request_body_bytes", requestBytesInt64), zap.Uint64("response_body_bytes", rw.bytes), zap.Duration("ttfb", ttfb), zap.Duration("response_time", elapsed)}
+		record := accesslog.Record{Timestamp: started.UTC(), SiteID: siteID, Method: r.Method, Path: r.URL.RequestURI(), Protocol: r.Proto, RequestHeaders: requestHeaders, Status: rw.status, ResponseHeaders: responseHeaders, RequestBytes: requestBytesCount, ResponseBytes: rw.bytes, TTFBMillis: float64(ttfb) / float64(time.Millisecond), ResponseMillis: float64(elapsed) / float64(time.Millisecond)}
 		eventBytes := int64(2048 + headerBytes(requestHeaders) + headerBytes(responseHeaders))
-		if settings.IncludeBodies {
+		if includeBodies {
 			eventBytes += requestBody.storedBytes() + responseBody.storedBytes()
 		}
 		if !c.reserveAccessLog(eventBytes) {
 			m.dropLog()
 			return
 		}
-		event := accessLogEvent{fields: fields, requestBody: requestBody, responseBody: responseBody, includeBodies: settings.IncludeBodies, bytes: eventBytes}
+		event := accessLogEvent{record: record, adapterID: settings.AdapterID, requestBody: requestBody, responseBody: responseBody, includeBodies: includeBodies, bytes: eventBytes}
 		select {
 		case c.accessLogQueue <- event:
 		default:
@@ -397,7 +411,10 @@ func sensitiveHeader(key string) bool {
 	}
 	return false
 }
-func bodyFields(prefix string, b *bodyCapture) []zap.Field {
+func capturedBody(b *bodyCapture) (string, string, int64, bool) {
+	if b == nil {
+		return "", "", 0, false
+	}
 	data, total, truncated := b.snapshot()
 	encoding := "utf-8"
 	value := string(data)
@@ -405,7 +422,23 @@ func bodyFields(prefix string, b *bodyCapture) []zap.Field {
 		encoding = "base64"
 		value = base64.StdEncoding.EncodeToString(data)
 	}
-	return []zap.Field{zap.String(prefix+"_body", value), zap.String(prefix+"_body_encoding", encoding), zap.Int64(prefix+"_body_total_bytes", total), zap.Bool(prefix+"_body_truncated", truncated)}
+	return value, encoding, total, truncated
+}
+
+func accessLogFields(record accesslog.Record) []zap.Field {
+	fields := []zap.Field{
+		zap.String("site_id", record.SiteID), zap.String("method", record.Method), zap.String("path", record.Path), zap.String("protocol", record.Protocol),
+		zap.Any("request_headers", record.RequestHeaders), zap.Int("status", record.Status), zap.Any("response_headers", record.ResponseHeaders),
+		zap.Int64("request_body_bytes", int64(record.RequestBytes)), zap.Uint64("response_body_bytes", record.ResponseBytes),
+		zap.Duration("ttfb", time.Duration(record.TTFBMillis*float64(time.Millisecond))), zap.Duration("response_time", time.Duration(record.ResponseMillis*float64(time.Millisecond))),
+	}
+	if record.RequestBodyEncoding != "" || record.ResponseBodyEncoding != "" {
+		fields = append(fields,
+			zap.String("request_body", record.RequestBody), zap.String("request_body_encoding", record.RequestBodyEncoding), zap.Int64("request_body_total_bytes", record.RequestBodyTotalBytes), zap.Bool("request_body_truncated", record.RequestBodyTruncated),
+			zap.String("response_body", record.ResponseBody), zap.String("response_body_encoding", record.ResponseBodyEncoding), zap.Int64("response_body_total_bytes", record.ResponseBodyTotalBytes), zap.Bool("response_body_truncated", record.ResponseBodyTruncated),
+		)
+	}
+	return fields
 }
 
 var _ http.Flusher = (*observedResponseWriter)(nil)

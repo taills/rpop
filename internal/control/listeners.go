@@ -21,6 +21,9 @@ func (c *Control) startLocked(ctx context.Context, id string) error {
 	if err := validate(site); err != nil {
 		return err
 	}
+	if err := c.validateAccessLogAdapter(site); err != nil {
+		return err
+	}
 	if err := c.stopLocked(id); err != nil {
 		return err
 	}

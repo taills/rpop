@@ -59,7 +59,10 @@ func main() {
 		logger.Fatal("set database permissions", zap.Error(err))
 	}
 
-	service := control.New(store.New(db), logger)
+	service, err := control.NewWithLogDir(store.New(db), logger, *logDir)
+	if err != nil {
+		logger.Fatal("initialize access log adapter", zap.Error(err))
+	}
 	if err := service.StartAutoSites(context.Background()); err != nil {
 		logger.Fatal("load auto-start sites", zap.Error(err))
 	}
@@ -96,9 +99,9 @@ func main() {
 	}
 	cancelShutdown()
 	service.StopAll()
-	drainCtx, cancelDrain := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := service.DrainAccessLogs(drainCtx); err != nil {
-		logger.Warn("access log drain timed out", zap.Error(err))
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := service.CloseAccessLogs(drainCtx); err != nil {
+		logger.Warn("access log drain or close failed", zap.Error(err))
 	}
 	cancelDrain()
 }

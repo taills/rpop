@@ -10,6 +10,7 @@ import (
 )
 
 var ErrNotFound = errors.New("site not found")
+var ErrSettingNotFound = errors.New("setting not found")
 
 type Store struct{ db *sql.DB }
 
@@ -24,6 +25,9 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	CREATE TABLE IF NOT EXISTS site_secrets (
 		site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
 		name TEXT NOT NULL, value BLOB NOT NULL, PRIMARY KEY(site_id,name)
+	);
+	CREATE TABLE IF NOT EXISTS app_settings (
+		key TEXT PRIMARY KEY, value BLOB NOT NULL, updated_at TEXT NOT NULL
 	);`)
 	if err != nil {
 		return err
@@ -190,4 +194,28 @@ func (s *Store) Check(ctx context.Context) error {
 		return fmt.Errorf("sqlite ping: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) GetSetting(ctx context.Context, key string) ([]byte, error) {
+	var value []byte
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key=?`, key).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrSettingNotFound
+	}
+	return value, err
+}
+
+func (s *Store) SetSetting(ctx context.Context, key string, value []byte) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, key, value, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Store) SetSettingIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES(?,?,?)`, key, value, time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	return rows == 1, err
 }
