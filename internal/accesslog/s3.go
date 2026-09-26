@@ -129,33 +129,16 @@ func (s *s3Sink) request(ctx context.Context, method, key string, query url.Valu
 	payload := sha256.Sum256(body)
 	payloadHash := hex.EncodeToString(payload[:])
 	now := time.Now().UTC()
-	amzDate := now.Format("20060102T150405Z")
-	shortDate := now.Format("20060102")
 	request, err := http.NewRequestWithContext(ctx, method, u.String(), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	request.Header.Set("x-amz-content-sha256", payloadHash)
-	request.Header.Set("x-amz-date", amzDate)
+	request.Header.Set("x-amz-date", now.Format(awsDateTimeFormat))
 	if s.config.SessionToken != "" {
 		request.Header.Set("x-amz-security-token", s.config.SessionToken)
 	}
-	signedHeaders := "host;x-amz-content-sha256;x-amz-date"
-	canonicalHeaders := "host:" + u.Host + "\nx-amz-content-sha256:" + payloadHash + "\nx-amz-date:" + amzDate + "\n"
-	if s.config.SessionToken != "" {
-		signedHeaders += ";x-amz-security-token"
-		canonicalHeaders += "x-amz-security-token:" + s.config.SessionToken + "\n"
-	}
-	canonicalRequest := method + "\n" + u.EscapedPath() + "\n" + awsCanonicalQuery(query) + "\n" + canonicalHeaders + signedHeaders + "\n" + payloadHash
-	canonicalHash := sha256.Sum256([]byte(canonicalRequest))
-	scope := shortDate + "/" + s.config.Region + "/s3/aws4_request"
-	stringToSign := "AWS4-HMAC-SHA256\n" + amzDate + "\n" + scope + "\n" + hex.EncodeToString(canonicalHash[:])
-	kDate := hmacSHA256([]byte("AWS4"+s.config.SecretAccessKey), shortDate)
-	kRegion := hmacSHA256(kDate, s.config.Region)
-	kService := hmacSHA256(kRegion, "s3")
-	kSigning := hmacSHA256(kService, "aws4_request")
-	signature := hex.EncodeToString(hmacSHA256(kSigning, stringToSign))
-	request.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+s.config.AccessKeyID+"/"+scope+", SignedHeaders="+signedHeaders+", Signature="+signature)
+	request.Header.Set("Authorization", s3Authorization(s.config, method, u.EscapedPath(), awsCanonicalQuery(query), u.Host, payloadHash, now))
 	response, err := s.client.Do(request)
 	if err != nil {
 		return nil, err
@@ -170,6 +153,33 @@ func (s *s3Sink) request(ctx context.Context, method, key string, query url.Valu
 	}
 	return data, nil
 }
+
+const awsDateTimeFormat = "20060102T150405Z"
+
+// s3Authorization builds the SigV4 Authorization header for a request whose
+// x-amz-date, x-amz-content-sha256 and optional x-amz-security-token headers match now, payloadHash and config.
+func s3Authorization(config S3Config, method, escapedPath, canonicalQuery, host, payloadHash string, now time.Time) string {
+	now = now.UTC()
+	amzDate := now.Format(awsDateTimeFormat)
+	shortDate := now.Format("20060102")
+	signedHeaders := "host;x-amz-content-sha256;x-amz-date"
+	canonicalHeaders := "host:" + host + "\nx-amz-content-sha256:" + payloadHash + "\nx-amz-date:" + amzDate + "\n"
+	if config.SessionToken != "" {
+		signedHeaders += ";x-amz-security-token"
+		canonicalHeaders += "x-amz-security-token:" + config.SessionToken + "\n"
+	}
+	canonicalRequest := method + "\n" + escapedPath + "\n" + canonicalQuery + "\n" + canonicalHeaders + "\n" + signedHeaders + "\n" + payloadHash
+	canonicalHash := sha256.Sum256([]byte(canonicalRequest))
+	scope := shortDate + "/" + config.Region + "/s3/aws4_request"
+	stringToSign := "AWS4-HMAC-SHA256\n" + amzDate + "\n" + scope + "\n" + hex.EncodeToString(canonicalHash[:])
+	kDate := hmacSHA256([]byte("AWS4"+config.SecretAccessKey), shortDate)
+	kRegion := hmacSHA256(kDate, config.Region)
+	kService := hmacSHA256(kRegion, "s3")
+	kSigning := hmacSHA256(kService, "aws4_request")
+	signature := hex.EncodeToString(hmacSHA256(kSigning, stringToSign))
+	return "AWS4-HMAC-SHA256 Credential=" + config.AccessKeyID + "/" + scope + ", SignedHeaders=" + signedHeaders + ", Signature=" + signature
+}
+
 func hmacSHA256(key []byte, value string) []byte {
 	mac := hmac.New(sha256.New, key)
 	_, _ = mac.Write([]byte(value))
