@@ -181,7 +181,7 @@ func (s *elasticsearchSink) Search(ctx context.Context, query Query) (SearchResu
 	if query.Text != "" {
 		boolQuery["must"] = []any{map[string]any{"multi_match": map[string]any{
 			"query":  query.Text,
-			"fields": []string{"path", "siteId", "method", "requestBody", "responseBody", "requestHeaders.*", "responseHeaders.*"},
+			"fields": []string{"path", "siteId", "method", "clientIp", "forwardedFor", "host", "referer", "userAgent", "upstream", "requestBody", "responseBody", "requestHeaders.*", "responseHeaders.*"},
 		}}}
 	}
 	searchBody, err := json.Marshal(map[string]any{

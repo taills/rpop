@@ -306,7 +306,7 @@ func TestLoggingConfigAndSearchAPI(t *testing.T) {
 	if err := service.store.Save(context.Background(), store.Site{ID: "search-site", Name: "Search site", Config: store.Config{AccessLog: store.AccessLogConfig{AdapterID: "default"}}}); err != nil {
 		t.Fatal(err)
 	}
-	observed := service.observeSite("search-site", store.AccessLogConfig{AdapterID: "default"}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	observed := service.observeSite("search-site", "", store.AccessLogConfig{AdapterID: "default"}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Result", "ok")
 		w.WriteHeader(http.StatusAccepted)
 	}))
@@ -488,7 +488,7 @@ func TestAccessLogsRemainDisabledWithoutSiteAdapterSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer service.CloseAccessLogs(context.Background())
-	handler := service.observeSite("disabled-site", store.AccessLogConfig{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := service.observeSite("disabled-site", "", store.AccessLogConfig{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
@@ -577,6 +577,10 @@ func TestAccessLoggingAndMetrics(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader("payload"))
 	req.Header.Set("Authorization", "secret-token")
+	req.Header.Set("User-Agent", "rpop-test/1.0")
+	req.Header.Set("Referer", "https://referrer.example/page")
+	req.Header.Add("X-Forwarded-For", "203.0.113.7")
+	req.Header.Add("X-Forwarded-For", "198.51.100.2")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, req)
 	if err := c.DrainAccessLogs(context.Background()); err != nil {
@@ -599,6 +603,30 @@ func TestAccessLoggingAndMetrics(t *testing.T) {
 	}
 	if !strings.Contains(strings.TrimSpace(string(mustJSON(t, ctx["request_headers"]))), "REDACTED") {
 		t.Fatalf("authorization header was not redacted: %#v", ctx["request_headers"])
+	}
+	// httptest.NewRequest uses RemoteAddr 192.0.2.1:1234 and Host example.com.
+	want := map[string]any{
+		"client_ip": "192.0.2.1", "client_port": int64(1234), "forwarded_for": "203.0.113.7, 198.51.100.2",
+		"scheme": "http", "tls_version": "", "host": "example.com",
+		"referer": "https://referrer.example/page", "user_agent": "rpop-test/1.0", "upstream": upstream.URL,
+	}
+	for key, value := range want {
+		if ctx[key] != value {
+			t.Fatalf("access log %s=%#v, want %#v", key, ctx[key], value)
+		}
+	}
+}
+
+func TestRequestRecordParsesTLSAndIPv6Client(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "https://secure.example/a?b=c", nil)
+	req.RemoteAddr = "[2001:db8::1]:443"
+	record := requestRecord(req, "site-tls", "https://backend.example", time.Unix(0, 0))
+	if record.ClientIP != "2001:db8::1" || record.ClientPort != 443 || record.Scheme != "https" || record.TLSVersion == "" || record.Host != "secure.example" || record.Path != "/a?b=c" {
+		t.Fatalf("unexpected TLS record: %#v", record)
+	}
+	req.RemoteAddr = "@unix"
+	if ip, port := splitRemoteAddr(req.RemoteAddr); ip != "@unix" || port != 0 {
+		t.Fatalf("unparsable remote address = %q, %d", ip, port)
 	}
 }
 

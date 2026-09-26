@@ -11,9 +11,18 @@ import (
 type Record struct {
 	Timestamp              time.Time           `json:"timestamp"`
 	SiteID                 string              `json:"siteId"`
+	ClientIP               string              `json:"clientIp,omitempty"`
+	ClientPort             int                 `json:"clientPort,omitempty"`
+	ForwardedFor           string              `json:"forwardedFor,omitempty"`
+	Scheme                 string              `json:"scheme,omitempty"`
+	TLSVersion             string              `json:"tlsVersion,omitempty"`
+	Host                   string              `json:"host,omitempty"`
 	Method                 string              `json:"method"`
 	Path                   string              `json:"path"`
 	Protocol               string              `json:"protocol"`
+	Referer                string              `json:"referer,omitempty"`
+	UserAgent              string              `json:"userAgent,omitempty"`
+	Upstream               string              `json:"upstream,omitempty"`
 	RequestHeaders         map[string][]string `json:"requestHeaders"`
 	Status                 int                 `json:"status"`
 	ResponseHeaders        map[string][]string `json:"responseHeaders"`

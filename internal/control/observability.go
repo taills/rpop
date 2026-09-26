@@ -3,11 +3,13 @@ package control
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -275,7 +277,8 @@ func (c *Control) metricsForSite(siteID string) *siteMetrics {
 	return value.(*siteMetrics)
 }
 
-func (c *Control) observeSite(siteID string, settings store.AccessLogConfig, next http.Handler) http.Handler {
+// observeSite records metrics and access logs for a site; upstream is the redacted target URL written to each record.
+func (c *Control) observeSite(siteID, upstream string, settings store.AccessLogConfig, next http.Handler) http.Handler {
 	loggingEnabled := strings.TrimSpace(settings.AdapterID) != ""
 	includeBodies := loggingEnabled && settings.IncludeBodies
 	limit := settings.MaxBodyBytes
@@ -337,7 +340,10 @@ func (c *Control) observeSite(siteID string, settings store.AccessLogConfig, nex
 		}
 		requestHeaders := loggedHeaders(r.Header, settings.IncludeSensitiveHeaders)
 		responseHeaders := loggedHeaders(rw.Header(), settings.IncludeSensitiveHeaders)
-		record := accesslog.Record{Timestamp: started.UTC(), SiteID: siteID, Method: r.Method, Path: r.URL.RequestURI(), Protocol: r.Proto, RequestHeaders: requestHeaders, Status: rw.status, ResponseHeaders: responseHeaders, RequestBytes: requestBytesCount, ResponseBytes: rw.bytes, TTFBMillis: float64(ttfb) / float64(time.Millisecond), ResponseMillis: float64(elapsed) / float64(time.Millisecond)}
+		record := requestRecord(r, siteID, upstream, started)
+		record.RequestHeaders, record.ResponseHeaders = requestHeaders, responseHeaders
+		record.Status, record.RequestBytes, record.ResponseBytes = rw.status, requestBytesCount, rw.bytes
+		record.TTFBMillis, record.ResponseMillis = float64(ttfb)/float64(time.Millisecond), float64(elapsed)/float64(time.Millisecond)
 		eventBytes := int64(2048 + headerBytes(requestHeaders) + headerBytes(responseHeaders))
 		if includeBodies {
 			eventBytes += requestBody.storedBytes() + responseBody.storedBytes()
@@ -354,6 +360,35 @@ func (c *Control) observeSite(siteID string, settings store.AccessLogConfig, nex
 			m.dropLog()
 		}
 	})
+}
+
+// requestRecord fills the client, connection, and request-line fields of a standard (combined-format) access log.
+// ClientIP is the TCP peer; X-Forwarded-For is kept verbatim because it is client-controlled unless a trusted proxy sets it.
+func requestRecord(r *http.Request, siteID, upstream string, started time.Time) accesslog.Record {
+	clientIP, clientPort := splitRemoteAddr(r.RemoteAddr)
+	scheme, tlsVersion := "http", ""
+	if r.TLS != nil {
+		scheme, tlsVersion = "https", tls.VersionName(r.TLS.Version)
+	}
+	return accesslog.Record{
+		Timestamp: started.UTC(), SiteID: siteID,
+		ClientIP: clientIP, ClientPort: clientPort, ForwardedFor: strings.Join(r.Header.Values("X-Forwarded-For"), ", "),
+		Scheme: scheme, TLSVersion: tlsVersion, Host: r.Host,
+		Method: r.Method, Path: r.URL.RequestURI(), Protocol: r.Proto,
+		Referer: r.Referer(), UserAgent: r.UserAgent(), Upstream: upstream,
+	}
+}
+
+func splitRemoteAddr(addr string) (string, int) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr, 0
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil {
+		return host, 0
+	}
+	return host, portNumber
 }
 
 type teeReadCloser struct {
@@ -427,7 +462,10 @@ func capturedBody(b *bodyCapture) (string, string, int64, bool) {
 
 func accessLogFields(record accesslog.Record) []zap.Field {
 	fields := []zap.Field{
-		zap.String("site_id", record.SiteID), zap.String("method", record.Method), zap.String("path", record.Path), zap.String("protocol", record.Protocol),
+		zap.String("site_id", record.SiteID), zap.String("client_ip", record.ClientIP), zap.Int("client_port", record.ClientPort), zap.String("forwarded_for", record.ForwardedFor),
+		zap.String("scheme", record.Scheme), zap.String("tls_version", record.TLSVersion), zap.String("host", record.Host),
+		zap.String("method", record.Method), zap.String("path", record.Path), zap.String("protocol", record.Protocol),
+		zap.String("referer", record.Referer), zap.String("user_agent", record.UserAgent), zap.String("upstream", record.Upstream),
 		zap.Any("request_headers", record.RequestHeaders), zap.Int("status", record.Status), zap.Any("response_headers", record.ResponseHeaders),
 		zap.Int64("request_body_bytes", int64(record.RequestBytes)), zap.Uint64("response_body_bytes", record.ResponseBytes),
 		zap.Duration("ttfb", time.Duration(record.TTFBMillis*float64(time.Millisecond))), zap.Duration("response_time", time.Duration(record.ResponseMillis*float64(time.Millisecond))),

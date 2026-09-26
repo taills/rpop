@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { clientAddress, forwardedFor, protocolLabel, referer, userAgent } from '../logRecord.js'
 
 export function bodyText(body, encoding) {
   if (!body) return '(未记录或为空)'
@@ -70,10 +71,17 @@ export default function LogDetailDrawer({ record, position, total, onPrevious, o
       <dl className="log-drawer-meta">
         <div><dt>时间</dt><dd>{new Date(record.timestamp).toLocaleString()}</dd></div>
         <div><dt>站点</dt><dd>{record.siteId}</dd></div>
+        <div><dt>客户端</dt><dd title={clientAddress(record)}>{clientAddress(record) || '-'}</dd></div>
+        <div><dt>Host</dt><dd title={record.host}>{record.host || '-'}</dd></div>
+        <div><dt>协议</dt><dd title={protocolLabel(record)}>{protocolLabel(record) || '-'}</dd></div>
         <div><dt>TTFB</dt><dd>{millis(record.ttfbMillis)}</dd></div>
         <div><dt>完整响应</dt><dd>{millis(record.responseMillis)}</dd></div>
         <div><dt>请求大小</dt><dd>{request.totalBytes || 0} B</dd></div>
         <div><dt>响应大小</dt><dd>{response.totalBytes || 0} B</dd></div>
+        <div className="wide"><dt>X-Forwarded-For</dt><dd className="wrap">{forwardedFor(record) || '-'}</dd></div>
+        <div className="wide"><dt>上游</dt><dd className="wrap">{record.upstream || '-'}</dd></div>
+        <div className="wide"><dt>Referer</dt><dd className="wrap">{referer(record) || '-'}</dd></div>
+        <div className="wide"><dt>User-Agent</dt><dd className="wrap">{userAgent(record) || '-'}</dd></div>
       </dl>
       <div className="log-drawer-tabs" role="tablist" aria-label="请求与响应">
         <button type="button" role="tab" aria-selected={tab === 'request'} onClick={() => setTab('request')}>请求</button>

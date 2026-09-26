@@ -403,7 +403,7 @@ func (c *Control) proxyHandler(ctx context.Context, id string, cfg store.Config)
 			pr.Out.Host = u.Host
 		},
 	}
-	return c.observeSite(id, cfg.AccessLog, proxy), nil
+	return c.observeSite(id, u.Redacted(), cfg.AccessLog, proxy), nil
 }
 func validate(x store.Site) error {
 	if strings.TrimSpace(x.ID) == "" || strings.TrimSpace(x.Name) == "" {
