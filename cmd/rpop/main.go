@@ -20,11 +20,15 @@ import (
 
 	"github.com/rpop-project/rpop/internal/control"
 	"github.com/rpop-project/rpop/internal/store"
+	"github.com/rpop-project/rpop/web"
 )
+
+// Version is set at build time with -ldflags "-X main.Version=...".
+var Version = "dev"
 
 func main() {
 	serverAddr := flag.String("addr", "127.0.0.1:8080", "control API listen address")
-	webDir := flag.String("web-dir", "web/dist", "frontend build directory")
+	webDir := flag.String("web-dir", "", "serve the frontend from this directory instead of the embedded build")
 	dbPath := flag.String("db", "data/rpop.db", "SQLite database path")
 	logDir := flag.String("log-dir", "logs", "directory for application logs")
 	flag.Parse()
@@ -67,19 +71,18 @@ func main() {
 		logger.Fatal("load auto-start sites", zap.Error(err))
 	}
 	apiHandler := service.Handler()
-	staticHandler := http.FileServer(http.Dir(*webDir))
+	frontend := web.Dist()
+	if *webDir != "" {
+		frontend = os.DirFS(*webDir)
+	}
+	if _, err := fs.Stat(frontend, "index.html"); err != nil {
+		logger.Warn("frontend is not built; the admin console will be unavailable", zap.String("web_dir", *webDir))
+	}
+	staticHandler := frontendHandler(frontend)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			apiHandler.ServeHTTP(w, r)
 			return
-		}
-		if r.URL.Path != "/" {
-			rel := strings.TrimPrefix(r.URL.Path, "/")
-			if !fs.ValidPath(rel) {
-				r.URL.Path = "/"
-			} else if _, err := os.Stat(filepath.Join(*webDir, filepath.FromSlash(rel))); err != nil {
-				r.URL.Path = "/"
-			}
 		}
 		staticHandler.ServeHTTP(w, r)
 	})
@@ -87,7 +90,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
-		logger.Info("control API listening", zap.String("addr", *serverAddr))
+		logger.Info("control API listening", zap.String("addr", *serverAddr), zap.String("version", Version))
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Fatal("serve control API", zap.Error(err))
 		}

@@ -13,7 +13,9 @@
 
 # Frontend
 web/node_modules/
-web/dist/
+# web/dist is embedded into the binary; keep the placeholder so go:embed compiles on a fresh clone.
+web/dist/*
+!web/dist/.gitkeep
 
 # Editors and OS
 .DS_Store

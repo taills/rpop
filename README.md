@@ -9,10 +9,25 @@ Requirements: Go 1.26+ (SQLite driver uses CGO) and Node.js/npm.
 ```sh
 cd web && npm install && npm run build
 cd ..
-go run ./cmd/rpop -addr 127.0.0.1:8080 -db data/rpop.db -log-dir logs -web-dir web/dist
+go run ./cmd/rpop -addr 127.0.0.1:8080 -db data/rpop.db -log-dir logs
 ```
 
+The frontend build in `web/dist` is embedded into the binary with `go:embed`, so a single `rpop` executable serves both the API and the console; rebuild the binary after `npm run build`. Pass `-web-dir web/dist` to serve the console from disk instead (useful while iterating on the frontend). Without a frontend build only a placeholder is embedded and the console responds with 503.
+
 The React development server runs on port 7106 and forwards `/api` to the Go service on port 8080. The API defaults to loopback. On first visit, set the administrator password in the Web UI (at least 12 characters); all management APIs require an authenticated session. Keep the admin API behind loopback or a trusted HTTPS reverse proxy.
+
+## Container image and CI
+
+`Dockerfile` builds the console with Node, embeds it into a statically linked CGO binary (musl), and ships it on alpine with `Asia/Shanghai` as the container time zone. The image listens on `0.0.0.0:8080`, stores SQLite in `/app/data` and logs in `/app/logs` (mount both as volumes), and uses the unauthenticated `/api/health` endpoint for its health check.
+
+```sh
+docker build --build-arg VERSION=dev -t rpop .
+docker run -d --name rpop -p 127.0.0.1:8080:8080 -v rpop-data:/app/data -v rpop-logs:/app/logs rpop
+```
+
+Publish the admin port only on loopback or behind a trusted HTTPS reverse proxy. Site listeners use ports configured in the console, so publish them as well (or run with `--network host`) and set each site's listen address to `0.0.0.0` inside the container.
+
+`.gitlab-ci.yml` builds natively on the runner's architecture and pushes to the private registry on `main`, `dev`, and tags (tags get only the version tag; branches also get `latest`); it does not deploy. Required CI/CD variables: `DOCKER_REGISTRY_HOST`, `DOCKER_REGISTRY_USERNAME`, `DOCKER_REGISTRY_PASSWORD` (masked), and `DOCKER_REGISTRY_MIRROR` (base-image mirror prefix, which must provide `library/node:22-alpine`, `library/golang:1.26-alpine`, and `library/alpine:latest`).
 
 ## Capabilities in this baseline
 

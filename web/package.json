@@ -6,7 +6,7 @@
   "description": "rpop — Reverse Proxy over Proxy 管理控制台",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && node -e \"require('node:fs').writeFileSync('dist/.gitkeep', '')\"",
     "preview": "vite preview"
   },
   "dependencies": {
