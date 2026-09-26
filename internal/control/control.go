@@ -48,10 +48,12 @@ type running struct {
 	route    *siteRuntime
 }
 type siteRuntime struct {
-	id          string
-	handler     http.Handler
-	hostnames   []string
-	certificate *tls.Certificate
+	id        string
+	handler   http.Handler
+	hostnames []string
+	// certificateID names the system server certificate in use; certificate is swapped when it is renewed.
+	certificateID string
+	certificate   atomic.Pointer[tls.Certificate]
 }
 type listenerGroup struct {
 	mu           sync.RWMutex
@@ -132,7 +134,7 @@ func (c *Control) yamlConfig(w http.ResponseWriter, r *http.Request) {
 				writeError(w, fmt.Errorf("site %q: %w", site.ID, err))
 				return
 			}
-			if err := c.validateRootCertificateReferences(site); err != nil {
+			if err := c.validateSystemCertificateReferences(site); err != nil {
 				writeError(w, fmt.Errorf("site %q: %w", site.ID, err))
 				return
 			}
@@ -187,7 +189,7 @@ func (c *Control) sites(w http.ResponseWriter, r *http.Request) {
 		}
 		c.opMu.Lock()
 		defer c.opMu.Unlock()
-		if err := c.validateRootCertificateReferences(x); err != nil {
+		if err := c.validateSystemCertificateReferences(x); err != nil {
 			writeError(w, err)
 			return
 		}
@@ -240,7 +242,7 @@ func (c *Control) site(w http.ResponseWriter, r *http.Request) {
 		}
 		c.opMu.Lock()
 		defer c.opMu.Unlock()
-		if err := c.validateRootCertificateReferences(x); err != nil {
+		if err := c.validateSystemCertificateReferences(x); err != nil {
 			writeError(w, err)
 			return
 		}
@@ -386,7 +388,11 @@ func (c *Control) proxyHandler(ctx context.Context, id string, cfg store.Config)
 	if e != nil {
 		return nil, e
 	}
-	transport, e := store.BuildTransport(ctx, c.store, id, cfg.Upstreams[0], systemRoots)
+	systemClientCertificate, e := c.selectedClientCertificate(cfg.Upstreams[0].ClientCertificateID)
+	if e != nil {
+		return nil, e
+	}
+	transport, e := store.BuildTransport(ctx, c.store, id, cfg.Upstreams[0], systemRoots, systemClientCertificate)
 	if e != nil {
 		return nil, e
 	}
@@ -409,6 +415,12 @@ func validate(x store.Site) error {
 	if x.Config.ListenPort < 1 || x.Config.ListenPort > 65535 {
 		return fmt.Errorf("listenPort must be 1-65535")
 	}
+	if x.Config.CertificateID != "" && !x.Config.TLS {
+		return fmt.Errorf("certificateId requires tls to be enabled")
+	}
+	if x.Config.CertificateID != "" && (x.Config.CertificateSecret != "" || x.Config.PrivateKeySecret != "") {
+		return fmt.Errorf("cannot use both a system server certificate and site certificate secrets")
+	}
 	if x.Config.AccessLog.MaxBodyBytes < -1 {
 		return fmt.Errorf("accessLog.maxBodyBytes must be -1 or a non-negative byte limit")
 	}
@@ -425,6 +437,12 @@ func validate(x store.Site) error {
 		}
 		if u.ClientCertSecret != "" && parsed.Scheme != "https" {
 			return fmt.Errorf("upstreams[%d] client certificates require an HTTPS URL", index)
+		}
+		if u.ClientCertificateID != "" && parsed.Scheme != "https" {
+			return fmt.Errorf("upstreams[%d] system client certificates require an HTTPS URL", index)
+		}
+		if u.ClientCertificateID != "" && (u.ClientCertSecret != "" || u.ClientKeySecret != "") {
+			return fmt.Errorf("upstreams[%d] cannot use both a system client certificate and site client certificate secrets", index)
 		}
 		if len(u.RootCertificateIDs) > 0 && parsed.Scheme != "https" {
 			return fmt.Errorf("upstreams[%d] system root certificates require an HTTPS URL", index)

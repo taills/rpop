@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func BuildTransport(ctx context.Context, s *Store, siteID string, u Upstream, systemRootCertificates []string) (*http.Transport, error) {
+func BuildTransport(ctx context.Context, s *Store, siteID string, u Upstream, systemRootCertificates []string, systemClientCertificate *tls.Certificate) (*http.Transport, error) {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.Proxy = nil
 	t.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: u.ServerName, InsecureSkipVerify: u.InsecureSkipVerify}
@@ -38,7 +38,12 @@ func BuildTransport(ctx context.Context, s *Store, siteID string, u Upstream, sy
 		}
 		t.TLSClientConfig.RootCAs = pool
 	}
-	if u.ClientCertSecret != "" || u.ClientKeySecret != "" {
+	if systemClientCertificate != nil {
+		if u.ClientCertSecret != "" || u.ClientKeySecret != "" {
+			return nil, fmt.Errorf("upstream cannot use both a system client certificate and site client certificate secrets")
+		}
+		t.TLSClientConfig.Certificates = []tls.Certificate{*systemClientCertificate}
+	} else if u.ClientCertSecret != "" || u.ClientKeySecret != "" {
 		if u.ClientCertSecret == "" || u.ClientKeySecret == "" {
 			return nil, fmt.Errorf("both upstream client certificate and key are required")
 		}

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 	_ "time/tzdata"
@@ -31,12 +32,14 @@ type systemRootCertificate struct {
 }
 
 type systemSettings struct {
-	TimeZone         string                  `json:"timeZone"`
-	RootCertificates []systemRootCertificate `json:"rootCertificates"`
+	TimeZone           string                    `json:"timeZone"`
+	RootCertificates   []systemRootCertificate   `json:"rootCertificates"`
+	ClientCertificates []systemClientCertificate `json:"clientCertificates"`
+	ServerCertificates []systemServerCertificate `json:"serverCertificates"`
 }
 
 func defaultSystemSettings() systemSettings {
-	return systemSettings{TimeZone: "UTC", RootCertificates: []systemRootCertificate{}}
+	return systemSettings{TimeZone: "UTC", RootCertificates: []systemRootCertificate{}, ClientCertificates: []systemClientCertificate{}, ServerCertificates: []systemServerCertificate{}}
 }
 
 func normalizeSystemSettings(settings systemSettings) (systemSettings, *time.Location, error) {
@@ -52,6 +55,14 @@ func normalizeSystemSettings(settings systemSettings) (systemSettings, *time.Loc
 		return systemSettings{}, nil, fmt.Errorf("timeZone must be UTC or a valid IANA timezone: %w", err)
 	}
 	settings.RootCertificates, err = normalizeSystemRootCertificates(settings.RootCertificates)
+	if err != nil {
+		return systemSettings{}, nil, err
+	}
+	settings.ClientCertificates, err = normalizeSystemClientCertificates(settings.ClientCertificates)
+	if err != nil {
+		return systemSettings{}, nil, err
+	}
+	settings.ServerCertificates, err = normalizeSystemServerCertificates(settings.ServerCertificates)
 	if err != nil {
 		return systemSettings{}, nil, err
 	}
@@ -147,29 +158,53 @@ func (c *Control) selectedRootCertificates(ids []string) ([]string, error) {
 	return selected, nil
 }
 
-func (c *Control) validateRootCertificateReferences(site store.Site) error {
+func (c *Control) validateSystemCertificateReferences(site store.Site) error {
+	if _, err := c.selectedServerCertificate(site.Config.CertificateID); err != nil {
+		return err
+	}
 	for index, upstream := range site.Config.Upstreams {
 		if _, err := c.selectedRootCertificates(upstream.RootCertificateIDs); err != nil {
+			return fmt.Errorf("upstreams[%d]: %w", index, err)
+		}
+		if _, err := c.selectedClientCertificate(upstream.ClientCertificateID); err != nil {
 			return fmt.Errorf("upstreams[%d]: %w", index, err)
 		}
 	}
 	return nil
 }
 
-func validateRootCertificateReferencesAgainstSettings(ctx context.Context, s *store.Store, settings systemSettings) error {
+func validateCertificateReferencesAgainstSettings(ctx context.Context, s *store.Store, settings systemSettings) error {
 	sites, err := s.List(ctx)
 	if err != nil {
 		return err
 	}
-	available := make(map[string]struct{}, len(settings.RootCertificates))
+	availableRoots := make(map[string]struct{}, len(settings.RootCertificates))
 	for _, certificate := range settings.RootCertificates {
-		available[certificate.ID] = struct{}{}
+		availableRoots[certificate.ID] = struct{}{}
+	}
+	availableClients := make(map[string]struct{}, len(settings.ClientCertificates))
+	for _, certificate := range settings.ClientCertificates {
+		availableClients[certificate.ID] = struct{}{}
+	}
+	availableServers := make(map[string]struct{}, len(settings.ServerCertificates))
+	for _, certificate := range settings.ServerCertificates {
+		availableServers[certificate.ID] = struct{}{}
 	}
 	for _, site := range sites {
+		if id := site.Config.CertificateID; id != "" {
+			if _, ok := availableServers[id]; !ok {
+				return fmt.Errorf("cannot remove system server certificate %q; it is selected by site %q", id, site.ID)
+			}
+		}
 		for upstreamIndex, upstream := range site.Config.Upstreams {
 			for _, id := range upstream.RootCertificateIDs {
-				if _, ok := available[id]; !ok {
+				if _, ok := availableRoots[id]; !ok {
 					return fmt.Errorf("cannot remove system root certificate %q; it is selected by site %q upstream %d", id, site.ID, upstreamIndex+1)
+				}
+			}
+			if id := upstream.ClientCertificateID; id != "" {
+				if _, ok := availableClients[id]; !ok {
+					return fmt.Errorf("cannot remove system client certificate %q; it is selected by site %q upstream %d", id, site.ID, upstreamIndex+1)
 				}
 			}
 		}
@@ -181,15 +216,20 @@ func (c *Control) systemSettingsAPI(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		c.systemSettingsMu.RLock()
-		settings := c.systemSettings
-		settings.RootCertificates = append([]systemRootCertificate(nil), settings.RootCertificates...)
+		view := systemSettingsView(c.systemSettings)
 		c.systemSettingsMu.RUnlock()
-		writeJSON(w, http.StatusOK, settings)
+		writeJSON(w, http.StatusOK, view)
 	case http.MethodPut:
 		var requested systemSettings
 		if !decode(w, r, &requested) {
 			return
 		}
+		c.opMu.Lock()
+		defer c.opMu.Unlock()
+		c.systemSettingsMu.RLock()
+		requested.ClientCertificates = mergeKeyedCertificateKeys(requested.ClientCertificates, c.systemSettings.ClientCertificates)
+		requested.ServerCertificates = mergeKeyedCertificateKeys(requested.ServerCertificates, c.systemSettings.ServerCertificates)
+		c.systemSettingsMu.RUnlock()
 		settings, location, err := normalizeSystemSettings(requested)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, apiError{err.Error()})
@@ -200,23 +240,26 @@ func (c *Control) systemSettingsAPI(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
-		c.opMu.Lock()
-		defer c.opMu.Unlock()
-		if err := validateRootCertificateReferencesAgainstSettings(r.Context(), c.store, settings); err != nil {
+		if err := validateCertificateReferencesAgainstSettings(r.Context(), c.store, settings); err != nil {
 			writeJSON(w, http.StatusBadRequest, apiError{err.Error()})
 			return
 		}
 		c.systemSettingsMu.Lock()
-		defer c.systemSettingsMu.Unlock()
 		if err := c.store.SetSetting(r.Context(), systemSettingsSettingKey, data); err != nil {
+			c.systemSettingsMu.Unlock()
 			writeError(w, err)
 			return
 		}
 		if c.accessLogs != nil {
 			c.accessLogs.SetTimeZone(location)
 		}
+		serverCertificatesChanged := !slices.Equal(c.systemSettings.ServerCertificates, settings.ServerCertificates)
 		c.systemSettings = settings
-		writeJSON(w, http.StatusOK, settings)
+		c.systemSettingsMu.Unlock()
+		if serverCertificatesChanged {
+			c.refreshSharedServerCertificates()
+		}
+		writeJSON(w, http.StatusOK, systemSettingsView(settings))
 	default:
 		w.Header().Set("Allow", "GET, PUT")
 		writeJSON(w, http.StatusMethodNotAllowed, apiError{"method not allowed"})

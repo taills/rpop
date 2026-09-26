@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import TimezoneSelect from './TimezoneSelect.jsx'
+import KeyedCertificateManager, { CLIENT_CERTIFICATE_KIND, SERVER_CERTIFICATE_KIND } from './KeyedCertificateManager.jsx'
 
 function cleanRootCertificate(certificate) {
   return {
@@ -13,6 +14,8 @@ export default function SystemSettings({ api, onChange }) {
   const [timeZone, setTimeZone] = useState('UTC')
   const [savedTimeZone, setSavedTimeZone] = useState('UTC')
   const [rootCertificates, setRootCertificates] = useState([])
+  const [clientCertificates, setClientCertificates] = useState([])
+  const [serverCertificates, setServerCertificates] = useState([])
   const [loading, setLoading] = useState(true)
   const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [activeTab, setActiveTab] = useState('general')
@@ -38,13 +41,20 @@ export default function SystemSettings({ api, onChange }) {
         const zone = settings.timeZone || 'UTC'
         setTimeZone(zone)
         setSavedTimeZone(zone)
-        setRootCertificates(Array.isArray(settings.rootCertificates) ? settings.rootCertificates : [])
+        applyCertificateLists(settings)
         setSettingsLoaded(true)
       })
       .catch(err => setSettingsError(err.message))
       .finally(() => setLoading(false))
   }, [api])
 
+  function applyCertificateLists(settings) {
+    setRootCertificates(Array.isArray(settings.rootCertificates) ? settings.rootCertificates : [])
+    setClientCertificates(Array.isArray(settings.clientCertificates) ? settings.clientCertificates : [])
+    setServerCertificates(Array.isArray(settings.serverCertificates) ? settings.serverCertificates : [])
+  }
+
+  // clientCertificates/serverCertificates are omitted unless they change: the server keeps the stored lists and their write-only private keys.
   async function saveTimeZone(event) {
     event.preventDefault()
     setSavingTimeZone(true)
@@ -58,7 +68,7 @@ export default function SystemSettings({ api, onChange }) {
       const zone = settings.timeZone || 'UTC'
       setTimeZone(zone)
       setSavedTimeZone(zone)
-      setRootCertificates(Array.isArray(settings.rootCertificates) ? settings.rootCertificates : [])
+      applyCertificateLists(settings)
       setSettingsMessage('系统时区已保存。')
       onChange?.()
     } catch (err) {
@@ -80,7 +90,7 @@ export default function SystemSettings({ api, onChange }) {
           rootCertificates: nextCertificates.map(cleanRootCertificate),
         }),
       })
-      setRootCertificates(Array.isArray(settings.rootCertificates) ? settings.rootCertificates : [])
+      applyCertificateLists(settings)
       setSavedTimeZone(settings.timeZone || 'UTC')
       setSettingsLoaded(true)
       setCertificateDraft(null)
@@ -93,6 +103,20 @@ export default function SystemSettings({ api, onChange }) {
     } finally {
       setSavingCertificate(false)
     }
+  }
+
+  async function persistKeyedCertificates(field, nextCertificates) {
+    const settings = await api('/settings', {
+      method: 'PUT',
+      body: JSON.stringify({
+        timeZone: savedTimeZone,
+        rootCertificates: rootCertificates.map(cleanRootCertificate),
+        [field]: nextCertificates,
+      }),
+    })
+    applyCertificateLists(settings)
+    setSavedTimeZone(settings.timeZone || 'UTC')
+    onChange?.()
   }
 
   async function saveRootCertificate(event) {
@@ -160,12 +184,14 @@ export default function SystemSettings({ api, onChange }) {
     <header className="system-settings-heading">
       <div className="eyebrow">SYSTEM</div>
       <h2>系统设置</h2>
-      <p>管理系统时区、上游 HTTPS CA 根证书和管理员密码。</p>
+      <p>管理系统时区、站点 HTTPS 证书、上游 HTTPS CA 根证书、mTLS Client 证书和管理员密码。</p>
     </header>
 
     <div className="system-settings-tabs" role="tablist" aria-label="系统设置分类">
       <button type="button" role="tab" id="system-settings-tab-general" aria-selected={activeTab === 'general'} aria-controls="system-settings-panel-general" onClick={() => setActiveTab('general')}>常规设置</button>
+      <button type="button" role="tab" id="system-settings-tab-server" aria-selected={activeTab === 'server'} aria-controls="system-settings-panel-server" onClick={() => setActiveTab('server')}>站点 HTTPS 证书 <span className="tab-count">{serverCertificates.length}</span></button>
       <button type="button" role="tab" id="system-settings-tab-ca" aria-selected={activeTab === 'ca'} aria-controls="system-settings-panel-ca" onClick={() => setActiveTab('ca')}>上游 CA 根证书 <span className="tab-count">{rootCertificates.length}</span></button>
+      <button type="button" role="tab" id="system-settings-tab-client" aria-selected={activeTab === 'client'} aria-controls="system-settings-panel-client" onClick={() => setActiveTab('client')}>mTLS Client 证书 <span className="tab-count">{clientCertificates.length}</span></button>
     </div>
 
     {activeTab === 'general' && <div id="system-settings-panel-general" role="tabpanel" aria-labelledby="system-settings-tab-general" className="system-settings-tabpanel">
@@ -232,5 +258,8 @@ export default function SystemSettings({ api, onChange }) {
       </div>}
       <p className="ca-management-note">最多 64 张证书。根证书仅在站点明确选择后生效；移除已被站点引用的证书前，需先修改对应站点配置。</p>
     </section>}
+
+    {activeTab === 'server' && <KeyedCertificateManager kind={SERVER_CERTIFICATE_KIND} certificates={serverCertificates} loaded={settingsLoaded} loading={loading} persist={next => persistKeyedCertificates('serverCertificates', next)}/>}
+    {activeTab === 'client' && <KeyedCertificateManager kind={CLIENT_CERTIFICATE_KIND} certificates={clientCertificates} loaded={settingsLoaded} loading={loading} persist={next => persistKeyedCertificates('clientCertificates', next)}/>}
   </div>
 }

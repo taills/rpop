@@ -33,7 +33,12 @@ func (c *Control) startLocked(ctx context.Context, id string) error {
 		return err
 	}
 	var certificate *tls.Certificate
-	if site.Config.TLS {
+	if site.Config.TLS && site.Config.CertificateID != "" {
+		certificate, err = c.selectedServerCertificate(site.Config.CertificateID)
+		if err != nil {
+			return err
+		}
+	} else if site.Config.TLS {
 		certPEM, err := c.store.Secret(ctx, id, site.Config.CertificateSecret)
 		if err != nil {
 			return err
@@ -54,7 +59,8 @@ func (c *Control) startLocked(ctx context.Context, id string) error {
 	}
 	address := net.JoinHostPort(site.Config.ListenAddress, fmt.Sprint(site.Config.ListenPort))
 	key := address
-	route := &siteRuntime{id: id, handler: handler, hostnames: hostnames, certificate: certificate}
+	route := &siteRuntime{id: id, handler: handler, hostnames: hostnames, certificateID: site.Config.CertificateID}
+	route.certificate.Store(certificate)
 
 	c.mu.Lock()
 	group := c.listeners[key]
@@ -203,10 +209,14 @@ func (c *Control) certificateForHello(group *listenerGroup, hello *tls.ClientHel
 		}
 	}
 	group.mu.RUnlock()
-	if route == nil || route.certificate == nil {
+	if route == nil {
 		return nil, fmt.Errorf("no TLS certificate configured for SNI %q", hello.ServerName)
 	}
-	return route.certificate, nil
+	certificate := route.certificate.Load()
+	if certificate == nil {
+		return nil, fmt.Errorf("no TLS certificate configured for SNI %q", hello.ServerName)
+	}
+	return certificate, nil
 }
 
 func findHostRoute(group *listenerGroup, host string) *siteRuntime {
