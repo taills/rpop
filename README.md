@@ -18,14 +18,14 @@ The React development server runs on port 7106 and forwards `/api` to the Go ser
 
 ## Container image and CI
 
-`Dockerfile` builds the console with Node, embeds it into a statically linked CGO binary (musl), and ships it on alpine with `Asia/Shanghai` as the container time zone. The image listens on `0.0.0.0:8080`, stores SQLite in `/app/data` and logs in `/app/logs` (mount both as volumes), and uses the unauthenticated `/api/health` endpoint for its health check.
+`Dockerfile` builds the console with Node, embeds it into a statically linked CGO binary (musl), and ships it on alpine with `Asia/Shanghai` as the container time zone. The image listens on `0.0.0.0:8080`, stores SQLite in `/app/data` and logs in `/app/logs` (mount both as volumes), and uses the unauthenticated `/api/health` endpoint for its health check. The `-addr`, `-db`, `-log-dir`, and `-web-dir` flags default to the `RPOP_ADDR`, `RPOP_DB`, `RPOP_LOG_DIR`, and `RPOP_WEB_DIR` environment variables; the image sets them, and its health check (`rpop -health-check`) probes whatever `RPOP_ADDR` resolves to, so change the admin address through `RPOP_ADDR` rather than a command-line `-addr`.
 
 ```sh
 docker build --build-arg VERSION=dev -t rpop .
 docker run -d --name rpop -p 127.0.0.1:8080:8080 -v rpop-data:/app/data -v rpop-logs:/app/logs rpop
 ```
 
-Publish the admin port only on loopback or behind a trusted HTTPS reverse proxy. Site listeners use ports configured in the console, so publish them as well (or run with `--network host`) and set each site's listen address to `0.0.0.0` inside the container.
+Publish the admin port only on loopback or behind a trusted HTTPS reverse proxy. Site listeners use ports configured in the console, so publish them as well (or run with `--network host`) and set each site's listen address to `0.0.0.0` inside the container. With `--network host`, port publishing does not apply: set `RPOP_ADDR=127.0.0.1:<port>` to choose the admin port and keep it off public interfaces.
 
 `deploy/docker-compose.example.yml` (with `deploy/.env.example`) runs the image with optional RustFS (S3), ClickHouse, and Elasticsearch services for access-log storage. Enable them through `COMPOSE_PROFILES` (`s3`, `clickhouse`, `elasticsearch`) and delete any service you do not deploy; the file's comments list the adapter settings for each service.
 

@@ -18,16 +18,21 @@ services:
     image: ${RPOP_IMAGE:?在 .env 中设置 RPOP_IMAGE}
     container_name: rpop
     restart: unless-stopped
+    environment:
+      # 管理控制台在容器内的监听地址。bridge 网络下保持 0.0.0.0，由下方 ports 只映射到宿主机回环；
+      # host 网络下 ports 不生效，必须在 .env 设置 RPOP_ADMIN_BIND=127.0.0.1，否则控制台会暴露在所有网卡上
+      RPOP_ADDR: ${RPOP_ADMIN_BIND:-0.0.0.0}:${RPOP_ADMIN_PORT:-8080}
     ports:
       # 管理控制台只绑定本机回环；对外请经可信的 HTTPS 反向代理暴露
-      - "127.0.0.1:${RPOP_ADMIN_PORT:-8080}:8080"
+      - "127.0.0.1:${RPOP_ADMIN_PORT:-8080}:${RPOP_ADMIN_PORT:-8080}"
       # 各站点的监听端口在控制台中配置，这里需同步映射；站点监听地址请设为 0.0.0.0
       - "80:80"
       - "443:443"
     volumes:
       - rpop-data:/app/data   # SQLite：站点配置、证书与私钥
       - rpop-logs:/app/logs   # 应用日志与 file 适配器的访问日志
-    # 站点较多或端口不固定时可改用 host 网络（需删除上面的 ports）；此时访问可选服务要改用其映射到宿主机的端口：
+    # 站点较多或端口不固定时可改用 host 网络：删除上面的 ports，并在 .env 设置 RPOP_ADMIN_BIND=127.0.0.1；
+    # 此时 rpop 不在 compose 网络内：取消各可选服务中 "host 网络" 端口映射的注释，适配器地址改用 127.0.0.1:<端口>
     # network_mode: host
 
   # ── 可选：RustFS，S3 兼容对象存储 ──────────────────────────────────
@@ -49,6 +54,7 @@ services:
       RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?在 .env 中设置 RUSTFS_SECRET_KEY}
     ports:
       - "127.0.0.1:9001:9001"   # RustFS 管理控制台（仅本机）
+      # - "127.0.0.1:9000:9000" # host 网络：供 rpop 以 http://127.0.0.1:9000 访问 S3 API
     volumes:
       # 命名卷会继承镜像内 /data 的属主（UID/GID 10001）；若改用宿主机目录挂载，需先 chown -R 10001:10001 该目录
       - rustfs-data:/data
@@ -99,6 +105,8 @@ services:
       nofile:
         soft: 262144
         hard: 262144
+    # ports:
+    #   - "127.0.0.1:8123:8123" # host 网络：供 rpop 以 http://127.0.0.1:8123 访问
     volumes:
       - clickhouse-data:/var/lib/clickhouse
       - clickhouse-logs:/var/log/clickhouse-server
@@ -133,6 +141,8 @@ services:
       nofile:
         soft: 65536
         hard: 65536
+    # ports:
+    #   - "127.0.0.1:9200:9200" # host 网络：供 rpop 以 http://127.0.0.1:9200 访问
     volumes:
       - elasticsearch-data:/usr/share/elasticsearch/data
     healthcheck:

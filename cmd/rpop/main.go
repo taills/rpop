@@ -27,11 +27,19 @@ import (
 var Version = "dev"
 
 func main() {
-	serverAddr := flag.String("addr", "127.0.0.1:8080", "control API listen address")
-	webDir := flag.String("web-dir", "", "serve the frontend from this directory instead of the embedded build")
-	dbPath := flag.String("db", "data/rpop.db", "SQLite database path")
-	logDir := flag.String("log-dir", "logs", "directory for application logs")
+	serverAddr := flag.String("addr", envDefault("RPOP_ADDR", "127.0.0.1:8080"), "control API listen address (env RPOP_ADDR)")
+	webDir := flag.String("web-dir", envDefault("RPOP_WEB_DIR", ""), "serve the frontend from this directory instead of the embedded build (env RPOP_WEB_DIR)")
+	dbPath := flag.String("db", envDefault("RPOP_DB", "data/rpop.db"), "SQLite database path (env RPOP_DB)")
+	logDir := flag.String("log-dir", envDefault("RPOP_LOG_DIR", "logs"), "directory for application logs (env RPOP_LOG_DIR)")
+	healthCheck := flag.Bool("health-check", false, "probe the control API at -addr and exit 0 when healthy (for container health checks)")
 	flag.Parse()
+
+	if *healthCheck {
+		if err := runHealthCheck(*serverAddr); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	if err := os.MkdirAll(filepath.Dir(*dbPath), 0700); err != nil {
 		log.Fatal(err)
@@ -40,7 +48,8 @@ func main() {
 		log.Fatal(err)
 	}
 	loggerConfig := zap.NewProductionConfig()
-	loggerConfig.OutputPaths = []string{filepath.Join(*logDir, "rpop.log")}
+	// Mirror the diagnostic log to stderr so container runtimes (docker logs) show it.
+	loggerConfig.OutputPaths = []string{"stderr", filepath.Join(*logDir, "rpop.log")}
 	logger, err := loggerConfig.Build()
 	if err != nil {
 		log.Fatal(err)

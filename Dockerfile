@@ -34,9 +34,12 @@ WORKDIR /app
 COPY --from=builder /out/rpop /app/rpop
 # SQLite 配置库与应用/访问日志需挂卷持久化
 VOLUME ["/app/data", "/app/logs"]
-# 8080 为管理控制台；各站点的监听端口在控制台中配置，运行时需另行映射（或使用 host 网络）
+# RPOP_ADDR 为管理控制台监听地址（host 网络下可改为 127.0.0.1:<端口>）；健康检查跟随该地址。
+# 各站点的监听端口在控制台中配置，运行时需另行映射（或使用 host 网络）
+ENV RPOP_ADDR=0.0.0.0:8080 \
+    RPOP_DB=/app/data/rpop.db \
+    RPOP_LOG_DIR=/app/logs
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/api/health || exit 1
+    CMD ["/app/rpop", "-health-check"]
 ENTRYPOINT ["/app/rpop"]
-CMD ["-addr", "0.0.0.0:8080", "-db", "/app/data/rpop.db", "-log-dir", "/app/logs"]
