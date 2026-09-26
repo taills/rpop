@@ -1,15 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import LogDetailDrawer, { statusClass } from './LogDetailDrawer.jsx'
 import '../Logs.css'
 
-function bodyText(body, encoding) {
-  if (!body) return '(未记录或为空)'
-  return encoding === 'base64' ? `Base64 编码的二进制内容：\n${body}` : body
-}
-function statusClass(status) {
-  if (status >= 500) return 'bad'
-  if (status >= 400) return 'warn'
-  return 'good'
-}
 function emptyLogsMessage(loading, adapterCount) {
   if (loading) return '正在读取日志…'
   if (adapterCount === 0) return '尚无可查询的日志存储'
@@ -20,7 +12,8 @@ export default function LogViewer({ api }) {
   const [adapters, setAdapters] = useState([])
   const [filters, setFilters] = useState({ adapterId: '', q: '', siteId: '', status: '', from: '', to: '' })
   const [result, setResult] = useState({ records: [], total: 0, page: 1, pageSize: 25 })
-  const [selected, setSelected] = useState(null)
+  const [selectedIndex, setSelectedIndex] = useState(-1)
+  const rowRefs = useRef([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -36,7 +29,7 @@ export default function LogViewer({ api }) {
       if (source.from) params.set('from', new Date(source.from).toISOString())
       if (source.to) params.set('to', new Date(source.to).toISOString())
       setResult(await api(`/logs?${params}`))
-      setSelected(null)
+      setSelectedIndex(-1)
     } catch (e) { setError(e.message) } finally { setLoading(false) }
   }
 
@@ -58,6 +51,18 @@ export default function LogViewer({ api }) {
   function submit(event) { event.preventDefault(); load(1) }
   function chooseAdapter(adapterId) { const next = { ...filters, adapterId }; setFilters(next); load(1, next) }
   const pages = Math.max(1, Math.ceil(result.total / result.pageSize))
+  const selected = result.records[selectedIndex] || null
+  const closeDetail = useCallback(() => {
+    rowRefs.current[selectedIndex]?.focus()
+    setSelectedIndex(-1)
+  }, [selectedIndex])
+  const showPrevious = useCallback(() => setSelectedIndex(index => Math.max(0, index - 1)), [])
+  const showNext = useCallback(() => setSelectedIndex(index => Math.min(result.records.length - 1, index + 1)), [result.records.length])
+
+  // Keep the highlighted row visible behind the drawer while stepping through records.
+  useEffect(() => {
+    rowRefs.current[selectedIndex]?.scrollIntoView({ block: 'nearest' })
+  }, [selectedIndex])
 
   return <section className="logs-page">
     <div className="logs-heading"><div><div className="eyebrow">ACCESS LOGS</div><h1>访问日志</h1><p>选择目标适配器后，可按站点、关键词、状态码和时间范围搜索。</p></div><button className="secondary" onClick={() => load(result.page)} disabled={loading || !filters.adapterId}>刷新</button></div>
@@ -74,12 +79,12 @@ export default function LogViewer({ api }) {
     {error && <div className="error">{error}</div>}
     <div className="logs-summary">共 {result.total} 条 · 第 {result.page} / {pages} 页</div>
     <div className="logs-table-wrap"><table className="logs-table"><thead><tr><th>时间</th><th>站点</th><th>请求</th><th>状态</th><th>完整耗时</th><th>流量</th></tr></thead><tbody>
-      {result.records.map((record, index) => <tr key={`${record.timestamp}-${record.siteId}-${index}`} tabIndex="0" onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') setSelected(record) }} onClick={() => setSelected(record)} className={selected === record ? 'selected' : ''}>
+      {result.records.map((record, index) => <tr key={`${record.timestamp}-${record.siteId}-${index}`} ref={element => { rowRefs.current[index] = element }} tabIndex="0" onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedIndex(index) } }} onClick={() => setSelectedIndex(index)} className={selectedIndex === index ? 'selected' : ''}>
         <td>{new Date(record.timestamp).toLocaleString()}</td><td>{record.siteId}</td><td><b>{record.method}</b> <span className="log-path">{record.path}</span></td><td><span className={`log-status ${statusClass(record.status)}`}>{record.status}</span></td><td>{Number(record.responseMillis || 0).toFixed(1)} ms</td><td>{record.requestBytes} ⇢ {record.responseBytes} B</td>
       </tr>)}
       {!result.records.length && <tr><td colSpan="6" className="logs-empty">{emptyLogsMessage(loading, adapters.length)}</td></tr>}
     </tbody></table></div>
     <div className="logs-pagination"><button className="secondary" disabled={loading || result.page <= 1} onClick={() => load(result.page - 1)}>上一页</button><button className="secondary" disabled={loading || result.page >= pages} onClick={() => load(result.page + 1)}>下一页</button></div>
-    {selected && <div className="log-detail"><div className="logs-heading"><div><div className="eyebrow">REQUEST DETAIL</div><h2>{selected.method} {selected.path}</h2></div><button className="secondary" onClick={() => setSelected(null)}>关闭</button></div><div className="log-detail-grid"><section><h3>请求 Headers</h3><pre>{JSON.stringify(selected.requestHeaders, null, 2)}</pre><h3>请求 Body {selected.requestBodyTruncated && '(已截断)'}</h3><pre>{bodyText(selected.requestBody, selected.requestBodyEncoding)}</pre></section><section><h3>响应 Headers</h3><pre>{JSON.stringify(selected.responseHeaders, null, 2)}</pre><h3>响应 Body {selected.responseBodyTruncated && '(已截断)'}</h3><pre>{bodyText(selected.responseBody, selected.responseBodyEncoding)}</pre></section></div><small>TTFB {Number(selected.ttfbMillis || 0).toFixed(1)} ms · 完整响应 {Number(selected.responseMillis || 0).toFixed(1)} ms · 请求 {selected.requestBodyTotalBytes || selected.requestBytes} B · 响应 {selected.responseBodyTotalBytes || selected.responseBytes} B</small></div>}
+    {selected && <LogDetailDrawer record={selected} position={selectedIndex + 1} total={result.records.length} onPrevious={selectedIndex > 0 ? showPrevious : null} onNext={selectedIndex < result.records.length - 1 ? showNext : null} onClose={closeDetail}/>}
   </section>
 }
