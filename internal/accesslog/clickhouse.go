@@ -9,34 +9,133 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
 type clickHouseSink struct {
-	config     ClickHouseConfig
-	client     *http.Client
-	mu         sync.Mutex
-	tableReady bool
+	config      ClickHouseConfig
+	client      *http.Client
+	location    *time.Location
+	mu          sync.Mutex
+	tablesReady map[string]bool
 }
 
 func newClickHouseSink(config ClickHouseConfig) (*clickHouseSink, error) {
-	return &clickHouseSink{config: config, client: &http.Client{Timeout: 30 * time.Second}}, nil
+	defaults := DefaultConfig().ClickHouse
+	if config.Database == "" {
+		config.Database = defaults.Database
+	}
+	if config.Table == "" {
+		config.Table = defaults.Table
+	}
+	if config.SplitMode == "" {
+		config.SplitMode = defaults.SplitMode
+	}
+	return &clickHouseSink{config: config, client: &http.Client{Timeout: 30 * time.Second}, location: time.UTC, tablesReady: make(map[string]bool)}, nil
 }
 
-func (s *clickHouseSink) ensureTable(ctx context.Context) error {
+func (s *clickHouseSink) SetTimeZone(location *time.Location) {
+	if location == nil {
+		location = time.UTC
+	}
+	s.location = location
+}
+
+func (s *clickHouseSink) tableForTimestamp(timestamp time.Time) string {
+	switch s.config.SplitMode {
+	case "day":
+		return s.config.Table + "_" + timestamp.In(s.location).Format("20060102")
+	case "hour":
+		return s.config.Table + "_" + timestamp.In(s.location).Format("2006010215")
+	default:
+		return s.config.Table
+	}
+}
+
+func (s *clickHouseSink) ensureTable(ctx context.Context, table string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.tableReady {
+	if s.tablesReady[table] {
 		return nil
 	}
-	query := fmt.Sprintf("CREATE TABLE IF NOT EXISTS `%s`.`%s` (timestamp DateTime64(3, 'UTC'), site_id String, record String) ENGINE=MergeTree PARTITION BY toDate(timestamp) ORDER BY (timestamp, site_id)", s.config.Database, s.config.Table)
+	query := fmt.Sprintf("CREATE TABLE IF NOT EXISTS `%s`.`%s` (timestamp DateTime64(3, 'UTC'), site_id String, record String) ENGINE=MergeTree PARTITION BY toDate(timestamp, '%s') ORDER BY (timestamp, site_id)", s.config.Database, table, sqlQuote(s.location.String()))
 	if _, err := s.request(ctx, query, nil); err != nil {
 		return err
 	}
-	s.tableReady = true
+	s.tablesReady[table] = true
 	return nil
+}
+
+func (s *clickHouseSink) tablesForSearch(ctx context.Context, query Query) ([]string, error) {
+	statement := fmt.Sprintf("SELECT name FROM system.tables WHERE database='%s' AND (name='%s' OR startsWith(name,'%s_')) ORDER BY name FORMAT TabSeparated", sqlQuote(s.config.Database), sqlQuote(s.config.Table), sqlQuote(s.config.Table))
+	data, err := s.request(ctx, statement, nil)
+	if err != nil {
+		return nil, err
+	}
+	var tables []string
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	lowerSuffix, upperSuffix := "", ""
+	if !query.From.IsZero() {
+		lowerSuffix = query.From.UTC().Add(-26 * time.Hour).In(s.location).Format("2006010215")
+	}
+	if !query.To.IsZero() {
+		upperSuffix = query.To.UTC().Add(26 * time.Hour).In(s.location).Format("2006010215")
+	}
+	if !query.From.IsZero() && !query.To.IsZero() {
+		// The 26-hour padding can cross a historic date-line transition. When
+		// local suffixes are not ordered, keep all partitions and let SQL filter.
+		fromDay := query.From.UTC().Add(-26 * time.Hour).In(s.location).Format("20060102")
+		toDay := query.To.UTC().Add(26 * time.Hour).In(s.location).Format("20060102")
+		if fromDay > toDay {
+			lowerSuffix, upperSuffix = "", ""
+		}
+	}
+	for scanner.Scan() {
+		name := strings.TrimSpace(scanner.Text())
+		if name == s.config.Table {
+			tables = append(tables, name)
+			continue
+		}
+		if !strings.HasPrefix(name, s.config.Table+"_") {
+			continue
+		}
+		suffix := strings.TrimPrefix(name, s.config.Table+"_")
+		layout := ""
+		switch len(suffix) {
+		case 8:
+			layout = "20060102"
+		case 10:
+			layout = "2006010215"
+		default:
+			continue
+		}
+		if _, err := time.Parse(layout, suffix); err != nil {
+			continue
+		}
+		// Filter only when local date labels remain ordered; SQL still applies the
+		// exact absolute time range to records from candidate partitions.
+		if lowerSuffix != "" && suffix < lowerSuffix[:len(layout)] {
+			continue
+		}
+		if upperSuffix != "" && suffix > upperSuffix[:len(layout)] {
+			continue
+		}
+		tables = append(tables, name)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if len(tables) == 0 && s.config.SplitMode == "none" {
+		if err := s.ensureTable(ctx, s.config.Table); err != nil {
+			return nil, err
+		}
+		tables = append(tables, s.config.Table)
+	}
+	sort.Strings(tables)
+	return tables, nil
 }
 
 func (s *clickHouseSink) request(ctx context.Context, query string, body []byte) ([]byte, error) {
@@ -72,10 +171,11 @@ func (s *clickHouseSink) request(ctx context.Context, query string, body []byte)
 }
 
 func (s *clickHouseSink) Write(ctx context.Context, record Record) error {
-	if err := s.ensureTable(ctx); err != nil {
+	normalizeRecordTime(&record)
+	table := s.tableForTimestamp(record.Timestamp)
+	if err := s.ensureTable(ctx, table); err != nil {
 		return err
 	}
-	normalizeRecordTime(&record)
 	raw, err := json.Marshal(record)
 	if err != nil {
 		return err
@@ -88,14 +188,23 @@ func (s *clickHouseSink) Write(ctx context.Context, record Record) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.request(ctx, fmt.Sprintf("INSERT INTO `%s`.`%s` FORMAT JSONEachRow", s.config.Database, s.config.Table), append(row, '\n'))
+	_, err = s.request(ctx, fmt.Sprintf("INSERT INTO `%s`.`%s` FORMAT JSONEachRow", s.config.Database, table), append(row, '\n'))
 	return err
 }
 
 func (s *clickHouseSink) Search(ctx context.Context, query Query) (SearchResult, error) {
-	if err := s.ensureTable(ctx); err != nil {
+	tables, err := s.tablesForSearch(ctx, query)
+	if err != nil {
 		return SearchResult{}, err
 	}
+	if len(tables) == 0 {
+		return SearchResult{Records: []Record{}, Page: query.Page, PageSize: query.PageSize}, nil
+	}
+	selects := make([]string, 0, len(tables))
+	for _, table := range tables {
+		selects = append(selects, fmt.Sprintf("SELECT timestamp, site_id, record FROM `%s`.`%s`", s.config.Database, table))
+	}
+	source := "(" + strings.Join(selects, " UNION ALL ") + ") AS access_log_partitions"
 	where := []string{"1"}
 	if query.SiteID != "" {
 		where = append(where, "site_id='"+sqlQuote(query.SiteID)+"'")
@@ -113,7 +222,7 @@ func (s *clickHouseSink) Search(ctx context.Context, query Query) (SearchResult,
 		where = append(where, "positionCaseInsensitive(record, '"+sqlQuote(query.Text)+"') > 0")
 	}
 	predicate := strings.Join(where, " AND ")
-	countData, err := s.request(ctx, "SELECT count() FROM `"+s.config.Database+"`.`"+s.config.Table+"` WHERE "+predicate+" FORMAT TabSeparated", nil)
+	countData, err := s.request(ctx, "SELECT count() FROM "+source+" WHERE "+predicate+" FORMAT TabSeparated", nil)
 	if err != nil {
 		return SearchResult{}, err
 	}
@@ -122,7 +231,7 @@ func (s *clickHouseSink) Search(ctx context.Context, query Query) (SearchResult,
 		return SearchResult{}, err
 	}
 	offset := (query.Page - 1) * query.PageSize
-	querySQL := fmt.Sprintf("SELECT record FROM `%s`.`%s` WHERE %s ORDER BY timestamp DESC LIMIT %d OFFSET %d FORMAT TabSeparatedRaw", s.config.Database, s.config.Table, predicate, query.PageSize, offset)
+	querySQL := fmt.Sprintf("SELECT record FROM %s WHERE %s ORDER BY timestamp DESC LIMIT %d OFFSET %d FORMAT TabSeparatedRaw", source, predicate, query.PageSize, offset)
 	data, err := s.request(ctx, querySQL, nil)
 	if err != nil {
 		return SearchResult{}, err

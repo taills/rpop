@@ -1,15 +1,16 @@
 package store
 
 type Upstream struct {
-	URL                string `json:"url" yaml:"url"`
-	ProxyURL           string `json:"proxyUrl,omitempty" yaml:"proxyUrl,omitempty"`
-	ProxyType          string `json:"proxyType,omitempty" yaml:"proxyType,omitempty"`
-	InsecureSkipVerify bool   `json:"insecureSkipVerify,omitempty" yaml:"insecureSkipVerify,omitempty"`
-	CABundle           string `json:"caBundle,omitempty" yaml:"caBundle,omitempty"`
-	ClientCertSecret   string `json:"clientCertSecret,omitempty" yaml:"clientCertSecret,omitempty"`
-	ClientKeySecret    string `json:"clientKeySecret,omitempty" yaml:"clientKeySecret,omitempty"`
-	DialAddress        string `json:"dialAddress,omitempty" yaml:"dialAddress,omitempty"`
-	ServerName         string `json:"serverName,omitempty" yaml:"serverName,omitempty"`
+	URL                string   `json:"url" yaml:"url"`
+	ProxyURL           string   `json:"proxyUrl,omitempty" yaml:"proxyUrl,omitempty"`
+	ProxyType          string   `json:"proxyType,omitempty" yaml:"proxyType,omitempty"`
+	InsecureSkipVerify bool     `json:"insecureSkipVerify,omitempty" yaml:"insecureSkipVerify,omitempty"`
+	CABundle           string   `json:"caBundle,omitempty" yaml:"caBundle,omitempty"`
+	RootCertificateIDs []string `json:"rootCertificateIds,omitempty" yaml:"rootCertificateIds,omitempty"`
+	ClientCertSecret   string   `json:"clientCertSecret,omitempty" yaml:"clientCertSecret,omitempty"`
+	ClientKeySecret    string   `json:"clientKeySecret,omitempty" yaml:"clientKeySecret,omitempty"`
+	DialAddress        string   `json:"dialAddress,omitempty" yaml:"dialAddress,omitempty"`
+	ServerName         string   `json:"serverName,omitempty" yaml:"serverName,omitempty"`
 }
 type AccessLogConfig struct {
 	AdapterID               string `json:"adapterId,omitempty" yaml:"adapterId,omitempty"`

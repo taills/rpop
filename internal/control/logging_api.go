@@ -34,11 +34,12 @@ type loggingConfigResponse struct {
 }
 
 type loggingAdapterResponse struct {
-	ID                    string           `json:"id"`
-	Name                  string           `json:"name"`
-	Config                accesslog.Config `json:"config"`
-	HasClickHousePassword bool             `json:"hasClickHousePassword"`
-	HasS3Credentials      bool             `json:"hasS3Credentials"`
+	ID                          string           `json:"id"`
+	Name                        string           `json:"name"`
+	Config                      accesslog.Config `json:"config"`
+	HasClickHousePassword       bool             `json:"hasClickHousePassword"`
+	HasS3Credentials            bool             `json:"hasS3Credentials"`
+	HasElasticsearchCredentials bool             `json:"hasElasticsearchCredentials"`
 }
 
 func NewWithLogDir(s *store.Store, logger *zap.Logger, logDir string) (*Control, error) {
@@ -49,11 +50,17 @@ func NewWithLogDir(s *store.Store, logger *zap.Logger, logDir string) (*Control,
 	if err := migrateSiteLogAdapterSelection(context.Background(), s, configs); err != nil {
 		return nil, err
 	}
+	settings, location, err := loadSystemSettings(context.Background(), s)
+	if err != nil {
+		return nil, err
+	}
 	registry, err := accesslog.NewRegistry(logDir, configs)
 	if err != nil {
 		return nil, err
 	}
+	registry.SetTimeZone(location)
 	c := New(s, logger)
+	c.systemSettings = settings
 	c.accessLogs = registry
 	return c, nil
 }
@@ -288,6 +295,21 @@ func (c *Control) preserveAdapterSecrets(next *accesslog.Config, current accessl
 	if next.S3.SessionToken == "" {
 		next.S3.SessionToken = current.S3.SessionToken
 	}
+	if next.Elasticsearch.AuthType == "" {
+		next.Elasticsearch.AuthType = current.Elasticsearch.AuthType
+	}
+	if next.Elasticsearch.AuthType == current.Elasticsearch.AuthType {
+		switch next.Elasticsearch.AuthType {
+		case "basic":
+			if next.Elasticsearch.Password == "" {
+				next.Elasticsearch.Password = current.Elasticsearch.Password
+			}
+		case "apiKey":
+			if next.Elasticsearch.APIKey == "" {
+				next.Elasticsearch.APIKey = current.Elasticsearch.APIKey
+			}
+		}
+	}
 }
 
 func (c *Control) findLoggingAdapter(id string) (accesslog.AdapterConfig, bool) {
@@ -306,9 +328,10 @@ func (c *Control) loggingConfigSnapshot() loggingConfigResponse {
 		config := adapter.Config
 		response.Adapters = append(response.Adapters, loggingAdapterResponse{
 			ID: adapter.ID, Name: adapter.Name,
-			Config:                safeAccessLogConfig(config),
-			HasClickHousePassword: config.ClickHouse.Password != "",
-			HasS3Credentials:      config.S3.AccessKeyID != "" && config.S3.SecretAccessKey != "",
+			Config:                      safeAccessLogConfig(config),
+			HasClickHousePassword:       config.ClickHouse.Password != "",
+			HasS3Credentials:            config.S3.AccessKeyID != "" && config.S3.SecretAccessKey != "",
+			HasElasticsearchCredentials: (config.Elasticsearch.AuthType == "basic" && config.Elasticsearch.Password != "") || (config.Elasticsearch.AuthType == "apiKey" && config.Elasticsearch.APIKey != ""),
 		})
 	}
 	return response
@@ -319,6 +342,8 @@ func safeAccessLogConfig(config accesslog.Config) accesslog.Config {
 	config.S3.AccessKeyID = ""
 	config.S3.SecretAccessKey = ""
 	config.S3.SessionToken = ""
+	config.Elasticsearch.Password = ""
+	config.Elasticsearch.APIKey = ""
 	return config
 }
 

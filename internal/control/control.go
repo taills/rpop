@@ -26,20 +26,22 @@ import (
 const HeaderTimeout = 8 * time.Second
 
 type Control struct {
-	store          *store.Store
-	log            *zap.Logger
-	mu             sync.Mutex
-	opMu           sync.Mutex
-	runs           map[string]*running
-	listeners      map[string]*listenerGroup
-	metrics        sync.Map
-	accessLogQueue chan accessLogEvent
-	queuedLogBytes atomic.Int64
-	accessLogs     *accesslog.Registry
-	authMu         sync.Mutex
-	setupMu        sync.Mutex
-	sessions       map[string]time.Time
-	loginAttempts  map[string]loginAttempt
+	store            *store.Store
+	log              *zap.Logger
+	mu               sync.Mutex
+	opMu             sync.Mutex
+	runs             map[string]*running
+	listeners        map[string]*listenerGroup
+	metrics          sync.Map
+	accessLogQueue   chan accessLogEvent
+	queuedLogBytes   atomic.Int64
+	accessLogs       *accesslog.Registry
+	systemSettingsMu sync.RWMutex
+	systemSettings   systemSettings
+	authMu           sync.Mutex
+	setupMu          sync.Mutex
+	sessions         map[string]time.Time
+	loginAttempts    map[string]loginAttempt
 }
 type running struct {
 	groupKey string
@@ -65,7 +67,7 @@ type apiError struct {
 }
 
 func New(s *store.Store, l *zap.Logger) *Control {
-	c := &Control{store: s, log: l, runs: map[string]*running{}, listeners: map[string]*listenerGroup{}, accessLogQueue: make(chan accessLogEvent, 256), sessions: make(map[string]time.Time), loginAttempts: make(map[string]loginAttempt)}
+	c := &Control{store: s, log: l, runs: map[string]*running{}, listeners: map[string]*listenerGroup{}, accessLogQueue: make(chan accessLogEvent, 256), systemSettings: defaultSystemSettings(), sessions: make(map[string]time.Time), loginAttempts: make(map[string]loginAttempt)}
 	go c.accessLogLoop()
 	return c
 }
@@ -77,6 +79,7 @@ func (c *Control) Handler() http.Handler {
 	m.HandleFunc("/api/auth/login", c.authLogin)
 	m.HandleFunc("/api/auth/logout", c.authLogout)
 	m.HandleFunc("/api/auth/password", c.authChangePassword)
+	m.HandleFunc("/api/settings", c.systemSettingsAPI)
 	m.HandleFunc("/api/logging", c.loggingConfig)
 	m.HandleFunc("/api/logging/adapters", c.loggingAdapters)
 	m.HandleFunc("/api/logging/adapters/", c.loggingAdapter)
@@ -129,6 +132,14 @@ func (c *Control) yamlConfig(w http.ResponseWriter, r *http.Request) {
 				writeError(w, fmt.Errorf("site %q: %w", site.ID, err))
 				return
 			}
+			if err := c.validateRootCertificateReferences(site); err != nil {
+				writeError(w, fmt.Errorf("site %q: %w", site.ID, err))
+				return
+			}
+			if err := c.validateUpstreamTLSMaterial(r.Context(), site); err != nil {
+				writeError(w, fmt.Errorf("site %q: %w", site.ID, err))
+				return
+			}
 			if err := c.validateAccessLogAdapter(site); err != nil {
 				writeError(w, fmt.Errorf("site %q: %w", site.ID, err))
 				return
@@ -176,6 +187,14 @@ func (c *Control) sites(w http.ResponseWriter, r *http.Request) {
 		}
 		c.opMu.Lock()
 		defer c.opMu.Unlock()
+		if err := c.validateRootCertificateReferences(x); err != nil {
+			writeError(w, err)
+			return
+		}
+		if err := c.validateUpstreamTLSMaterial(r.Context(), x); err != nil {
+			writeError(w, err)
+			return
+		}
 		if err := c.validateAccessLogAdapter(x); err != nil {
 			writeError(w, err)
 			return
@@ -221,6 +240,14 @@ func (c *Control) site(w http.ResponseWriter, r *http.Request) {
 		}
 		c.opMu.Lock()
 		defer c.opMu.Unlock()
+		if err := c.validateRootCertificateReferences(x); err != nil {
+			writeError(w, err)
+			return
+		}
+		if err := c.validateUpstreamTLSMaterial(r.Context(), x); err != nil {
+			writeError(w, err)
+			return
+		}
 		if err := c.validateAccessLogAdapter(x); err != nil {
 			writeError(w, err)
 			return
@@ -327,6 +354,26 @@ func (c *Control) stop(id string) error {
 	return c.stopLocked(id)
 }
 
+func (c *Control) validateUpstreamTLSMaterial(ctx context.Context, site store.Site) error {
+	for index, upstream := range site.Config.Upstreams {
+		if upstream.ClientCertSecret == "" && upstream.ClientKeySecret == "" {
+			continue
+		}
+		certificate, err := c.store.Secret(ctx, site.ID, upstream.ClientCertSecret)
+		if err != nil {
+			return fmt.Errorf("upstreams[%d] client certificate: %w", index, err)
+		}
+		key, err := c.store.Secret(ctx, site.ID, upstream.ClientKeySecret)
+		if err != nil {
+			return fmt.Errorf("upstreams[%d] client private key: %w", index, err)
+		}
+		if _, err := tls.X509KeyPair(certificate, key); err != nil {
+			return fmt.Errorf("upstreams[%d] client certificate/key pair is invalid: %w", index, err)
+		}
+	}
+	return nil
+}
+
 func (c *Control) proxyHandler(ctx context.Context, id string, cfg store.Config) (http.Handler, error) {
 	if len(cfg.Upstreams) == 0 {
 		return nil, fmt.Errorf("at least one upstream is required")
@@ -335,7 +382,11 @@ func (c *Control) proxyHandler(ctx context.Context, id string, cfg store.Config)
 	if e != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return nil, fmt.Errorf("invalid upstream URL")
 	}
-	transport, e := store.BuildTransport(ctx, c.store, id, cfg.Upstreams[0])
+	systemRoots, e := c.selectedRootCertificates(cfg.Upstreams[0].RootCertificateIDs)
+	if e != nil {
+		return nil, e
+	}
+	transport, e := store.BuildTransport(ctx, c.store, id, cfg.Upstreams[0], systemRoots)
 	if e != nil {
 		return nil, e
 	}
@@ -364,9 +415,29 @@ func validate(x store.Site) error {
 	if _, err := normalizedHostnames(x.Config.Hostnames); err != nil {
 		return err
 	}
-	for _, u := range x.Config.Upstreams {
-		if _, e := url.ParseRequestURI(u.URL); e != nil {
+	for index, u := range x.Config.Upstreams {
+		parsed, err := url.ParseRequestURI(u.URL)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 			return fmt.Errorf("invalid upstream URL")
+		}
+		if (u.ClientCertSecret == "") != (u.ClientKeySecret == "") {
+			return fmt.Errorf("upstreams[%d] client certificate and key must be configured together", index)
+		}
+		if u.ClientCertSecret != "" && parsed.Scheme != "https" {
+			return fmt.Errorf("upstreams[%d] client certificates require an HTTPS URL", index)
+		}
+		if len(u.RootCertificateIDs) > 0 && parsed.Scheme != "https" {
+			return fmt.Errorf("upstreams[%d] system root certificates require an HTTPS URL", index)
+		}
+		seenRootIDs := make(map[string]struct{}, len(u.RootCertificateIDs))
+		for _, id := range u.RootCertificateIDs {
+			if strings.TrimSpace(id) == "" {
+				return fmt.Errorf("upstreams[%d] contains an empty system root certificate ID", index)
+			}
+			if _, exists := seenRootIDs[id]; exists {
+				return fmt.Errorf("upstreams[%d] contains duplicate system root certificate ID %q", index, id)
+			}
+			seenRootIDs[id] = struct{}{}
 		}
 	}
 	return nil
@@ -408,8 +479,29 @@ func (c *Control) secret(w http.ResponseWriter, r *http.Request, siteID, name st
 			return
 		}
 		writeJSON(w, 201, map[string]string{"name": name, "status": "stored"})
+	case http.MethodDelete:
+		site, err := c.store.Get(r.Context(), siteID)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if site.Config.CertificateSecret == name || site.Config.PrivateKeySecret == name {
+			writeJSON(w, http.StatusConflict, apiError{"secret is still referenced by the site configuration"})
+			return
+		}
+		for _, upstream := range site.Config.Upstreams {
+			if upstream.ClientCertSecret == name || upstream.ClientKeySecret == name {
+				writeJSON(w, http.StatusConflict, apiError{"secret is still referenced by an upstream configuration"})
+				return
+			}
+		}
+		if err := c.store.DeleteSecret(r.Context(), siteID, name); err != nil {
+			writeError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	default:
-		w.Header().Set("Allow", "PUT")
+		w.Header().Set("Allow", "PUT, DELETE")
 		writeJSON(w, 405, apiError{"method not allowed"})
 	}
 }

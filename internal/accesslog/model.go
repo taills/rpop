@@ -49,10 +49,11 @@ type SearchResult struct {
 }
 
 type Config struct {
-	Adapter    string           `json:"adapter"`
-	File       FileConfig       `json:"file"`
-	ClickHouse ClickHouseConfig `json:"clickhouse"`
-	S3         S3Config         `json:"s3"`
+	Adapter       string              `json:"adapter"`
+	File          FileConfig          `json:"file"`
+	ClickHouse    ClickHouseConfig    `json:"clickhouse"`
+	S3            S3Config            `json:"s3"`
+	Elasticsearch ElasticsearchConfig `json:"elasticsearch"`
 }
 
 type FileConfig struct {
@@ -63,16 +64,18 @@ type FileConfig struct {
 }
 
 type ClickHouseConfig struct {
-	URL      string `json:"url"`
-	Database string `json:"database"`
-	Table    string `json:"table"`
-	Username string `json:"username,omitempty"`
-	Password string `json:"password,omitempty"`
+	URL       string `json:"url"`
+	Database  string `json:"database"`
+	SplitMode string `json:"splitMode"`
+	Table     string `json:"table"`
+	Username  string `json:"username,omitempty"`
+	Password  string `json:"password,omitempty"`
 }
 
 type S3Config struct {
 	Endpoint        string `json:"endpoint,omitempty"`
 	Region          string `json:"region"`
+	SplitMode       string `json:"splitMode"`
 	Bucket          string `json:"bucket"`
 	Prefix          string `json:"prefix,omitempty"`
 	AccessKeyID     string `json:"accessKeyId,omitempty"`
@@ -81,16 +84,34 @@ type S3Config struct {
 	ForcePathStyle  bool   `json:"forcePathStyle"`
 }
 
+type ElasticsearchConfig struct {
+	URL       string `json:"url"`
+	Index     string `json:"index"`
+	SplitMode string `json:"splitMode"`
+	AuthType  string `json:"authType"`
+	Username  string `json:"username,omitempty"`
+	Password  string `json:"password,omitempty"`
+	APIKey    string `json:"apiKey,omitempty"`
+}
+
 func DefaultConfig() Config {
 	return Config{
-		Adapter:    "file",
-		File:       FileConfig{Rotation: "day", MaxSizeBytes: 1 << 30, Compress: true, KeepFiles: 30},
-		ClickHouse: ClickHouseConfig{Database: "default", Table: "access_logs"},
-		S3:         S3Config{Region: "us-east-1", Prefix: "rpop/access", ForcePathStyle: true},
+		Adapter:       "file",
+		File:          FileConfig{Rotation: "day", MaxSizeBytes: 1 << 30, Compress: true, KeepFiles: 30},
+		ClickHouse:    ClickHouseConfig{Database: "default", Table: "access_logs", SplitMode: "none"},
+		S3:            S3Config{Region: "us-east-1", Prefix: "rpop/access", SplitMode: "hour", ForcePathStyle: true},
+		Elasticsearch: ElasticsearchConfig{Index: "rpop-access-logs", SplitMode: "none", AuthType: "none"},
 	}
 }
 
-var sqlIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var (
+	sqlIdentifier             = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	elasticsearchIndexPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,254}$`)
+)
+
+func validPartitionMode(mode string) bool {
+	return mode == "none" || mode == "day" || mode == "hour"
+}
 
 func (c Config) Validate() error {
 	switch c.Adapter {
@@ -108,6 +129,9 @@ func (c Config) Validate() error {
 			return fmt.Errorf("file.keepFiles must be between 0 and 10000")
 		}
 	case "clickhouse":
+		if c.ClickHouse.SplitMode != "" && !validPartitionMode(c.ClickHouse.SplitMode) {
+			return fmt.Errorf("clickhouse.splitMode must be none, day, or hour")
+		}
 		parsed, err := url.ParseRequestURI(c.ClickHouse.URL)
 		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
 			return fmt.Errorf("clickhouse.url must be an HTTP(S) URL")
@@ -115,7 +139,47 @@ func (c Config) Validate() error {
 		if !sqlIdentifier.MatchString(c.ClickHouse.Database) || !sqlIdentifier.MatchString(c.ClickHouse.Table) {
 			return fmt.Errorf("clickhouse database and table must be SQL identifiers")
 		}
+	case "elasticsearch":
+		if c.Elasticsearch.SplitMode != "" && !validPartitionMode(c.Elasticsearch.SplitMode) {
+			return fmt.Errorf("elasticsearch.splitMode must be none, day, or hour")
+		}
+		parsed, err := url.ParseRequestURI(c.Elasticsearch.URL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return fmt.Errorf("elasticsearch.url must be an HTTP(S) URL without credentials, query, or fragment")
+		}
+		if !elasticsearchIndexPattern.MatchString(c.Elasticsearch.Index) || c.Elasticsearch.Index == "." || c.Elasticsearch.Index == ".." {
+			return fmt.Errorf("elasticsearch.index must be a lowercase index name containing only letters, numbers, dots, hyphens, or underscores")
+		}
+		suffixLength := 0
+		switch c.Elasticsearch.SplitMode {
+		case "day":
+			suffixLength = 9
+		case "hour":
+			suffixLength = 11
+		}
+		if len(c.Elasticsearch.Index)+suffixLength > 255 {
+			return fmt.Errorf("elasticsearch.index is too long for the selected splitMode")
+		}
+		switch c.Elasticsearch.AuthType {
+		case "none":
+			if c.Elasticsearch.Username != "" || c.Elasticsearch.Password != "" || c.Elasticsearch.APIKey != "" {
+				return fmt.Errorf("elasticsearch credentials must be empty when authType is none")
+			}
+		case "basic":
+			if strings.TrimSpace(c.Elasticsearch.Username) == "" || c.Elasticsearch.Password == "" || c.Elasticsearch.APIKey != "" {
+				return fmt.Errorf("elasticsearch basic auth requires a username and password and cannot include an API key")
+			}
+		case "apiKey":
+			if strings.TrimSpace(c.Elasticsearch.APIKey) == "" || c.Elasticsearch.Username != "" || c.Elasticsearch.Password != "" {
+				return fmt.Errorf("elasticsearch apiKey auth requires an API key and cannot include basic credentials")
+			}
+		default:
+			return fmt.Errorf("elasticsearch.authType must be none, basic, or apiKey")
+		}
 	case "s3":
+		if c.S3.SplitMode != "" && !validPartitionMode(c.S3.SplitMode) {
+			return fmt.Errorf("s3.splitMode must be none, day, or hour")
+		}
 		if strings.TrimSpace(c.S3.Bucket) == "" {
 			return fmt.Errorf("s3.bucket is required")
 		}
@@ -132,7 +196,7 @@ func (c Config) Validate() error {
 			}
 		}
 	default:
-		return fmt.Errorf("adapter must be file, clickhouse, or s3")
+		return fmt.Errorf("adapter must be file, clickhouse, elasticsearch, or s3")
 	}
 	return nil
 }

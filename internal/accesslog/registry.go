@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
@@ -31,12 +32,13 @@ type Registry struct {
 	mu       sync.RWMutex
 	dir      string
 	adapters map[string]adapterEntry
+	location *time.Location
 }
 
 var adapterIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 
 func NewRegistry(dir string, configs []AdapterConfig) (*Registry, error) {
-	registry := &Registry{dir: dir, adapters: make(map[string]adapterEntry, len(configs))}
+	registry := &Registry{dir: dir, adapters: make(map[string]adapterEntry, len(configs)), location: time.UTC}
 	for _, config := range configs {
 		normalized, err := normalizeAdapterConfig(config)
 		if err != nil {
@@ -100,6 +102,18 @@ func (r *Registry) listLocked() []AdapterConfig {
 	return configs
 }
 
+func (r *Registry) SetTimeZone(location *time.Location) {
+	if location == nil {
+		location = time.UTC
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.location = location
+	for _, entry := range r.adapters {
+		entry.manager.SetTimeZone(location)
+	}
+}
+
 func (r *Registry) Has(id string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -136,6 +150,7 @@ func (r *Registry) put(config AdapterConfig, requireExisting bool, persist func(
 		_ = next.Close()
 		return ErrAdapterExists
 	}
+	next.SetTimeZone(r.location)
 	configs := r.listLocked()
 	if exists {
 		for i := range configs {

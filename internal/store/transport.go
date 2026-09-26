@@ -13,11 +13,25 @@ import (
 	"time"
 )
 
-func BuildTransport(ctx context.Context, s *Store, siteID string, u Upstream) (*http.Transport, error) {
+func BuildTransport(ctx context.Context, s *Store, siteID string, u Upstream, systemRootCertificates []string) (*http.Transport, error) {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.Proxy = nil
 	t.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: u.ServerName, InsecureSkipVerify: u.InsecureSkipVerify}
-	if u.CABundle != "" {
+	if len(systemRootCertificates) > 0 {
+		pool, err := x509.SystemCertPool()
+		if err != nil || pool == nil {
+			pool = x509.NewCertPool()
+		}
+		for index, certificate := range systemRootCertificates {
+			if !pool.AppendCertsFromPEM([]byte(certificate)) {
+				return nil, fmt.Errorf("invalid system root certificate at index %d", index)
+			}
+		}
+		if u.CABundle != "" && !pool.AppendCertsFromPEM([]byte(u.CABundle)) {
+			return nil, fmt.Errorf("invalid upstream CA bundle")
+		}
+		t.TLSClientConfig.RootCAs = pool
+	} else if u.CABundle != "" {
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM([]byte(u.CABundle)) {
 			return nil, fmt.Errorf("invalid CA bundle")

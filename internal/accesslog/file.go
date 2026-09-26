@@ -22,6 +22,7 @@ type fileSink struct {
 	dir      string
 	config   FileConfig
 	file     *os.File
+	location *time.Location
 	size     int64
 	period   string
 	sequence uint64
@@ -53,9 +54,23 @@ func newFileSink(dir string, config FileConfig) (*fileSink, error) {
 	}
 	period := ""
 	if info.Size() > 0 {
-		period = rotationPeriod(config.Rotation, info.ModTime())
+		period = rotationPeriod(config.Rotation, info.ModTime(), time.UTC)
 	}
-	return &fileSink{dir: dir, config: config, file: file, size: info.Size(), period: period}, nil
+	return &fileSink{dir: dir, config: config, file: file, location: time.UTC, size: info.Size(), period: period}, nil
+}
+
+func (s *fileSink) SetTimeZone(location *time.Location) {
+	if location == nil {
+		location = time.UTC
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.location = location
+	if s.file != nil && s.size > 0 {
+		if info, err := s.file.Stat(); err == nil {
+			s.period = rotationPeriod(s.config.Rotation, info.ModTime(), location)
+		}
+	}
 }
 
 func (s *fileSink) Write(ctx context.Context, record Record) error {
@@ -73,7 +88,7 @@ func (s *fileSink) Write(ctx context.Context, record Record) error {
 	if s.file == nil {
 		return fmt.Errorf("access log file is not open")
 	}
-	period := rotationPeriod(s.config.Rotation, record.Timestamp)
+	period := rotationPeriod(s.config.Rotation, record.Timestamp, s.location)
 	rotate := s.size > 0 && period != "" && s.period != "" && period != s.period
 	if s.config.Rotation == "size" && s.size > 0 && s.size+int64(len(line)) > s.config.MaxSizeBytes {
 		rotate = true
@@ -93,8 +108,11 @@ func (s *fileSink) Write(ctx context.Context, record Record) error {
 	return nil
 }
 
-func rotationPeriod(mode string, at time.Time) string {
-	at = at.UTC()
+func rotationPeriod(mode string, at time.Time, location *time.Location) string {
+	if location == nil {
+		location = time.UTC
+	}
+	at = at.In(location)
 	switch mode {
 	case "day":
 		return at.Format("20060102")
@@ -129,7 +147,7 @@ func (s *fileSink) rotate(at time.Time) error {
 	}
 	s.file = file
 	s.size = 0
-	s.period = rotationPeriod(s.config.Rotation, at)
+	s.period = rotationPeriod(s.config.Rotation, at, s.location)
 	if s.config.Compress {
 		if err := gzipFile(rawPath); err != nil {
 			return err

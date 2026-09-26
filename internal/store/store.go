@@ -166,6 +166,11 @@ func (s *Store) Secret(ctx context.Context, siteID, name string) ([]byte, error)
 	return value, err
 }
 
+func (s *Store) DeleteSecret(ctx context.Context, siteID, name string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM site_secrets WHERE site_id=? AND name=?`, siteID, name)
+	return err
+}
+
 func (s *Store) AutoStartSites(ctx context.Context) ([]Site, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id,name,config_json,auto_start,updated_at FROM sites WHERE auto_start=1 ORDER BY name`)
 	if err != nil {

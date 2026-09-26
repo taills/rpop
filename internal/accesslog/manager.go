@@ -15,11 +15,16 @@ type Sink interface {
 	Close() error
 }
 
+type timeZoneAwareSink interface {
+	SetTimeZone(*time.Location)
+}
+
 type Manager struct {
-	mu     sync.RWMutex
-	dir    string
-	config Config
-	sink   Sink
+	mu       sync.RWMutex
+	dir      string
+	config   Config
+	sink     Sink
+	location *time.Location
 }
 
 func NewManager(dir string, config Config) (*Manager, error) {
@@ -31,7 +36,7 @@ func NewManager(dir string, config Config) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Manager{dir: dir, config: config, sink: sink}, nil
+	return &Manager{dir: dir, config: config, sink: sink, location: time.UTC}, nil
 }
 
 func normalizeConfig(c Config) Config {
@@ -51,13 +56,41 @@ func normalizeConfig(c Config) Config {
 	if c.ClickHouse.Table == "" {
 		c.ClickHouse.Table = defaults.ClickHouse.Table
 	}
+	if c.ClickHouse.SplitMode == "" {
+		c.ClickHouse.SplitMode = defaults.ClickHouse.SplitMode
+	}
 	if c.S3.Region == "" {
 		c.S3.Region = defaults.S3.Region
 	}
 	if c.S3.Prefix == "" {
 		c.S3.Prefix = defaults.S3.Prefix
 	}
+	if c.S3.SplitMode == "" {
+		c.S3.SplitMode = defaults.S3.SplitMode
+	}
+	c.Elasticsearch = normalizeElasticsearchConfig(c.Elasticsearch)
 	return c
+}
+
+func normalizeElasticsearchConfig(config ElasticsearchConfig) ElasticsearchConfig {
+	defaults := DefaultConfig().Elasticsearch
+	if config.Index == "" {
+		config.Index = defaults.Index
+	}
+	if config.SplitMode == "" {
+		config.SplitMode = defaults.SplitMode
+	}
+	if config.AuthType == "" {
+		switch {
+		case config.APIKey != "":
+			config.AuthType = "apiKey"
+		case config.Username != "" || config.Password != "":
+			config.AuthType = "basic"
+		default:
+			config.AuthType = defaults.AuthType
+		}
+	}
+	return config
 }
 
 func openSink(dir string, c Config) (Sink, error) {
@@ -68,6 +101,8 @@ func openSink(dir string, c Config) (Sink, error) {
 		return newClickHouseSink(c.ClickHouse)
 	case "s3":
 		return newS3Sink(c.S3)
+	case "elasticsearch":
+		return newElasticsearchSink(c.Elasticsearch)
 	default:
 		return nil, c.Validate()
 	}
@@ -77,6 +112,25 @@ func (m *Manager) Config() Config {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.config
+}
+
+func setSinkTimeZone(sink Sink, location *time.Location) {
+	if location == nil {
+		location = time.UTC
+	}
+	if aware, ok := sink.(timeZoneAwareSink); ok {
+		aware.SetTimeZone(location)
+	}
+}
+
+func (m *Manager) SetTimeZone(location *time.Location) {
+	if location == nil {
+		location = time.UTC
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.location = location
+	setSinkTimeZone(m.sink, location)
 }
 
 // Configure opens and validates the replacement sink before persisting and swapping it.
@@ -95,6 +149,7 @@ func (m *Manager) Configure(ctx context.Context, config Config, persist func([]b
 		return err
 	}
 	m.mu.Lock()
+	setSinkTimeZone(next, m.location)
 	if persist != nil {
 		if err := persist(serialized); err != nil {
 			m.mu.Unlock()

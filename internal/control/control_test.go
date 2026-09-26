@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -171,6 +172,69 @@ func TestYAMLConfigImportExport(t *testing.T) {
 	}
 }
 
+func TestSystemSettingsAPIPersistsAndAppliesOneGlobalTimeZone(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := store.Migrate(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	s := store.New(db)
+	control, err := NewWithLogDir(s, zap.NewNop(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.CloseAccessLogs(context.Background())
+	handler := control.Handler()
+	cookie := setupAdminForTest(t, handler)
+	call := func(method, body string, session *http.Cookie) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, "/api/settings", strings.NewReader(body))
+		if session != nil {
+			request.AddCookie(session)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	if response := call(http.MethodGet, "", nil); response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated settings status=%d, body=%s", response.Code, response.Body.String())
+	}
+	response := call(http.MethodGet, "", cookie)
+	var settings systemSettings
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &settings) != nil || settings.TimeZone != "UTC" {
+		t.Fatalf("unexpected default settings response: status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = call(http.MethodPut, `{"timeZone":"Asia/Shanghai"}`, cookie)
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &settings) != nil || settings.TimeZone != "Asia/Shanghai" {
+		t.Fatalf("could not update system timezone: status=%d body=%s", response.Code, response.Body.String())
+	}
+	raw, err := s.GetSetting(context.Background(), systemSettingsSettingKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted systemSettings
+	if err := json.Unmarshal(raw, &persisted); err != nil || persisted.TimeZone != "Asia/Shanghai" {
+		t.Fatalf("system timezone was not persisted: settings=%#v err=%v", persisted, err)
+	}
+	if response := call(http.MethodPut, `{"timeZone":"Mars/Phobos"}`, cookie); response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid timezone status=%d, body=%s", response.Code, response.Body.String())
+	}
+	if control.systemSettings.TimeZone != "Asia/Shanghai" {
+		t.Fatalf("invalid update changed active timezone: %q", control.systemSettings.TimeZone)
+	}
+	restarted, err := NewWithLogDir(s, zap.NewNop(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.CloseAccessLogs(context.Background())
+	if restarted.systemSettings.TimeZone != "Asia/Shanghai" {
+		t.Fatalf("system timezone was not restored at startup: %q", restarted.systemSettings.TimeZone)
+	}
+}
+
 func TestLoggingConfigAndSearchAPI(t *testing.T) {
 	db, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
@@ -298,6 +362,80 @@ func TestLoggingConfigAndSearchAPI(t *testing.T) {
 	}
 	if page.Total != 1 || len(page.Records) != 1 || page.Records[0].SiteID != "search-site" || page.Records[0].Path != "/find-me" || page.Records[0].Status != http.StatusAccepted {
 		t.Fatalf("unexpected log search: %#v", page)
+	}
+}
+
+func TestElasticsearchAdapterAPIHidesAndPreservesCredentials(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := store.Migrate(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewWithLogDir(store.New(db), zap.NewNop(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.CloseAccessLogs(context.Background())
+	handler := service.Handler()
+	cookie := setupAdminForTest(t, handler)
+	cluster := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer cluster.Close()
+
+	createBody := fmt.Sprintf(`{"name":"Elastic production","config":{"adapter":"elasticsearch","elasticsearch":{"url":%q,"index":"rpop-access-logs","authType":"apiKey","apiKey":"encoded-test-key"}}}`, cluster.URL)
+	create := httptest.NewRequest(http.MethodPost, "/api/logging/adapters", strings.NewReader(createBody))
+	create.AddCookie(cookie)
+	created := httptest.NewRecorder()
+	handler.ServeHTTP(created, create)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create Elasticsearch adapter: %d %s", created.Code, created.Body.String())
+	}
+	if strings.Contains(created.Body.String(), "encoded-test-key") || !strings.Contains(created.Body.String(), `"hasElasticsearchCredentials":true`) {
+		t.Fatalf("Elasticsearch API key was exposed or credential flag missing: %s", created.Body.String())
+	}
+	var response loggingConfigResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	var adapterID string
+	for _, adapter := range response.Adapters {
+		if adapter.Name == "Elastic production" {
+			adapterID = adapter.ID
+			if adapter.Config.Elasticsearch.APIKey != "" || adapter.Config.Elasticsearch.AuthType != "apiKey" {
+				t.Fatalf("unexpected safe Elasticsearch config: %#v", adapter.Config.Elasticsearch)
+			}
+		}
+	}
+	if adapterID == "" {
+		t.Fatal("created Elasticsearch adapter was missing from response")
+	}
+
+	updateBody := fmt.Sprintf(`{"name":"Elastic production","config":{"adapter":"elasticsearch","elasticsearch":{"url":%q,"index":"rpop-access-logs","authType":"apiKey"}}}`, cluster.URL)
+	update := httptest.NewRequest(http.MethodPut, "/api/logging/adapters/"+adapterID, strings.NewReader(updateBody))
+	update.AddCookie(cookie)
+	updated := httptest.NewRecorder()
+	handler.ServeHTTP(updated, update)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("update Elasticsearch adapter: %d %s", updated.Code, updated.Body.String())
+	}
+	stored, found := service.findLoggingAdapter(adapterID)
+	if !found || stored.Config.Elasticsearch.APIKey != "encoded-test-key" {
+		t.Fatalf("saved Elasticsearch API key was not preserved on blank update: %#v", stored.Config.Elasticsearch)
+	}
+
+	clearBody := fmt.Sprintf(`{"name":"Elastic production","config":{"adapter":"elasticsearch","elasticsearch":{"url":%q,"index":"rpop-access-logs","authType":"none"}}}`, cluster.URL)
+	clear := httptest.NewRequest(http.MethodPut, "/api/logging/adapters/"+adapterID, strings.NewReader(clearBody))
+	clear.AddCookie(cookie)
+	cleared := httptest.NewRecorder()
+	handler.ServeHTTP(cleared, clear)
+	if cleared.Code != http.StatusOK {
+		t.Fatalf("clear Elasticsearch adapter credentials: %d %s", cleared.Code, cleared.Body.String())
+	}
+	stored, _ = service.findLoggingAdapter(adapterID)
+	if stored.Config.Elasticsearch.APIKey != "" || stored.Config.Elasticsearch.AuthType != "none" {
+		t.Fatalf("credentials remained after switching auth type to none: %#v", stored.Config.Elasticsearch)
 	}
 }
 
