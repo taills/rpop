@@ -1,12 +1,31 @@
 import { useEffect, useState } from 'react'
+import TimezoneSelect from './TimezoneSelect.jsx'
+
+function cleanRootCertificate(certificate) {
+  return {
+    id: certificate.id,
+    name: (certificate.name || '').trim(),
+    pem: (certificate.pem || '').trim(),
+  }
+}
 
 export default function SystemSettings({ api, onChange }) {
   const [timeZone, setTimeZone] = useState('UTC')
+  const [savedTimeZone, setSavedTimeZone] = useState('UTC')
   const [rootCertificates, setRootCertificates] = useState([])
   const [loading, setLoading] = useState(true)
-  const [savingSettings, setSavingSettings] = useState(false)
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
+  const [activeTab, setActiveTab] = useState('general')
   const [settingsError, setSettingsError] = useState('')
   const [settingsMessage, setSettingsMessage] = useState('')
+  const [savingTimeZone, setSavingTimeZone] = useState(false)
+  const [certificateError, setCertificateError] = useState('')
+  const [certificateMessage, setCertificateMessage] = useState('')
+  const [savingCertificate, setSavingCertificate] = useState(false)
+  const [editingCertificateID, setEditingCertificateID] = useState(null)
+  const [certificateDraft, setCertificateDraft] = useState(null)
+  const [confirmDeleteID, setConfirmDeleteID] = useState(null)
+  const [certificateQuery, setCertificateQuery] = useState('')
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [savingPassword, setSavingPassword] = useState(false)
@@ -16,39 +35,101 @@ export default function SystemSettings({ api, onChange }) {
   useEffect(() => {
     api('/settings')
       .then(settings => {
-        setTimeZone(settings.timeZone || 'UTC')
+        const zone = settings.timeZone || 'UTC'
+        setTimeZone(zone)
+        setSavedTimeZone(zone)
         setRootCertificates(Array.isArray(settings.rootCertificates) ? settings.rootCertificates : [])
+        setSettingsLoaded(true)
       })
       .catch(err => setSettingsError(err.message))
       .finally(() => setLoading(false))
   }, [api])
 
-  async function saveSettings(event) {
+  async function saveTimeZone(event) {
     event.preventDefault()
-    setSavingSettings(true)
+    setSavingTimeZone(true)
     setSettingsError('')
     setSettingsMessage('')
     try {
       const settings = await api('/settings', {
         method: 'PUT',
-        body: JSON.stringify({
-          timeZone,
-          rootCertificates: rootCertificates.map(certificate => ({
-            id: certificate.id,
-            name: certificate.name.trim(),
-            pem: certificate.pem.trim(),
-          })).filter(certificate => certificate.pem),
-        }),
+        body: JSON.stringify({ timeZone, rootCertificates: rootCertificates.map(cleanRootCertificate) }),
       })
-      setTimeZone(settings.timeZone || 'UTC')
+      const zone = settings.timeZone || 'UTC'
+      setTimeZone(zone)
+      setSavedTimeZone(zone)
       setRootCertificates(Array.isArray(settings.rootCertificates) ? settings.rootCertificates : [])
-      setSettingsMessage('系统设置已保存。上游根证书在站点下次启动或重载时生效。')
+      setSettingsMessage('系统时区已保存。')
       onChange?.()
     } catch (err) {
       setSettingsError(err.message)
     } finally {
-      setSavingSettings(false)
+      setSavingTimeZone(false)
     }
+  }
+
+  async function persistRootCertificates(nextCertificates, successMessage) {
+    setSavingCertificate(true)
+    setCertificateError('')
+    setCertificateMessage('')
+    try {
+      const settings = await api('/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          timeZone: savedTimeZone,
+          rootCertificates: nextCertificates.map(cleanRootCertificate),
+        }),
+      })
+      setRootCertificates(Array.isArray(settings.rootCertificates) ? settings.rootCertificates : [])
+      setSavedTimeZone(settings.timeZone || 'UTC')
+      setSettingsLoaded(true)
+      setCertificateDraft(null)
+      setEditingCertificateID(null)
+      setConfirmDeleteID(null)
+      setCertificateMessage(successMessage)
+      onChange?.()
+    } catch (err) {
+      setCertificateError(err.message)
+    } finally {
+      setSavingCertificate(false)
+    }
+  }
+
+  async function saveRootCertificate(event) {
+    event.preventDefault()
+    if (!certificateDraft?.name.trim() || !certificateDraft?.pem.trim()) {
+      setCertificateError('请填写证书名称并粘贴 CA 根证书 PEM。')
+      return
+    }
+    let candidate
+    let successMessage
+    if (editingCertificateID) {
+      candidate = rootCertificates.map(certificate => certificate.id === editingCertificateID ? { ...certificate, ...certificateDraft } : certificate)
+      successMessage = 'CA 根证书已更新。'
+    } else {
+      candidate = [...rootCertificates, certificateDraft]
+      successMessage = 'CA 根证书已添加。'
+    }
+    await persistRootCertificates(candidate, successMessage)
+  }
+
+  async function deleteRootCertificate(certificate) {
+    const candidate = rootCertificates.filter(item => item.id !== certificate.id)
+    await persistRootCertificates(candidate, 'CA 根证书已删除。')
+  }
+
+  function openCertificateEditor(certificate = null) {
+    setCertificateError('')
+    setCertificateMessage('')
+    setConfirmDeleteID(null)
+    setEditingCertificateID(certificate?.id || null)
+    setCertificateDraft(certificate ? { name: certificate.name, pem: certificate.pem } : { name: '', pem: '' })
+  }
+
+  function cancelCertificateEditor() {
+    setCertificateDraft(null)
+    setEditingCertificateID(null)
+    setCertificateError('')
   }
 
   async function changePassword(event) {
@@ -71,61 +152,85 @@ export default function SystemSettings({ api, onChange }) {
     }
   }
 
-  function updateRootCertificate(index, field, value) {
-    setRootCertificates(current => current.map((certificate, item) => item === index ? { ...certificate, [field]: value } : certificate))
-  }
-
-  function removeRootCertificate(index) {
-    setRootCertificates(current => current.filter((_, item) => item !== index))
-  }
+  const canManageSettings = settingsLoaded && !loading
+  const normalizedCertificateQuery = certificateQuery.trim().toLowerCase()
+  const visibleRootCertificates = rootCertificates.filter(certificate => !normalizedCertificateQuery || `${certificate.name} ${certificate.id}`.toLowerCase().includes(normalizedCertificateQuery))
 
   return <div className="system-settings-page">
-    <section className="settings-panel">
+    <header className="system-settings-heading">
       <div className="eyebrow">SYSTEM</div>
       <h2>系统设置</h2>
-      <p>统一管理系统时区和可供上游 HTTPS 站点选择的 CA 根证书。</p>
-      {settingsError && <div className="error settings-message">{settingsError}</div>}
-      {settingsMessage && <div className="log-success settings-message">{settingsMessage}</div>}
-      {loading && <p>正在读取系统设置…</p>}
-      {!loading && <form className="settings-form" onSubmit={saveSettings}>
-        <label className="wide">系统时区
-          <input required value={timeZone} onChange={event => setTimeZone(event.target.value)} placeholder="UTC 或 Asia/Shanghai" autoComplete="off" spellCheck="false"/>
-          <span>默认为 UTC。填写 IANA 时区名，例如 Asia/Shanghai 或 America/Los_Angeles。日志时间戳和搜索时间范围仍为绝对时间。</span>
-        </label>
-        <div className="wide ca-settings">
-          <div className="ca-settings-heading">
-            <div><strong>上游 HTTPS CA 根证书</strong><span>为每张证书设置名称并粘贴一个 PEM 证书；随后可在站点上游配置中按站点选择。</span></div>
-            <button type="button" className="secondary" onClick={() => setRootCertificates(current => [...current, { name: '', pem: '' }])}>＋ 添加根证书</button>
-          </div>
-          {rootCertificates.length === 0 && <p className="ca-empty">尚未添加系统级 CA 根证书。</p>}
-          <div className="ca-certificate-list">
-            {rootCertificates.map((certificate, index) => <div className="ca-certificate" key={certificate.id || `new-${index}`}>
-              <label>证书名称
-                <input required value={certificate.name || ''} onChange={event => updateRootCertificate(index, 'name', event.target.value)} placeholder="例如：公司内部根 CA"/>
-              </label>
-              <label className="wide">CA 根证书 PEM
-                <textarea required rows="7" value={certificate.pem || ''} onChange={event => updateRootCertificate(index, 'pem', event.target.value)} placeholder={'-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----'} spellCheck="false" autoCapitalize="off" autoComplete="off"/>
-              </label>
-              <button type="button" className="secondary ca-remove" onClick={() => removeRootCertificate(index)}>移除</button>
-            </div>)}
-          </div>
-          <p className="ca-help">保存后不会自动信任所有自定义 CA；请在需要的站点上游中选择证书。被站点引用的证书不能直接移除。所选自定义 CA 会加入系统默认根证书池，并与该站点现有 CA Bundle 一起用于校验。</p>
-        </div>
-        <button className="primary" disabled={savingSettings}>{savingSettings ? '保存中…' : '保存系统设置'}</button>
-      </form>}
-    </section>
+      <p>管理系统时区、上游 HTTPS CA 根证书和管理员密码。</p>
+    </header>
 
-    <section className="settings-panel">
-      <div className="eyebrow">SECURITY</div>
-      <h2>管理密码</h2>
-      <p>密码至少 12 个字符。更新后其他浏览器会话将立即失效。</p>
-      {passwordError && <div className="error settings-message">{passwordError}</div>}
-      {passwordMessage && <div className="log-success settings-message">{passwordMessage}</div>}
-      <form className="settings-form" onSubmit={changePassword}>
-        <label>当前密码<input type="password" required autoComplete="current-password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)}/></label>
-        <label>新密码<input type="password" required minLength="12" autoComplete="new-password" value={newPassword} onChange={event => setNewPassword(event.target.value)}/></label>
-        <button className="primary" disabled={savingPassword}>{savingPassword ? '更新中…' : '更新管理密码'}</button>
-      </form>
-    </section>
+    <div className="system-settings-tabs" role="tablist" aria-label="系统设置分类">
+      <button type="button" role="tab" id="system-settings-tab-general" aria-selected={activeTab === 'general'} aria-controls="system-settings-panel-general" onClick={() => setActiveTab('general')}>常规设置</button>
+      <button type="button" role="tab" id="system-settings-tab-ca" aria-selected={activeTab === 'ca'} aria-controls="system-settings-panel-ca" onClick={() => setActiveTab('ca')}>上游 CA 根证书 <span className="tab-count">{rootCertificates.length}</span></button>
+    </div>
+
+    {activeTab === 'general' && <div id="system-settings-panel-general" role="tabpanel" aria-labelledby="system-settings-tab-general" className="system-settings-tabpanel">
+      <section className="settings-panel">
+        <h3>系统时区</h3>
+        <p>日志分区与本地文件轮转使用此时区；日志时间戳和搜索时间范围仍表示绝对时间。</p>
+        {settingsError && <div className="error settings-message">{settingsError}</div>}
+        {!settingsLoaded && !loading && <p className="settings-load-error">系统设置未能加载，暂不能修改。</p>}
+        {loading && <p>正在读取系统设置…</p>}
+        {settingsLoaded && <form className="settings-form timezone-settings-form" onSubmit={saveTimeZone}>
+          <label className="wide">选择系统时区
+            <TimezoneSelect value={timeZone} onChange={setTimeZone} disabled={!canManageSettings || savingTimeZone}/>
+            <span>通过搜索过滤 IANA 时区并从列表中选择；不能输入列表以外的值。默认 UTC。</span>
+          </label>
+          {settingsMessage && <div className="log-success settings-message wide">{settingsMessage}</div>}
+          <button className="primary" disabled={!canManageSettings || savingTimeZone || timeZone === savedTimeZone}>{savingTimeZone ? '保存中…' : '保存时区'}</button>
+        </form>}
+      </section>
+
+      <section className="settings-panel">
+        <div className="eyebrow">SECURITY</div>
+        <h3>管理密码</h3>
+        <p>密码至少 12 个字符。更新后其他浏览器会话将立即失效。</p>
+        {passwordError && <div className="error settings-message">{passwordError}</div>}
+        {passwordMessage && <div className="log-success settings-message">{passwordMessage}</div>}
+        <form className="settings-form" onSubmit={changePassword}>
+          <label>当前密码<input type="password" required autoComplete="current-password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)}/></label>
+          <label>新密码<input type="password" required minLength="12" autoComplete="new-password" value={newPassword} onChange={event => setNewPassword(event.target.value)}/></label>
+          <button className="primary" disabled={savingPassword}>{savingPassword ? '更新中…' : '更新管理密码'}</button>
+        </form>
+      </section>
+    </div>}
+
+    {activeTab === 'ca' && <section id="system-settings-panel-ca" role="tabpanel" aria-labelledby="system-settings-tab-ca" className="settings-panel ca-management-panel">
+      <div className="ca-management-heading">
+        <div><h3>上游 HTTPS CA 根证书</h3><p>集中管理多个根证书；添加后可在站点上游配置中按站点选择。所选证书会与系统默认根证书池及该站点已有 CA Bundle 一起用于校验。</p></div>
+        <button type="button" className="secondary" disabled={!canManageSettings || savingCertificate || rootCertificates.length >= 64} onClick={() => openCertificateEditor()}>＋ 添加根证书</button>
+      </div>
+      {certificateError && <div className="error settings-message">{certificateError}</div>}
+      {certificateMessage && <div className="log-success settings-message">{certificateMessage}</div>}
+      {loading && <p>正在读取 CA 根证书…</p>}
+      {!loading && !settingsLoaded && <p className="settings-load-error">系统设置未能加载，暂不能管理根证书。</p>}
+      {settingsLoaded && rootCertificates.length === 0 && !certificateDraft && <div className="ca-empty-state"><strong>尚未添加系统级 CA 根证书</strong><span>添加证书后，可在站点的 HTTPS 上游配置中选择一个或多个信任根。</span></div>}
+      {rootCertificates.length > 0 && <label className="ca-search">搜索根证书<input type="search" value={certificateQuery} onChange={event => setCertificateQuery(event.target.value)} placeholder="按证书名称或 SHA-256 指纹搜索" autoComplete="off"/></label>}
+      {certificateDraft && <form className="ca-editor" onSubmit={saveRootCertificate}>
+        <div className="ca-editor-heading"><h4>{editingCertificateID ? '编辑 CA 根证书' : '添加 CA 根证书'}</h4><button type="button" className="icon-button" aria-label="关闭证书编辑器" onClick={cancelCertificateEditor}>×</button></div>
+        <label>证书名称<input required maxLength="128" value={certificateDraft.name} onChange={event => setCertificateDraft(current => ({ ...current, name: event.target.value }))} placeholder="例如：公司内部根 CA"/></label>
+        <label>CA 根证书 PEM<textarea required rows="8" value={certificateDraft.pem} onChange={event => setCertificateDraft(current => ({ ...current, pem: event.target.value }))} placeholder={'-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----'} spellCheck="false" autoCapitalize="off" autoComplete="off"/></label>
+        <p className="ca-editor-note">只接受单张有效的 X.509 CA 证书。证书被站点引用时不能删除或替换其内容；请先在相关站点取消选择。</p>
+        <div className="ca-editor-actions"><button type="button" className="secondary" onClick={cancelCertificateEditor} disabled={savingCertificate}>取消</button><button className="primary" disabled={savingCertificate}>{savingCertificate ? '保存中…' : '保存证书'}</button></div>
+      </form>}
+      {settingsLoaded && rootCertificates.length > 0 && visibleRootCertificates.length === 0 && <div className="ca-empty-state">没有匹配的根证书。</div>}
+      {settingsLoaded && visibleRootCertificates.length > 0 && <div className="ca-record-list">
+        {visibleRootCertificates.map(certificate => <article className="ca-record" key={certificate.id}>
+          <div className="ca-record-main"><div><h4>{certificate.name}</h4><code>SHA-256 · {certificate.id}</code></div><div className="ca-record-actions">
+            {confirmDeleteID === certificate.id ? (
+              <><span className="ca-delete-prompt">确认删除？被站点引用时会被拒绝。</span><button type="button" className="danger" disabled={savingCertificate} onClick={() => deleteRootCertificate(certificate)}>确认删除</button><button type="button" className="secondary" onClick={() => setConfirmDeleteID(null)}>取消</button></>
+            ) : (
+              <><button type="button" className="secondary" disabled={savingCertificate || certificateDraft !== null} onClick={() => openCertificateEditor(certificate)}>编辑</button><button type="button" className="secondary" disabled={savingCertificate || certificateDraft !== null} onClick={() => { setCertificateError(''); setCertificateMessage(''); setConfirmDeleteID(certificate.id) }}>删除</button></>
+            )}
+          </div></div>
+          <details className="ca-record-details"><summary>查看证书 PEM</summary><pre>{certificate.pem}</pre></details>
+        </article>)}
+      </div>}
+      <p className="ca-management-note">最多 64 张证书。根证书仅在站点明确选择后生效；移除已被站点引用的证书前，需先修改对应站点配置。</p>
+    </section>}
   </div>
 }
