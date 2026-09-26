@@ -277,8 +277,15 @@ func (c *Control) metricsForSite(siteID string) *siteMetrics {
 	return value.(*siteMetrics)
 }
 
-// observeSite records metrics and access logs for a site; upstream is the redacted target URL written to each record.
-func (c *Control) observeSite(siteID, upstream string, settings store.AccessLogConfig, next http.Handler) http.Handler {
+// routeTrace lets the routing handler report the chosen upstream (redacted URL) and route label back to observeSite.
+type routeTrace struct {
+	upstream, route string
+}
+
+type routeTraceKey struct{}
+
+// observeSite records metrics and access logs for a site.
+func (c *Control) observeSite(siteID string, settings store.AccessLogConfig, next http.Handler) http.Handler {
 	loggingEnabled := strings.TrimSpace(settings.AdapterID) != ""
 	includeBodies := loggingEnabled && settings.IncludeBodies
 	limit := settings.MaxBodyBytes
@@ -321,7 +328,8 @@ func (c *Control) observeSite(siteID, upstream string, settings store.AccessLogC
 			}
 			firstMu.Unlock()
 		}}
-		ctx := httptrace.WithClientTrace(r.Context(), trace)
+		route := &routeTrace{}
+		ctx := httptrace.WithClientTrace(context.WithValue(r.Context(), routeTraceKey{}, route), trace)
 		next.ServeHTTP(rw, r.WithContext(ctx))
 		elapsed := time.Since(started)
 		if rw.status == 0 {
@@ -340,7 +348,8 @@ func (c *Control) observeSite(siteID, upstream string, settings store.AccessLogC
 		}
 		requestHeaders := loggedHeaders(r.Header, settings.IncludeSensitiveHeaders)
 		responseHeaders := loggedHeaders(rw.Header(), settings.IncludeSensitiveHeaders)
-		record := requestRecord(r, siteID, upstream, started)
+		record := requestRecord(r, siteID, route.upstream, started)
+		record.Route = route.route
 		record.RequestHeaders, record.ResponseHeaders = requestHeaders, responseHeaders
 		record.Status, record.RequestBytes, record.ResponseBytes = rw.status, requestBytesCount, rw.bytes
 		record.TTFBMillis, record.ResponseMillis = float64(ttfb)/float64(time.Millisecond), float64(elapsed)/float64(time.Millisecond)
@@ -465,7 +474,7 @@ func accessLogFields(record accesslog.Record) []zap.Field {
 		zap.String("site_id", record.SiteID), zap.String("client_ip", record.ClientIP), zap.Int("client_port", record.ClientPort), zap.String("forwarded_for", record.ForwardedFor),
 		zap.String("scheme", record.Scheme), zap.String("tls_version", record.TLSVersion), zap.String("host", record.Host),
 		zap.String("method", record.Method), zap.String("path", record.Path), zap.String("protocol", record.Protocol),
-		zap.String("referer", record.Referer), zap.String("user_agent", record.UserAgent), zap.String("upstream", record.Upstream),
+		zap.String("referer", record.Referer), zap.String("user_agent", record.UserAgent), zap.String("upstream", record.Upstream), zap.String("route", record.Route),
 		zap.Any("request_headers", record.RequestHeaders), zap.Int("status", record.Status), zap.Any("response_headers", record.ResponseHeaders),
 		zap.Int64("request_body_bytes", int64(record.RequestBytes)), zap.Uint64("response_body_bytes", record.ResponseBytes),
 		zap.Duration("ttfb", time.Duration(record.TTFBMillis*float64(time.Millisecond))), zap.Duration("response_time", time.Duration(record.ResponseMillis*float64(time.Millisecond))),

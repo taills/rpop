@@ -23,6 +23,7 @@ type Record struct {
 	Referer                string              `json:"referer,omitempty"`
 	UserAgent              string              `json:"userAgent,omitempty"`
 	Upstream               string              `json:"upstream,omitempty"`
+	Route                  string              `json:"route,omitempty"`
 	RequestHeaders         map[string][]string `json:"requestHeaders"`
 	Status                 int                 `json:"status"`
 	ResponseHeaders        map[string][]string `json:"responseHeaders"`

@@ -13,6 +13,25 @@ type Upstream struct {
 	DialAddress         string   `json:"dialAddress,omitempty" yaml:"dialAddress,omitempty"`
 	ServerName          string   `json:"serverName,omitempty" yaml:"serverName,omitempty"`
 }
+
+// HeaderMatch is one request-header condition of a Route, following Caddy's header matcher:
+// each value may be exact, "prefix*", "*suffix" or "*substring*"; values are ORed.
+// No values means the header must be present; Absent means it must not be present.
+type HeaderMatch struct {
+	Name   string   `json:"name" yaml:"name"`
+	Values []string `json:"values,omitempty" yaml:"values,omitempty"`
+	Absent bool     `json:"absent,omitempty" yaml:"absent,omitempty"`
+}
+
+// Route sends matching requests to Upstreams[Upstream]. Path is exact unless it ends in "*"
+// (prefix match) and is compared case-insensitively; an empty Path matches every path.
+// All header conditions must hold. StripPrefix removes the matched path prefix before proxying.
+type Route struct {
+	Path        string        `json:"path,omitempty" yaml:"path,omitempty"`
+	Headers     []HeaderMatch `json:"headers,omitempty" yaml:"headers,omitempty"`
+	StripPrefix bool          `json:"stripPrefix,omitempty" yaml:"stripPrefix,omitempty"`
+	Upstream    int           `json:"upstream" yaml:"upstream"`
+}
 type AccessLogConfig struct {
 	AdapterID               string `json:"adapterId,omitempty" yaml:"adapterId,omitempty"`
 	IncludeBodies           bool   `json:"includeBodies,omitempty" yaml:"includeBodies,omitempty"`
@@ -28,6 +47,7 @@ type Config struct {
 	CertificateSecret string          `json:"certificateSecret,omitempty" yaml:"certificateSecret,omitempty"`
 	PrivateKeySecret  string          `json:"privateKeySecret,omitempty" yaml:"privateKeySecret,omitempty"`
 	Upstreams         []Upstream      `json:"upstreams" yaml:"upstreams"`
+	Routes            []Route         `json:"routes,omitempty" yaml:"routes,omitempty"`
 	AccessLog         AccessLogConfig `json:"accessLog,omitempty" yaml:"accessLog,omitempty"`
 }
 type Site struct {

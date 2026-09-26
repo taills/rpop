@@ -306,7 +306,7 @@ func TestLoggingConfigAndSearchAPI(t *testing.T) {
 	if err := service.store.Save(context.Background(), store.Site{ID: "search-site", Name: "Search site", Config: store.Config{AccessLog: store.AccessLogConfig{AdapterID: "default"}}}); err != nil {
 		t.Fatal(err)
 	}
-	observed := service.observeSite("search-site", "", store.AccessLogConfig{AdapterID: "default"}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	observed := service.observeSite("search-site", store.AccessLogConfig{AdapterID: "default"}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Result", "ok")
 		w.WriteHeader(http.StatusAccepted)
 	}))
@@ -488,7 +488,7 @@ func TestAccessLogsRemainDisabledWithoutSiteAdapterSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer service.CloseAccessLogs(context.Background())
-	handler := service.observeSite("disabled-site", "", store.AccessLogConfig{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := service.observeSite("disabled-site", store.AccessLogConfig{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
@@ -571,7 +571,7 @@ func TestAccessLoggingAndMetrics(t *testing.T) {
 	defer upstream.Close()
 	core, logs := observer.New(zap.InfoLevel)
 	c := New(store.New(db), zap.New(core))
-	handler, err := c.proxyHandler(context.Background(), "site-a", store.Config{Upstreams: []store.Upstream{{URL: upstream.URL}}, AccessLog: store.AccessLogConfig{AdapterID: "test", IncludeBodies: true, MaxBodyBytes: 64}})
+	handler, err := c.proxyHandler(context.Background(), "site-a", store.Config{Upstreams: []store.Upstream{{URL: upstream.URL}}, Routes: []store.Route{{Path: "/echo"}}, AccessLog: store.AccessLogConfig{AdapterID: "test", IncludeBodies: true, MaxBodyBytes: 64}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -608,7 +608,7 @@ func TestAccessLoggingAndMetrics(t *testing.T) {
 	want := map[string]any{
 		"client_ip": "192.0.2.1", "client_port": int64(1234), "forwarded_for": "203.0.113.7, 198.51.100.2",
 		"scheme": "http", "tls_version": "", "host": "example.com",
-		"referer": "https://referrer.example/page", "user_agent": "rpop-test/1.0", "upstream": upstream.URL,
+		"referer": "https://referrer.example/page", "user_agent": "rpop-test/1.0", "upstream": upstream.URL, "route": "/echo",
 	}
 	for key, value := range want {
 		if ctx[key] != value {

@@ -89,6 +89,7 @@ func (c *Control) Handler() http.Handler {
 	m.HandleFunc("/api/config.yaml", c.yamlConfig)
 	m.HandleFunc("/api/sites", c.sites)
 	m.HandleFunc("/api/sites/", c.site)
+	m.HandleFunc("/api/routes/simulate", c.simulateRoute)
 	return c.authMiddleware(m)
 }
 
@@ -380,30 +381,66 @@ func (c *Control) proxyHandler(ctx context.Context, id string, cfg store.Config)
 	if len(cfg.Upstreams) == 0 {
 		return nil, fmt.Errorf("at least one upstream is required")
 	}
-	u, e := url.Parse(cfg.Upstreams[0].URL)
+	router, err := compileRoutes(cfg.Routes, len(cfg.Upstreams))
+	if err != nil {
+		return nil, err
+	}
+	targets := make([]upstreamTarget, 0, len(cfg.Upstreams))
+	for index, upstream := range cfg.Upstreams {
+		target, err := c.upstreamTarget(ctx, id, upstream)
+		if err != nil {
+			return nil, fmt.Errorf("upstreams[%d]: %w", index, err)
+		}
+		targets = append(targets, target)
+	}
+	return c.observeSite(id, cfg.AccessLog, routedHandler(router, targets)), nil
+}
+
+// upstreamTarget is one upstream with its own transport; the per-request routeDecision decides the path rewrite.
+type upstreamTarget struct {
+	label string
+	proxy *httputil.ReverseProxy
+}
+
+type routeDecisionKey struct{}
+
+func (c *Control) upstreamTarget(ctx context.Context, id string, upstream store.Upstream) (upstreamTarget, error) {
+	u, e := url.Parse(upstream.URL)
 	if e != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-		return nil, fmt.Errorf("invalid upstream URL")
+		return upstreamTarget{}, fmt.Errorf("invalid upstream URL")
 	}
-	systemRoots, e := c.selectedRootCertificates(cfg.Upstreams[0].RootCertificateIDs)
+	systemRoots, e := c.selectedRootCertificates(upstream.RootCertificateIDs)
 	if e != nil {
-		return nil, e
+		return upstreamTarget{}, e
 	}
-	systemClientCertificate, e := c.selectedClientCertificate(cfg.Upstreams[0].ClientCertificateID)
+	systemClientCertificate, e := c.selectedClientCertificate(upstream.ClientCertificateID)
 	if e != nil {
-		return nil, e
+		return upstreamTarget{}, e
 	}
-	transport, e := store.BuildTransport(ctx, c.store, id, cfg.Upstreams[0], systemRoots, systemClientCertificate)
+	transport, e := store.BuildTransport(ctx, c.store, id, upstream, systemRoots, systemClientCertificate)
 	if e != nil {
-		return nil, e
+		return upstreamTarget{}, e
 	}
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.SetURL(u)
-			pr.Out.Host = u.Host
+			decision, _ := pr.In.Context().Value(routeDecisionKey{}).(routeDecision)
+			applyRoute(pr, u, decision)
 		},
 	}
-	return c.observeSite(id, u.Redacted(), cfg.AccessLog, proxy), nil
+	return upstreamTarget{label: u.Redacted(), proxy: proxy}, nil
+}
+
+// routedHandler dispatches each request to the upstream chosen by the site's routes and reports the choice to observeSite.
+func routedHandler(router siteRouter, targets []upstreamTarget) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		decision := router.resolve(r)
+		target := targets[decision.upstream]
+		if trace, ok := r.Context().Value(routeTraceKey{}).(*routeTrace); ok {
+			trace.upstream, trace.route = target.label, decision.label
+		}
+		target.proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), routeDecisionKey{}, decision)))
+	})
 }
 func validate(x store.Site) error {
 	if strings.TrimSpace(x.ID) == "" || strings.TrimSpace(x.Name) == "" {
@@ -425,6 +462,9 @@ func validate(x store.Site) error {
 		return fmt.Errorf("accessLog.maxBodyBytes must be -1 or a non-negative byte limit")
 	}
 	if _, err := normalizedHostnames(x.Config.Hostnames); err != nil {
+		return err
+	}
+	if _, err := compileRoutes(x.Config.Routes, len(x.Config.Upstreams)); err != nil {
 		return err
 	}
 	for index, u := range x.Config.Upstreams {
