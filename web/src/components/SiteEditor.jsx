@@ -1,23 +1,10 @@
-import { isExpired, isHTTPSURL, uncoveredHostnames } from '../siteForm.js'
-
-function FormSection({ title, description, children }) {
-  return <>
-    <div className="form-section-title wide"><strong>{title}</strong>{description && <span>{description}</span>}</div>
-    {children}
-  </>
-}
-
-// OptionToggle shows its settings only while the checkbox is on.
-function OptionToggle({ checked, onChange, label, hint, children }) {
-  return <>
-    <label className="check"><input type="checkbox" checked={checked} onChange={event => onChange(event.target.checked)}/> {label} {hint && <span>{hint}</span>}</label>
-    {checked && children && <div className="wide toggle-panel form-grid">{children}</div>}
-  </>
-}
-
-function certificateLabel(certificate, detail) {
-  return `${certificate.name}${detail ? ` · ${detail}` : ''}${isExpired(certificate) ? ' · 已过期' : ''}`
-}
+import { useState } from 'react'
+import '../Routing.css'
+import { uncoveredHostnames } from '../siteForm.js'
+import { FormSection, OptionToggle, certificateLabel } from './FormParts.jsx'
+import UpstreamFields from './UpstreamFields.jsx'
+import RouteEditor from './RouteEditor.jsx'
+import RouteSimulator from './RouteSimulator.jsx'
 
 function ServerCertificateFields({ site, serverCertificates, setConfig, setFile }) {
   const selected = serverCertificates.find(certificate => certificate.id === site.config.certificateId)
@@ -42,34 +29,35 @@ function ServerCertificateFields({ site, serverCertificates, setConfig, setFile 
   </>
 }
 
-function ClientCertificateFields({ upstream, clientCertificates, setUpstream, setFile }) {
-  return <>
-    <label className="wide">Client 证书来源
-      <select value={upstream.clientCertificateId || ''} onChange={event => { const clientCertificateId = event.target.value; if (clientCertificateId) { setFile('upstreamCertFile', null); setFile('upstreamKeyFile', null) } setUpstream({ clientCertificateId }) }}>
-        <option value="">上传站点专属证书</option>
-        {clientCertificates.map(certificate => <option key={certificate.id} value={certificate.id}>{certificateLabel(certificate, certificate.subject)}</option>)}
+function AccessLogFields({ accessLog, enabled, logAdapters, onToggle, setAccessLog }) {
+  return <OptionToggle checked={enabled} onChange={onToggle} label="记录该站点的访问日志" hint={logAdapters.length ? '写入所选日志适配器' : '尚未配置日志适配器'}>
+    <label className="wide">日志适配器
+      <select required value={accessLog.adapterId || ''} onChange={event => setAccessLog({ adapterId: event.target.value })}>
+        <option value="" disabled>请选择日志适配器</option>
+        {logAdapters.map(adapter => <option key={adapter.id} value={adapter.id}>{adapter.name} · {adapter.config.adapter}</option>)}
       </select>
-      <span>{upstream.clientCertificateId ? '使用系统设置中集中管理的 Client 证书。' : upstream.clientCertSecret ? '已配置站点专属证书；不选择文件表示保留，上传新证书与私钥可替换。' : clientCertificates.length ? '可选择系统 Client 证书，或上传站点专属证书与私钥。' : '暂无系统 Client 证书；可上传站点专属证书，或在系统设置的“mTLS Client 证书”中添加。'}</span>
+      {!logAdapters.length && <span>尚未配置日志适配器；请先到“日志适配器”页面添加。</span>}
     </label>
-    {!upstream.clientCertificateId && <>
-      <label>站点 Client 证书 PEM<input type="file" accept=".pem,.crt,.cer" onChange={event => setFile('upstreamCertFile', event.target.files?.[0] || null)}/></label>
-      <label>站点 Client 私钥 PEM<input type="file" accept=".pem,.key" onChange={event => setFile('upstreamKeyFile', event.target.files?.[0] || null)}/></label>
-    </>}
-  </>
+    <label className="check"><input type="checkbox" checked={!!accessLog.includeSensitiveHeaders} onChange={event => setAccessLog({ includeSensitiveHeaders: event.target.checked })}/> 记录敏感 Header 原值 <span>关闭时脱敏 Authorization、Cookie 等字段</span></label>
+    <OptionToggle checked={!!accessLog.includeBodies} onChange={includeBodies => setAccessLog({ includeBodies })} label="记录完整请求与响应 Body" hint="可能包含个人或业务敏感信息">
+      <label className="wide">Body 日志上限（字节，-1 表示无限）<input type="number" min="-1" max="8388608" value={accessLog.maxBodyBytes ?? 1048576} onChange={event => setAccessLog({ maxBodyBytes: event.target.value === '' ? '' : Number(event.target.value) })}/><span>留空或 0 使用默认 1 MiB，正数最大 8 MiB；-1 不截断，但会增加内存占用</span></label>
+    </OptionToggle>
+  </OptionToggle>
 }
 
-export default function SiteEditor({ site, isNew, sections, catalog, saving, error, onChange, onSectionsChange, setFile, onCancel, onSubmit }) {
-  const { rootCertificates, clientCertificates, serverCertificates, logAdapters } = catalog
-  const upstream = site.config.upstreams[0]
+export default function SiteEditor({ site, isNew, sections, catalog, saving, error, upstreamFiles, onChange, onSectionsChange, setFile, setUpstreamFile, onAddUpstream, onRemoveUpstream, onMakeDefault, onSimulate, onCancel, onSubmit }) {
+  const { serverCertificates, logAdapters } = catalog
+  const [matchedRoute, setMatchedRoute] = useState(null)
+  const { upstreams } = site.config
+  const routes = site.config.routes || []
   const accessLog = site.config.accessLog || {}
-  const httpsUpstream = isHTTPSURL(upstream.url)
   const setConfig = patch => onChange({ ...site, config: { ...site.config, ...patch } })
-  const setUpstream = patch => setConfig({ upstreams: [{ ...upstream, ...patch }, ...site.config.upstreams.slice(1)] })
+  const setUpstream = index => patch => setConfig({ upstreams: upstreams.map((upstream, i) => i === index ? { ...upstream, ...patch } : upstream) })
+  const setUpstreamSections = index => next => onSectionsChange({ ...sections, upstreams: sections.upstreams.map((item, i) => i === index ? next : item) })
   const setAccessLog = patch => setConfig({ accessLog: { ...accessLog, ...patch } })
-  const toggle = key => checked => onSectionsChange({ ...sections, [key]: checked })
 
   return <div className="overlay" onMouseDown={event => event.target === event.currentTarget && onCancel()}>
-    <form className="modal" onSubmit={onSubmit}>
+    <form className="modal site-modal" onSubmit={onSubmit}>
       <div className="modal-head"><div><div className="eyebrow">SITE CONFIGURATION</div><h2>{isNew ? '新建站点' : '编辑站点'}</h2></div><button type="button" className="close" onClick={onCancel}>×</button></div>
       {error && <div className="error modal-error" role="alert">{error}</div>}
       <div className="form-grid">
@@ -88,49 +76,24 @@ export default function SiteEditor({ site, isNew, sections, catalog, saving, err
           </OptionToggle>
         </FormSection>
 
-        <FormSection title="上游" description="当前使用第一个上游转发请求">
-          <label className="wide">上游 URL<input required type="url" value={upstream.url} onChange={event => setUpstream({ url: event.target.value })} placeholder="https://backend.example.com"/></label>
-          <OptionToggle checked={sections.proxy} onChange={toggle('proxy')} label="通过代理连接上游" hint="HTTP(S)、SOCKS5 / SOCKS5H">
-            <label className="wide">代理 URL<input required value={upstream.proxyUrl || ''} onChange={event => setUpstream({ proxyUrl: event.target.value })} placeholder="socks5://127.0.0.1:1080"/></label>
-          </OptionToggle>
-          <OptionToggle checked={sections.dialAddress} onChange={toggle('dialAddress')} label="覆盖连接地址（不使用 DNS 解析）" hint="仅直连时生效">
-            <label className="wide">连接地址<input required value={upstream.dialAddress || ''} onChange={event => setUpstream({ dialAddress: event.target.value })} placeholder="203.0.113.10:443"/>
-              <span className={sections.proxy ? 'cert-coverage warn' : 'cert-coverage'}>{sections.proxy ? '已启用代理：连接地址不会生效，由代理解析上游域名。' : '省略端口时按上游协议使用 80 或 443。'}</span>
-            </label>
-          </OptionToggle>
-          {httpsUpstream ? <>
-            <OptionToggle checked={sections.serverName} onChange={toggle('serverName')} label="自定义 SNI / 证书校验域名" hint="默认使用上游 URL 的域名">
-              <label className="wide">SNI<input required value={upstream.serverName || ''} onChange={event => setUpstream({ serverName: event.target.value })} placeholder="backend.example.com"/></label>
-            </OptionToggle>
-            <OptionToggle checked={sections.rootCertificates} onChange={toggle('rootCertificates')} label="信任自定义 CA 根证书" hint="与系统默认根证书一起用于校验">
-              <label className="wide">CA 根证书（可多选）
-                <select multiple required size={Math.min(Math.max(rootCertificates.length, 2), 6)} disabled={!rootCertificates.length} value={upstream.rootCertificateIds || []} onChange={event => setUpstream({ rootCertificateIds: Array.from(event.target.selectedOptions, option => option.value) })}>
-                  {rootCertificates.map(certificate => <option key={certificate.id} value={certificate.id}>{certificate.name} · {certificate.id.slice(0, 12)}</option>)}
-                </select>
-                <span>{rootCertificates.length ? '按住 Ctrl / ⌘ 可多选；该站点已有 CA Bundle 也会一并使用。' : '暂无系统 CA 根证书；请先在系统设置的“上游 CA 根证书”中添加。'}</span>
-              </label>
-            </OptionToggle>
-            <OptionToggle checked={sections.mtls} onChange={toggle('mtls')} label="上游双向 TLS（mTLS）Client 证书" hint="上游要求客户端证书认证时启用">
-              <ClientCertificateFields upstream={upstream} clientCertificates={clientCertificates} setUpstream={setUpstream} setFile={setFile}/>
-            </OptionToggle>
-            <label className="check"><input type="checkbox" checked={!!upstream.insecureSkipVerify} onChange={event => setUpstream({ insecureSkipVerify: event.target.checked })}/> 忽略上游 TLS 证书校验 <span className="warn-text">仅建议用于受控环境</span></label>
-          </> : <p className="form-note wide">上游使用 https:// 时，可配置自定义 SNI、CA 根证书、mTLS Client 证书与证书校验选项。</p>}
+        <FormSection title="上游" description="每个上游拥有独立的代理、TLS 与连接设置；#1 为默认上游">
+          {upstreams.map((upstream, index) => <UpstreamFields key={upstreamFiles[index]?.uid ?? index} index={index} count={upstreams.length} upstream={upstream} sections={sections.upstreams[index]}
+            routeCount={routes.filter(route => Number(route.upstream) === index).length} catalog={catalog}
+            setUpstream={setUpstream(index)} setSections={setUpstreamSections(index)} setFile={(kind, file) => setUpstreamFile(index, kind, file)}
+            onRemove={() => onRemoveUpstream(index)} onMakeDefault={() => onMakeDefault(index)}/>)}
+          <button type="button" className="secondary add-upstream" onClick={onAddUpstream}>＋ 添加上游</button>
+        </FormSection>
+
+        <FormSection title="路由规则" description="参照 Caddy：按路径与 Header 将请求转发到不同上游">
+          <RouteEditor routes={routes} upstreams={upstreams} matchedIndex={matchedRoute} onChange={next => setConfig({ routes: next })}/>
+        </FormSection>
+
+        <FormSection title="路由模拟" description="输入 URL 与 Header，实时查看命中的规则及路径改写（使用未保存的配置）">
+          <RouteSimulator site={site} onSimulate={onSimulate} onMatch={setMatchedRoute}/>
         </FormSection>
 
         <FormSection title="访问日志">
-          <OptionToggle checked={sections.accessLog} onChange={toggle('accessLog')} label="记录该站点的访问日志" hint={logAdapters.length ? '写入所选日志适配器' : '尚未配置日志适配器'}>
-            <label className="wide">日志适配器
-              <select required value={accessLog.adapterId || ''} onChange={event => setAccessLog({ adapterId: event.target.value })}>
-                <option value="" disabled>请选择日志适配器</option>
-                {logAdapters.map(adapter => <option key={adapter.id} value={adapter.id}>{adapter.name} · {adapter.config.adapter}</option>)}
-              </select>
-              {!logAdapters.length && <span>尚未配置日志适配器；请先到“日志适配器”页面添加。</span>}
-            </label>
-            <label className="check"><input type="checkbox" checked={!!accessLog.includeSensitiveHeaders} onChange={event => setAccessLog({ includeSensitiveHeaders: event.target.checked })}/> 记录敏感 Header 原值 <span>关闭时脱敏 Authorization、Cookie 等字段</span></label>
-            <OptionToggle checked={!!accessLog.includeBodies} onChange={includeBodies => setAccessLog({ includeBodies })} label="记录完整请求与响应 Body" hint="可能包含个人或业务敏感信息">
-              <label className="wide">Body 日志上限（字节，-1 表示无限）<input type="number" min="-1" max="8388608" value={accessLog.maxBodyBytes ?? 1048576} onChange={event => setAccessLog({ maxBodyBytes: event.target.value === '' ? '' : Number(event.target.value) })}/><span>留空或 0 使用默认 1 MiB，正数最大 8 MiB；-1 不截断，但会增加内存占用</span></label>
-            </OptionToggle>
-          </OptionToggle>
+          <AccessLogFields accessLog={accessLog} enabled={sections.accessLog} logAdapters={logAdapters} onToggle={accessLogEnabled => onSectionsChange({ ...sections, accessLog: accessLogEnabled })} setAccessLog={setAccessLog}/>
         </FormSection>
       </div>
       <div className="modal-foot"><button type="button" className="secondary" onClick={onCancel}>取消</button><button className="primary" disabled={saving}>{saving ? '保存中…' : '保存配置'}</button></div>

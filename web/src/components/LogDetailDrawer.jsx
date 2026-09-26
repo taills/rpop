@@ -80,6 +80,7 @@ export default function LogDetailDrawer({ record, position, total, onPrevious, o
         <div><dt>响应大小</dt><dd>{response.totalBytes || 0} B</dd></div>
         <div className="wide"><dt>X-Forwarded-For</dt><dd className="wrap">{forwardedFor(record) || '-'}</dd></div>
         <div className="wide"><dt>上游</dt><dd className="wrap">{record.upstream || '-'}</dd></div>
+        <div className="wide"><dt>路由规则</dt><dd className="wrap">{record.route || (record.upstream ? '未命中规则（默认上游）' : '-')}</dd></div>
         <div className="wide"><dt>Referer</dt><dd className="wrap">{referer(record) || '-'}</dd></div>
         <div className="wide"><dt>User-Agent</dt><dd className="wrap">{userAgent(record) || '-'}</dd></div>
       </dl>
