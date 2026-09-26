@@ -27,6 +27,8 @@ docker run -d --name rpop -p 127.0.0.1:8080:8080 -v rpop-data:/app/data -v rpop-
 
 Publish the admin port only on loopback or behind a trusted HTTPS reverse proxy. Site listeners use ports configured in the console, so publish them as well (or run with `--network host`) and set each site's listen address to `0.0.0.0` inside the container.
 
+`deploy/docker-compose.example.yml` (with `deploy/.env.example`) runs the image with optional RustFS (S3), ClickHouse, and Elasticsearch services for access-log storage. Enable them through `COMPOSE_PROFILES` (`s3`, `clickhouse`, `elasticsearch`) and delete any service you do not deploy; the file's comments list the adapter settings for each service.
+
 `.gitlab-ci.yml` builds natively on the runner's architecture and pushes to the private registry on `main`, `dev`, and tags (tags get only the version tag; branches also get `latest`); it does not deploy. Required CI/CD variables: `DOCKER_REGISTRY_HOST`, `DOCKER_REGISTRY_USERNAME`, `DOCKER_REGISTRY_PASSWORD` (masked), and `DOCKER_REGISTRY_MIRROR` (base-image mirror prefix, which must provide `library/node:22-alpine`, `library/golang:1.26-alpine`, and `library/alpine:latest`).
 
 ## Capabilities in this baseline

@@ -1,0 +1,151 @@
+# rpop 部署示例。用法：
+#   cp deploy/docker-compose.example.yml docker-compose.yml
+#   cp deploy/.env.example .env        # 按实际修改镜像地址与各项口令
+#   docker compose up -d
+#
+# RustFS（S3 兼容）、ClickHouse、Elasticsearch 均为可选的访问日志存储，默认不启动：
+#   - 通过 profile 按需启用：在 .env 设置 COMPOSE_PROFILES=s3,clickhouse,elasticsearch（任选），
+#     或命令行 docker compose --profile clickhouse up -d
+#   - 确定不用的服务可直接删除对应 service 与 volume；rpop 本身不依赖它们启动。
+# 启动后在 rpop 控制台「日志适配器」中添加适配器，连接地址使用下方的服务名（见各服务注释）。
+#
+# 内网环境请把各 image 前缀替换为私有镜像源。
+
+name: rpop
+
+services:
+  rpop:
+    image: ${RPOP_IMAGE:?在 .env 中设置 RPOP_IMAGE}
+    container_name: rpop
+    restart: unless-stopped
+    ports:
+      # 管理控制台只绑定本机回环；对外请经可信的 HTTPS 反向代理暴露
+      - "127.0.0.1:${RPOP_ADMIN_PORT:-8080}:8080"
+      # 各站点的监听端口在控制台中配置，这里需同步映射；站点监听地址请设为 0.0.0.0
+      - "80:80"
+      - "443:443"
+    volumes:
+      - rpop-data:/app/data   # SQLite：站点配置、证书与私钥
+      - rpop-logs:/app/logs   # 应用日志与 file 适配器的访问日志
+    # 站点较多或端口不固定时可改用 host 网络（需删除上面的 ports）；此时访问可选服务要改用其映射到宿主机的端口：
+    # network_mode: host
+
+  # ── 可选：RustFS，S3 兼容对象存储 ──────────────────────────────────
+  # rpop 适配器（S3）：Endpoint http://rustfs:9000，Region us-east-1，Bucket ${RUSTFS_BUCKET}，
+  # 开启 Path-style，Access Key / Secret Key 与下方一致。
+  rustfs:
+    profiles: ["s3"]
+    image: rustfs/rustfs:${RUSTFS_VERSION:-latest}
+    container_name: rpop-rustfs
+    restart: unless-stopped
+    security_opt:
+      - "no-new-privileges:true"
+    environment:
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?在 .env 中设置 RUSTFS_ACCESS_KEY}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?在 .env 中设置 RUSTFS_SECRET_KEY}
+    ports:
+      - "127.0.0.1:9001:9001"   # RustFS 管理控制台（仅本机）
+    volumes:
+      # 命名卷会继承镜像内 /data 的属主（UID/GID 10001）；若改用宿主机目录挂载，需先 chown -R 10001:10001 该目录
+      - rustfs-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # rpop 的 S3 适配器不会自动建桶，这里复用 RustFS 镜像内的 curl（SigV4 签名）一次性创建日志桶；已存在则跳过
+  rustfs-bucket-init:
+    profiles: ["s3"]
+    image: rustfs/rustfs:${RUSTFS_VERSION:-latest}
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY}
+      RUSTFS_BUCKET: ${RUSTFS_BUCKET:-rpop-access-logs}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        status=$$(curl -sS -o /tmp/response -w '%{http_code}' -X PUT \
+          --aws-sigv4 "aws:amz:us-east-1:s3" --user "$$RUSTFS_ACCESS_KEY:$$RUSTFS_SECRET_KEY" \
+          "http://rustfs:9000/$$RUSTFS_BUCKET")
+        case "$$status" in
+          200) echo "bucket $$RUSTFS_BUCKET ready" ;;
+          409) echo "bucket $$RUSTFS_BUCKET already exists" ;;
+          *) echo "create bucket failed: HTTP $$status"; cat /tmp/response; exit 1 ;;
+        esac
+
+  # ── 可选：ClickHouse ─────────────────────────────────────────────
+  # rpop 适配器（ClickHouse）：URL http://clickhouse:8123，Database ${CLICKHOUSE_DB}，
+  # 用户名/密码与下方一致；日志表由 rpop 自动创建。
+  clickhouse:
+    profiles: ["clickhouse"]
+    image: clickhouse/clickhouse-server:${CLICKHOUSE_VERSION:-25.8}
+    container_name: rpop-clickhouse
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-rpop}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-rpop}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?在 .env 中设置 CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "0"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - clickhouse-logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── 可选：Elasticsearch（单节点）────────────────────────────────
+  # rpop 适配器（Elasticsearch）：URL http://elasticsearch:9200，认证方式 Basic，
+  # 用户 elastic / ${ELASTIC_PASSWORD}（生产建议另建仅有日志索引读写权限的用户或 API Key）；索引自动创建。
+  # 宿主机需要：sysctl -w vm.max_map_count=262144
+  elasticsearch:
+    profiles: ["elasticsearch"]
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTICSEARCH_VERSION:-8.19.4}
+    container_name: rpop-elasticsearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "true"
+      # 仅在 compose 内部网络访问，关闭 HTTP/传输层 TLS；如需对外暴露请开启 TLS
+      xpack.security.http.ssl.enabled: "false"
+      xpack.security.transport.ssl.enabled: "false"
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?在 .env 中设置 ELASTIC_PASSWORD}
+      ES_JAVA_OPTS: ${ES_JAVA_OPTS:--Xms1g -Xmx1g}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -u \"elastic:$$ELASTIC_PASSWORD\" 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=5s' || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+volumes:
+  rpop-data:
+  rpop-logs:
+  rustfs-data:
+  clickhouse-data:
+  clickhouse-logs:
+  elasticsearch-data:
