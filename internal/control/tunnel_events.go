@@ -457,6 +457,26 @@ func (c *Control) SetTunnelEventRetention(days int) {
 	c.tunnelEvents.retentionDays = days
 }
 
+// tunnelEventView is one entry of GET /api/logging/tunnels/{tunnelId}'s response (D28): the stored
+// overlay.TunnelEvent, plus the reporting node's clock skew *as currently known*, not a reconstruction of what it
+// was at the moment the event happened — the store only keeps a node's single most recent measurement (see
+// nodeRegistry), not one per historical event. Nil when the reporting node never reported a measurement (see
+// Control.nodeClockOffsetMillis), exactly like nodeView.ClockSkewMillis.
+type tunnelEventView struct {
+	overlay.TunnelEvent
+	ClockSkewMillis *int64 `json:"clockSkewMillis,omitempty"`
+}
+
+// tunnelEventViews attaches each event's reporting node's current clock skew (D28), so the console can warn that
+// a tunnel's timeline may be off and, if the operator opts in, correct it.
+func (c *Control) tunnelEventViews(events []overlay.TunnelEvent) []tunnelEventView {
+	views := make([]tunnelEventView, len(events))
+	for i, event := range events {
+		views[i] = tunnelEventView{TunnelEvent: event, ClockSkewMillis: c.nodeClockOffsetMillis(event.NodeID)}
+	}
+	return views
+}
+
 // localTunnelEventWriter adapts a tunnelEventStore to overlay.TunnelEventSink for the embedded "local" node
 // (item 4 of stage 5 step 3): overlay's own eventQueue already decouples this from the forwarding path with a
 // bounded channel that drops and counts on overflow (P8), the same property spool gives a registered node's

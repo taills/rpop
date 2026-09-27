@@ -96,6 +96,30 @@ type Status struct {
 	// Logs summarizes the node's log spool and upload pipeline (D23/D24/D25); nil on nodes that have not
 	// initialized a spool (the embedded local node writes access logs directly and never sets this).
 	Logs *LogStats `json:"logs,omitempty"`
+	// SentAt is the node's local clock reading, taken immediately before sending this request (D28's NTP-style
+	// clock offset estimate's t0). A purely additive field, like every other one on Status (see ProtocolVersion's
+	// doc comment): a node that predates D28 simply never sets it, which the controller reads back as the zero
+	// value and treats the same as "this node reports no clock measurement."
+	SentAt time.Time `json:"sentAt"`
+	// ClockOffsetMillis/ClockRTTMillis are this node's most recent NTP-style estimate of its clock's offset from
+	// the controller's (positive: this node's clock is ahead) and the round-trip time that estimate assumes
+	// symmetric network delay over (D28). Both are derived from the *previous* status round's four timestamps —
+	// a round's own answer necessarily arrives after this request is already sent, too late to fold into it — so
+	// both are nil on a node's first status report, and every one after that while talking to a controller that
+	// predates D28 (which answers 204 No Content with no StatusResponse body to compute them from).
+	ClockOffsetMillis *int64 `json:"clockOffsetMillis,omitempty"`
+	ClockRTTMillis    *int64 `json:"clockRttMillis,omitempty"`
+}
+
+// StatusResponse answers a status heartbeat (D28, since which the controller answers 200 with this body instead
+// of 204 No Content): ReceivedAt/RespondedAt are the controller's own clock at the moment it received the
+// request (t1) and finished handling it (t2), letting the node's *next* heartbeat derive an NTP-style estimate of
+// its clock's offset from the controller's (see Status.ClockOffsetMillis and southboundStatus). A controller
+// that predates D28 still answers 204 with no body; a node treats that identically to "this round carried no
+// clock measurement" (see postJSON's handling of a 204 answer to a non-nil out).
+type StatusResponse struct {
+	ReceivedAt  time.Time `json:"receivedAt"`
+	RespondedAt time.Time `json:"respondedAt"`
 }
 
 // LogSegmentHeader names the header carrying the segment number (decimal uint64) of a POST LogsPath request;

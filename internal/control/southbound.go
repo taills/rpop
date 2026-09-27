@@ -410,7 +410,14 @@ func (c *Control) southboundWatch(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// southboundStatus answers every status heartbeat with 200 and a southbound.StatusResponse body (D28), rather
+// than 204 No Content as before it: receivedAt is captured as close to the request's actual arrival as this
+// handler can manage (t1 of the node's NTP-style clock offset estimate), before authentication or decoding can
+// spend any time on it, and respondedAt (t2) right before the response is written. Both are meaningless to a node
+// that predates D28 and never sends a SentAt of its own, but costs nothing extra to compute regardless, so every
+// node gets the same response shape.
 func (c *Control) southboundStatus(w http.ResponseWriter, r *http.Request) {
+	receivedAt := time.Now()
 	node, err := c.authenticateNode(r)
 	if err != nil {
 		writeNodeAuthError(w, err)
@@ -423,7 +430,10 @@ func (c *Control) southboundStatus(w http.ResponseWriter, r *http.Request) {
 	if !decodeSouthbound(w, r, maxStatusBody, &status) {
 		return
 	}
-	previousLogs := c.nodes.report(node.ID, status)
+	previousLogs, clockOffsetDropped := c.nodes.report(node.ID, status)
+	if clockOffsetDropped {
+		c.log.Warn("node reported a clock offset outside the plausible range; the measurement was dropped", zap.String("node", node.ID))
+	}
 	c.warnOnLogStatsRegressions(node.ID, previousLogs, status.Logs)
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, southbound.StatusResponse{ReceivedAt: receivedAt, RespondedAt: time.Now()})
 }

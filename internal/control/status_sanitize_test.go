@@ -115,3 +115,63 @@ func TestNodeRegistryReportSanitizesBeforeStoring(t *testing.T) {
 		t.Fatalf("stored links = %d, want %d: report did not sanitize before storing", len(runtime.status.Links), maxReportedLinks)
 	}
 }
+
+// TestSanitizeClockOffsetClampsOutOfRangeValues covers D28's range check: a plausible offset (and the RTT
+// reported alongside it) survives untouched, but one beyond maxClockOffsetMillis is dropped together with its
+// RTT, since the two only mean anything together.
+func TestSanitizeClockOffsetClampsOutOfRangeValues(t *testing.T) {
+	ptr := func(v int64) *int64 { return &v }
+	tests := []struct {
+		name           string
+		offset, rtt    *int64
+		wantOffset     *int64
+		wantRTTDropped bool
+	}{
+		{"nil offset stays nil", nil, nil, nil, true},
+		{"a plausible offset and RTT survive untouched", ptr(1500), ptr(40), ptr(1500), false},
+		{"exactly at the boundary survives", ptr(maxClockOffsetMillis), ptr(40), ptr(maxClockOffsetMillis), false},
+		{"a negative offset within range survives", ptr(-1500), ptr(40), ptr(-1500), false},
+		{"an offset just beyond the boundary is dropped", ptr(maxClockOffsetMillis + 1), ptr(40), nil, true},
+		{"a large negative offset is dropped", ptr(-maxClockOffsetMillis - 1), ptr(40), nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotOffset, gotRTT := sanitizeClockOffset(tt.offset, tt.rtt)
+			if (gotOffset == nil) != (tt.wantOffset == nil) || (gotOffset != nil && *gotOffset != *tt.wantOffset) {
+				t.Fatalf("offset = %v, want %v", gotOffset, tt.wantOffset)
+			}
+			if tt.wantRTTDropped && gotRTT != nil {
+				t.Fatalf("rtt = %v, want nil alongside a dropped offset", *gotRTT)
+			}
+			if !tt.wantRTTDropped && (gotRTT == nil || *gotRTT != *tt.rtt) {
+				t.Fatalf("rtt = %v, want %v", gotRTT, tt.rtt)
+			}
+		})
+	}
+}
+
+// TestNodeRegistryReportSignalsWhenSanitizeDropsTheClockOffset covers report's second return value, which
+// southboundStatus uses to log the drop (D28): it must be true exactly when the node reported an offset that
+// sanitizeStatus's range check then removed, and false whenever there was nothing to drop.
+func TestNodeRegistryReportSignalsWhenSanitizeDropsTheClockOffset(t *testing.T) {
+	r := newNodeRegistry()
+	inRange := int64(1000)
+	tooLarge := maxClockOffsetMillis + 1
+	tests := []struct {
+		name    string
+		offset  *int64
+		wantErr bool
+	}{
+		{"no offset reported at all", nil, false},
+		{"an in-range offset is kept", &inRange, false},
+		{"an out-of-range offset is dropped", &tooLarge, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, dropped := r.report("node1", southbound.Status{ClockOffsetMillis: tt.offset})
+			if dropped != tt.wantErr {
+				t.Fatalf("report() clockOffsetDropped = %v, want %v", dropped, tt.wantErr)
+			}
+		})
+	}
+}

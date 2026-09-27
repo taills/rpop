@@ -1,6 +1,8 @@
 package control
 
 import (
+	"time"
+
 	"github.com/rpop-project/rpop/internal/dataplane"
 	"github.com/rpop-project/rpop/internal/overlay"
 	"github.com/rpop-project/rpop/internal/southbound"
@@ -21,15 +23,34 @@ const (
 	// maxProxyChainEntries generously covers any real proxy chain (D13/D18 cap a path at maxPathHops hops), while
 	// still bounding a hostile report.
 	maxProxyChainEntries = 32
+	// maxClockOffsetMillis bounds |Status.ClockOffsetMillis| (D28): beyond a day, a reported value is almost
+	// certainly a bug or a hostile node rather than genuine clock skew, and keeping it would pollute the
+	// controller's in-memory view and every console page that reads it (nodeView, GET /api/topology).
+	maxClockOffsetMillis = int64(24 * time.Hour / time.Millisecond)
 )
 
-// sanitizeStatus bounds the entry counts and string lengths of the link/path health data inside status before
-// nodeRegistry.report keeps it or nodeView/topologyAPI serve it back, so a node's own report cannot grow the
-// controller's memory or response sizes without bound. It leaves every other field of status untouched.
+// sanitizeStatus bounds the entry counts and string lengths of the link/path health data inside status, and
+// clamps its reported clock offset to a plausible range (D28), before nodeRegistry.report keeps any of it or
+// nodeView/topologyAPI serve it back — so a node's own report cannot grow the controller's memory or response
+// sizes without bound, and cannot pollute the console with an implausible clock skew. It leaves every other field
+// of status untouched.
 func sanitizeStatus(status southbound.Status) southbound.Status {
 	status.Links = sanitizeLinks(status.Links)
 	status.Paths = sanitizePaths(status.Paths)
+	status.ClockOffsetMillis, status.ClockRTTMillis = sanitizeClockOffset(status.ClockOffsetMillis, status.ClockRTTMillis)
 	return status
+}
+
+// sanitizeClockOffset drops offset (and the rtt it was computed alongside — the two only mean anything together)
+// once |offset| exceeds maxClockOffsetMillis (D28); both are nil already, or both stay untouched, otherwise.
+func sanitizeClockOffset(offset, rtt *int64) (*int64, *int64) {
+	if offset == nil {
+		return nil, nil
+	}
+	if *offset > maxClockOffsetMillis || *offset < -maxClockOffsetMillis {
+		return nil, nil
+	}
+	return offset, rtt
 }
 
 func sanitizeLinks(links []overlay.LinkStatus) []overlay.LinkStatus {

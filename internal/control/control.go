@@ -58,6 +58,10 @@ type Control struct {
 	// with (D31, see SetOverlayConfig); read under opMu when newLocalOverlay creates that overlay, the same lock
 	// that guards overlay itself.
 	overlayConfig overlay.Config
+	// clockSkewWarnThresholdMillis is nodeView/topologyAPI's cutoff (D28, see SetClockSkewWarnThreshold and
+	// DefaultClockSkewWarnThresholdMillis) for marking a node's reported clock skew "warn" instead of "ok"; read
+	// under opMu, the same lock overlayConfig uses for the same kind of rarely-written, often-read setting.
+	clockSkewWarnThresholdMillis int64
 
 	accessLogs *accesslog.Registry
 	// tunnelEvents stores overlay.TunnelEvent records reported by every node (D22); nil unless the controller
@@ -79,7 +83,8 @@ func New(s *store.Store, l *zap.Logger) *Control {
 		embedded: true, nodes: newNodeRegistry(), registrations: newFailureLimiter(maxRegisterFailures, registerFailureWindow),
 		logIngestLocks: newKeyedMutex(), logIngestSemaphore: make(chan struct{}, DefaultMaxConcurrentLogIngests),
 		logIngestRate: newNodeRateLimiter(DefaultLogIngestRateBytesPerSecond), overlayConfig: overlay.DefaultConfig(),
-		systemSettings: defaultSystemSettings(), sessions: make(map[string]time.Time), loginAttempts: make(map[string]loginAttempt)}
+		clockSkewWarnThresholdMillis: DefaultClockSkewWarnThresholdMillis,
+		systemSettings:               defaultSystemSettings(), sessions: make(map[string]time.Time), loginAttempts: make(map[string]loginAttempt)}
 }
 
 // SetOverlayConfig overrides the HTTP/2 window and per-connection stream limits the embedded node's overlay is
@@ -91,6 +96,17 @@ func (c *Control) SetOverlayConfig(cfg overlay.Config) {
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
 	c.overlayConfig = cfg
+}
+
+// SetClockSkewWarnThreshold overrides nodeView/topologyAPI's cutoff (in milliseconds) for marking a node's
+// reported clock skew (D28) "warn" instead of "ok" (see DefaultClockSkewWarnThresholdMillis); ms <= 0 leaves the
+// default in place. Call before serving console traffic.
+func (c *Control) SetClockSkewWarnThreshold(ms int64) {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	if ms > 0 {
+		c.clockSkewWarnThresholdMillis = ms
+	}
 }
 
 // SetLogIngestLimits overrides the default global concurrency cap and per-node upload rate cap for log segment

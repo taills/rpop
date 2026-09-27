@@ -96,6 +96,12 @@ type Agent struct {
 	// port that could not bind. Both are guarded by mu.
 	overlay    *overlay.Overlay
 	relayError string
+	// lastClockRound is the four timestamps of the most recently completed status round-trip (D28); guarded by
+	// mu. status() reads it to fill the *next* heartbeat's ClockOffsetMillis/ClockRTTMillis (a round's own offset
+	// can only be computed once its answer arrives, too late to include in the request that produced it), and
+	// sendStatus overwrites it with the round it just completed, or the zero value if that round carried no
+	// StatusResponse to compute from (a controller that predates D28).
+	lastClockRound clockRoundTimestamps
 }
 
 // agentPaths dials upstream paths through the overlay of the node's current identity, which is replaced when
@@ -481,6 +487,10 @@ func (a *Agent) status() southbound.Status {
 			status.Errors[id] = message
 		}
 	}
+	if offset, rtt, ok := a.lastClockRound.offsetAndRTT(); ok {
+		offsetMillis, rttMillis := offset.Milliseconds(), rtt.Milliseconds()
+		status.ClockOffsetMillis, status.ClockRTTMillis = &offsetMillis, &rttMillis
+	}
 	a.mu.Unlock()
 	status.Running = a.engine.RunningSites()
 	status.Metrics = make(map[string]dataplane.MetricsSnapshot, len(status.Running))
@@ -507,7 +517,27 @@ func (a *Agent) status() southbound.Status {
 func (a *Agent) sendStatus(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	return postJSON(ctx, a.current.Load().client, a.endpoint(southbound.StatusPath), a.status(), nil)
+	status := a.status()
+	status.SentAt = time.Now()
+	var response southbound.StatusResponse
+	if err := postJSON(ctx, a.current.Load().client, a.endpoint(southbound.StatusPath), status, &response); err != nil {
+		return err
+	}
+	gotResponseAt := time.Now()
+	// A zero ReceivedAt means the controller answered 204 with no body (it predates D28, or this round's answer
+	// genuinely lacked one either way) — there is nothing to compute the next round's offset from, so the round
+	// resets to the zero value rather than keeping a stale one around.
+	var round clockRoundTimestamps
+	if !response.ReceivedAt.IsZero() {
+		round = clockRoundTimestamps{
+			sentAt: status.SentAt, gotResponseAt: gotResponseAt,
+			receivedAt: response.ReceivedAt, respondedAt: response.RespondedAt,
+		}
+	}
+	a.mu.Lock()
+	a.lastClockRound = round
+	a.mu.Unlock()
+	return nil
 }
 
 func (a *Agent) endpoint(path string) string {

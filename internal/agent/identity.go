@@ -85,7 +85,11 @@ func newClient(config *tls.Config) *http.Client {
 	}}
 }
 
-// postJSON sends in and decodes the answer into out, if out is not nil.
+// postJSON sends in and decodes the answer into out, if out is not nil. A 204 No Content answer is treated the
+// same as a nil out even when the caller did pass one (D28: sendStatus always passes a *southbound.StatusResponse,
+// but a controller that predates D28 still answers status with 204 and no body) — there is nothing to decode, and
+// decoding an empty body would otherwise surface as a spurious io.EOF error instead of "this round carried no
+// data", which callers need to tell apart from a real failure.
 func postJSON(ctx context.Context, client *http.Client, endpoint string, in, out any) error {
 	body, err := json.Marshal(in)
 	if err != nil {
@@ -105,7 +109,7 @@ func postJSON(ctx context.Context, client *http.Client, endpoint string, in, out
 	if err := responseError(response); err != nil {
 		return err
 	}
-	if out == nil {
+	if out == nil || response.StatusCode == http.StatusNoContent {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxResponseBytes))
 		return nil
 	}

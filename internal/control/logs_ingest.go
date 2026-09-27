@@ -489,7 +489,8 @@ func (c *Control) loggingTrace(w http.ResponseWriter, r *http.Request) {
 }
 
 // loggingTunnelEvents serves GET /api/logging/tunnels/{tunnelId}: every overlay.TunnelEvent any node reported
-// for this tunnel, sorted by timestamp — the tunnel's full path timeline (D22).
+// for this tunnel, sorted by timestamp — the tunnel's full path timeline (D22) — each annotated with its
+// reporting node's current clock skew (D28, see tunnelEventViews).
 func (c *Control) loggingTunnelEvents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
@@ -518,5 +519,5 @@ func (c *Control) loggingTunnelEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, events)
+	writeJSON(w, http.StatusOK, c.tunnelEventViews(events))
 }

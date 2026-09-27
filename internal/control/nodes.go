@@ -77,17 +77,21 @@ func (r *nodeRegistry) connected(id string, delta int) {
 }
 
 // report stores status and returns the LogStats the node reported last time (nil the first time), so a caller
-// can log when the node's drop counters increase (D25) without a separate, racy read-then-write. status is
-// sanitized first (see sanitizeStatus): a node is a half-trusted party, and its link/path health arrives as
-// free-form JSON the controller keeps in memory and echoes back over /api/nodes and /api/topology.
-func (r *nodeRegistry) report(id string, status southbound.Status) *southbound.LogStats {
+// can log when the node's drop counters increase (D25) without a separate, racy read-then-write, and whether
+// sanitizeStatus dropped an out-of-range clock offset the node reported (D28), so the caller can log that too —
+// the same rate-limiting-free, log-once-per-call discipline warnOnLogStatsRegressions' caller already applies.
+// status is sanitized first (see sanitizeStatus): a node is a half-trusted party, and its link/path health arrives
+// as free-form JSON the controller keeps in memory and echoes back over /api/nodes and /api/topology.
+func (r *nodeRegistry) report(id string, status southbound.Status) (previousLogs *southbound.LogStats, clockOffsetDropped bool) {
+	reportedOffset := status.ClockOffsetMillis
 	status = sanitizeStatus(status)
+	clockOffsetDropped = reportedOffset != nil && status.ClockOffsetMillis == nil
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	runtime := r.get(id)
-	previous := runtime.status.Logs
+	previousLogs = runtime.status.Logs
 	runtime.status, runtime.lastSeen = status, time.Now()
-	return previous
+	return previousLogs, clockOffsetDropped
 }
 
 func (r *nodeRegistry) snapshot(id string) (nodeRuntime, bool) {
@@ -253,6 +257,59 @@ type nodeView struct {
 	// (see localNodeView) always reports the controller's own version, since it runs in the same process.
 	ProtocolVersion int    `json:"protocolVersion,omitempty"`
 	ProtocolStatus  string `json:"protocolStatus,omitempty"`
+	// ClockSkewMillis is the node's most recently reported clock offset relative to the controller (D28,
+	// milliseconds; positive means the node's clock is ahead); nil until the node's first status report carries
+	// one, which never happens for a node stuck on a pre-D28 build or sanitizeStatus's own range check having
+	// dropped an out-of-range value. ClockSkewStatus is "warn" once |ClockSkewMillis| exceeds
+	// clockSkewWarnThresholdMillis (see SetClockSkewWarnThreshold), "ok" otherwise, and empty alongside a nil
+	// ClockSkewMillis — the same empty-until-first-report convention ProtocolStatus uses. The embedded node's
+	// skew is always exactly 0 (see localNodeView), since it runs in the same process and clock as the controller.
+	ClockSkewMillis *int64 `json:"clockSkewMillis,omitempty"`
+	ClockSkewStatus string `json:"clockSkewStatus,omitempty"`
+}
+
+// DefaultClockSkewWarnThresholdMillis is nodeView/topologyAPI's default cutoff for ClockSkewStatus's "warn"
+// value (D28, see Control.SetClockSkewWarnThreshold): the console does not treat every nonzero measured skew as
+// noteworthy, only one large enough to plausibly matter for reading a trace timeline.
+const DefaultClockSkewWarnThresholdMillis = 2000
+
+// clockSkewZero returns a fresh pointer to 0: the embedded node's constant clock skew (D28), since it runs in the
+// same process and clock as the controller and has nothing to measure. A fresh allocation each call rather than
+// one shared package-level pointer, consistent with every other field of nodeView/topologyNode being its own copy
+// per call, even though nothing today would mutate through a shared one.
+func clockSkewZero() *int64 {
+	zero := int64(0)
+	return &zero
+}
+
+// clockSkewView turns a raw reported offset (nil if the node never reported one, or sanitizeStatus dropped an
+// out-of-range value) into nodeView/topologyNode's pair of exposed fields (D28).
+func (c *Control) clockSkewView(offsetMillis *int64) (*int64, string) {
+	if offsetMillis == nil {
+		return nil, ""
+	}
+	c.opMu.Lock()
+	threshold := c.clockSkewWarnThresholdMillis
+	c.opMu.Unlock()
+	status := "ok"
+	if *offsetMillis > threshold || *offsetMillis < -threshold {
+		status = "warn"
+	}
+	return offsetMillis, status
+}
+
+// nodeClockOffsetMillis is clockSkewView's underlying lookup (D28), addressed by node ID alone rather than a
+// store.Node, for a caller (tunnelEventViews) that only has an ID from already-reported data and no store.Node to
+// hand nodeView itself.
+func (c *Control) nodeClockOffsetMillis(nodeID string) *int64 {
+	if nodeID == LocalNodeID {
+		return clockSkewZero()
+	}
+	runtime, ok := c.nodes.snapshot(nodeID)
+	if !ok {
+		return nil
+	}
+	return runtime.status.ClockOffsetMillis
 }
 
 func (c *Control) nodeView(node store.Node) nodeView {
@@ -277,6 +334,7 @@ func (c *Control) nodeView(node store.Node) nodeView {
 		view.Paths = runtime.status.Paths
 		view.Logs = runtime.status.Logs
 		view.ProtocolVersion, view.ProtocolStatus = runtime.protocolVersion, runtime.protocolStatus
+		view.ClockSkewMillis, view.ClockSkewStatus = c.clockSkewView(runtime.status.ClockOffsetMillis)
 	}
 	view.InSync = view.Online && view.AppliedRevision == view.PublishedRevision
 	return view
@@ -293,7 +351,8 @@ func (c *Control) localNodeView() nodeView {
 	view := nodeView{Node: store.Node{ID: LocalNodeID, Name: "Embedded node"}, Embedded: true, Registered: true,
 		CertGeneration: localGeneration, Online: true,
 		AppliedRevision: revision, Running: c.engine.RunningSites(), Errors: errs, Links: links, Paths: c.engine.PathHealth(),
-		ProtocolVersion: southbound.ProtocolVersion, ProtocolStatus: "current"}
+		ProtocolVersion: southbound.ProtocolVersion, ProtocolStatus: "current",
+		ClockSkewMillis: clockSkewZero(), ClockSkewStatus: "ok"}
 	if published, ok := c.published.Snapshot(LocalNodeID); ok {
 		view.PublishedRevision = published.Revision
 	}

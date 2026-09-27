@@ -28,7 +28,7 @@ func TestNodesAPIExposesLogStatsAndWarnsOnRegressions(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer response.Body.Close()
-		if response.StatusCode != http.StatusNoContent {
+		if response.StatusCode != http.StatusOK {
 			t.Fatalf("status upload = %d", response.StatusCode)
 		}
 	}

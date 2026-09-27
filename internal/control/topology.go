@@ -28,6 +28,11 @@ type topologyNode struct {
 	// Roles is a subset of "entry" (hosts a site), "relay" (forwards tunnels onward), and "exit" (dials the
 	// upstream itself, directly or as the last hop of a tunnel); a node can hold more than one role at once.
 	Roles []string `json:"roles"`
+	// ClockSkewMillis/ClockSkewStatus mirror nodeView's own fields of the same name (D28): the node's most
+	// recently reported clock offset relative to the controller, and whether it exceeds
+	// clockSkewWarnThresholdMillis. See nodeView's doc comment for the shared nil/"" convention.
+	ClockSkewMillis *int64 `json:"clockSkewMillis,omitempty"`
+	ClockSkewStatus string `json:"clockSkewStatus,omitempty"`
 }
 
 // topologyLink is one overlay link a node dials, derived from the paths and relay routes in the published
@@ -105,8 +110,10 @@ func (c *Control) topologyNode(node store.Node, embedded bool, roles map[string]
 	view := topologyNode{ID: node.ID, Name: node.Name, Embedded: embedded, Roles: nodeRoles}
 	if embedded {
 		view.Online = true
+		view.ClockSkewMillis, view.ClockSkewStatus = clockSkewZero(), "ok"
 	} else if runtime, ok := c.nodes.snapshot(node.ID); ok {
 		view.Online = runtime.streams > 0
+		view.ClockSkewMillis, view.ClockSkewStatus = c.clockSkewView(runtime.status.ClockOffsetMillis)
 	}
 	return view
 }

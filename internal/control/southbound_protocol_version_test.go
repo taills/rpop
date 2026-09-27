@@ -152,8 +152,8 @@ func TestSouthboundWatchEnforcesProtocolVersionWindow(t *testing.T) {
 	}
 }
 
-// TestSouthboundStatusEnforcesProtocolVersionWindow covers status, whose accepted outcome is 204 No Content
-// rather than the 200 the other four endpoints answer with (see southboundStatus).
+// TestSouthboundStatusEnforcesProtocolVersionWindow covers status, which (since D28) answers 200 with a
+// southbound.StatusResponse body on acceptance, the same as the other four endpoints (see southboundStatus).
 func TestSouthboundStatusEnforcesProtocolVersionWindow(t *testing.T) {
 	for _, tc := range protocolVersionWindowCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -175,11 +175,7 @@ func TestSouthboundStatusEnforcesProtocolVersionWindow(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantStatus := tc.wantStatus
-			if wantStatus == http.StatusOK {
-				wantStatus = http.StatusNoContent
-			}
-			assertProtocolVersionOutcome(t, response, wantStatus)
+			assertProtocolVersionOutcome(t, response, tc.wantStatus)
 		})
 	}
 }
@@ -263,7 +259,7 @@ func TestNodeViewReportsProtocolVersionAndStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	response.Body.Close()
-	if response.StatusCode != http.StatusNoContent {
+	if response.StatusCode != http.StatusOK {
 		t.Fatalf("status call = %d", response.StatusCode)
 	}
 
