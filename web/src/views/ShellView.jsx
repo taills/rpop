@@ -14,6 +14,7 @@ export default function ShellView() {
     { key: 'sites', label: '站点管理', icon: 'dashboard', to: '/sites' },
     { key: 'logs', label: '访问日志', icon: 'table', to: '/logs' },
     { key: 'log-settings', label: '日志适配器', icon: 'database', to: '/log-settings' },
+    { key: 'proxies', label: '具名代理', icon: 'link', to: '/proxies' },
     { key: 'system-settings', label: '系统设置', icon: 'settings', to: '/system-settings' },
     {
       key: 'catalog',
