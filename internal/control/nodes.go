@@ -101,13 +101,13 @@ func (r *nodeRegistry) snapshot(id string) (nodeRuntime, bool) {
 }
 
 // reportProtocolVersion records the protocol version a node reported on an authenticated southbound call
-// (D27) and reports whether this call is the one that first noticed the node fell behind
-// southbound.ProtocolVersion, so checkProtocolVersion (internal/control/southbound.go) can log a Warn once per
-// transition into "outdated" rather than once per call — the same rate-limiting discipline as
+// (D27), and whether classifyProtocolVersion (internal/control/southbound.go) judged it outdated, and reports
+// whether this call is the one that first noticed the node's status changed, so checkProtocolVersion can log a
+// Warn once per transition rather than once per call — the same rate-limiting discipline as
 // warnOnLogStatsRegressions.
-func (r *nodeRegistry) reportProtocolVersion(id string, version int) (status string, changed bool) {
-	status = "current"
-	if version < southbound.ProtocolVersion {
+func (r *nodeRegistry) reportProtocolVersion(id string, version int, outdated bool) (changed bool) {
+	status := "current"
+	if outdated {
 		status = "outdated"
 	}
 	r.mu.Lock()
@@ -115,7 +115,7 @@ func (r *nodeRegistry) reportProtocolVersion(id string, version int) (status str
 	runtime := r.get(id)
 	changed = runtime.protocolStatus != status
 	runtime.protocolVersion, runtime.protocolStatus = version, status
-	return status, changed
+	return changed
 }
 
 func (r *nodeRegistry) forget(id string) {

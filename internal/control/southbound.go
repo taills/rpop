@@ -159,6 +159,37 @@ func writeNodeAuthError(w http.ResponseWriter, err error) {
 	writeJSON(w, http.StatusServiceUnavailable, apiError{"node authentication is unavailable"})
 }
 
+// protocolVersionDecision is the outcome of classifyProtocolVersion: whether the controller accepts the
+// request and, if it does, whether the reported version is behind current (in which case the node counts as
+// "outdated" — see nodeRegistry.reportProtocolVersion). message is only meaningful when accepted is false.
+type protocolVersionDecision struct {
+	accepted, outdated bool
+	message            string
+}
+
+// classifyProtocolVersion decides D27's outcome for a reported version against the controller's accepted
+// window [min, current], kept as a pure function separate from checkProtocolVersion's HTTP plumbing so every
+// branch — including "in the window but behind current", which the real southbound.MinSupportedProtocolVersion
+// and southbound.ProtocolVersion cannot yet exercise, both being 1 at this, D27's introduction, since no older
+// version number has ever existed to leave a gap below current — is exercised directly by a table-driven test
+// instead of only through whatever window happens to be in effect today.
+func classifyProtocolVersion(version, min, current int) protocolVersionDecision {
+	switch {
+	case version > current:
+		return protocolVersionDecision{message: fmt.Sprintf(
+			"node speaks protocol version %d, this controller supports up to %d; upgrade the controller before the node (rolling upgrades go control-plane first)",
+			version, current)}
+	case version < min:
+		return protocolVersionDecision{message: fmt.Sprintf(
+			"node speaks protocol version %d, this controller requires at least %d; upgrade the node",
+			version, min)}
+	case version < current:
+		return protocolVersionDecision{accepted: true, outdated: true}
+	default:
+		return protocolVersionDecision{accepted: true}
+	}
+}
+
 // checkProtocolVersion enforces D27's version compatibility window on a southbound request, next to
 // authenticateNode; every one of the five southbound handlers calls it once nodeID is known to be a real,
 // already-provisioned node (authenticateNode's result, or — for registration, which authenticates by token
@@ -183,19 +214,12 @@ func (c *Control) checkProtocolVersion(w http.ResponseWriter, r *http.Request, n
 		}
 		version = parsed
 	}
-	switch {
-	case version > southbound.ProtocolVersion:
-		writeJSON(w, http.StatusUpgradeRequired, apiError{fmt.Sprintf(
-			"node speaks protocol version %d, this controller supports up to %d; upgrade the controller before the node (rolling upgrades go control-plane first)",
-			version, southbound.ProtocolVersion)})
-		return false
-	case version < southbound.MinSupportedProtocolVersion:
-		writeJSON(w, http.StatusUpgradeRequired, apiError{fmt.Sprintf(
-			"node speaks protocol version %d, this controller requires at least %d; upgrade the node",
-			version, southbound.MinSupportedProtocolVersion)})
+	decision := classifyProtocolVersion(version, southbound.MinSupportedProtocolVersion, southbound.ProtocolVersion)
+	if !decision.accepted {
+		writeJSON(w, http.StatusUpgradeRequired, apiError{decision.message})
 		return false
 	}
-	if status, changed := c.nodes.reportProtocolVersion(nodeID, version); status == "outdated" && changed {
+	if changed := c.nodes.reportProtocolVersion(nodeID, version, decision.outdated); decision.outdated && changed {
 		c.log.Warn("node speaks an outdated protocol version", zap.String("node", nodeID),
 			zap.Int("node_version", version), zap.Int("controller_version", southbound.ProtocolVersion))
 	}
