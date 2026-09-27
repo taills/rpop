@@ -260,6 +260,13 @@
 - 控制器 `nodeRegistry.report` 只在内存存最近一次偏差(不落库,同 `Links`/`Paths`);`sanitizeStatus` 新增 `sanitizeClockOffset`,`|offset|` 超过 24h 连同 RTT 一并丢弃并返回 `report` 的第二个值供上层记一条 Warn。`nodeView`/`GET /api/topology` 新增 `clockSkewMillis`/`clockSkewStatus`(超过可配置的 `clockSkewWarnThresholdMillis`,默认 2000ms,标 `"warn"`),内嵌节点恒为 `0`/`"ok"`;`GET /api/logging/tunnels/{id}` 的每条事件附上上报节点当前偏差(`tunnelEventView`),不改写已存储的时间戳。
 - 同批次顺带完成两项阶段 6 遗留:`status_sanitize.go` 补上 `overlay.LinkStatus.Status/DownUntil/LastSuccess` 与 `dataplane.PathHealth.Status/Until` 的截断与枚举白名单;`-path-active-probe`/`RPOP_PATH_ACTIVE_PROBE` 接入 `agent.Config`/`Control.SetPathActiveProbe`,补上 7.2 遗漏的 CLI 接线。
 
+**阶段 7 第 6 步(控制台:协议版本/时钟偏差展示)实施记录**:
+
+- CLI:新增 `-clock-skew-warn-threshold`/`RPOP_CLOCK_SKEW_WARN_THRESHOLD`(毫秒,默认 2000,范围 `[100,3600000]`,`ValidateClockSkewWarnThreshold`)接入 `Control.SetClockSkewWarnThreshold`;`topologyNode` 顺带补上 `protocolVersion`/`protocolStatus`(镜像 `nodeView`,7.3 只加到了后者),供拓扑节点提示复用,不必再多发一次 `/api/nodes`。
+- `trace.js` 新增纯函数 `applyClockSkew(events, enabled)`:开启时按 `timestamp − clockSkewMillis` 重算时间戳(未知偏差按 0),交给既有的 `sortTunnelEvents`/`withRelativeTiming`/`hopDurationBars` 流水线重算排序、相对耗时与时长条;不修改输入,返回新数组。`isClockSkewWarn`/`anyClockSkewWarn` 用与控制器同一默认阈值(2000ms)判定告警,因为 `GET /api/logging/tunnels/{id}` 只带原始 `clockSkewMillis`,没有像 `nodeView` 一样带算好的 `clockSkewStatus`。`formatClockSkew`(如 `+1.2s`/`−350ms`/未知时"未知")定义在 `nodeHealth.js`,供两处复用。
+- `TracePage.jsx`:每跳的 Gantt 行旁加偏差徽标(超阈值告警色 + 提示语),隧道顶部超阈值时额外提示;新增"按偏差校正显示"开关(默认关闭,状态存 `localStorage`,读写都包了 `try/catch`),说明文案从"以各节点本地时钟为准"改为结合偏差与阈值的描述。
+- `NodesPage`/`NodeDetailPage`/`TopologyPage`:新增 `ProtocolHealthSummary`/`ClockSkewSummary`(`NodeHealthSummary.jsx`),outdated/warn 才显示告警色徽标+提示;`nodeHealth.js` 的 `nodeNeedsAttention` 相应把这两种状态计入"需要关注"。
+
 ## 6. 非目标
 
 多路径负载均衡/加权分流;请求级透明重试;中继节点完全无入站(NAT 反向建链)。
