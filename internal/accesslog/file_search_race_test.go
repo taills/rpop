@@ -123,6 +123,15 @@ func TestFileSink_SearchFallsBackToPlainWhenArchiveIsRolledBackMidQuery(t *testi
 // leave it out of the result instead of failing the whole query.
 func TestFileSink_SearchSkipsFilesPrunedMidQuery(t *testing.T) {
 	sink, dir := newDayFileSink(t, 0, true)
+	// newFileSink unconditionally launches one background sweep (triggerSweep, via launchArchive) at construction
+	// time, tracked by sweepWG; on the empty directory it sees at that instant, it is a no-op, but its os.ReadDir
+	// is not synchronized with anything below. Without this Wait, that goroutine can still be pending when the
+	// plain "access-*.jsonl" fixtures below land on disk, and — being indistinguishable from a real leftover
+	// period file — race archiveSlot into renaming/compressing prunedPath before the hook below ever runs,
+	// making its hardcoded os.Remove(prunedPath) fail with ENOENT for a reason that has nothing to do with what
+	// this test is actually injecting. Draining it first (this sink never calls sink.Write, the only other thing
+	// that triggers a sweep) removes that race entirely rather than just narrowing it.
+	sink.sweepWG.Wait()
 	manager := &Manager{dir: dir, sink: sink, location: time.UTC}
 	prunedAt := time.Now().UTC().AddDate(0, 0, -9)
 	survivingAt := time.Now().UTC().AddDate(0, 0, -8)
