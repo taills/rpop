@@ -13,9 +13,9 @@ function HopRow({ hop, hopIndex, hopCount, nodeOptions, proxies, warning, onChan
       ))}</optgroup>
       <optgroup label="具名代理">{proxies.map(proxy => <option key={proxy.id} value={`proxy:${proxy.id}`}>{proxy.name || proxy.id}</option>)}</optgroup>
     </select>
-    <button type="button" className="icon-btn" title="上移" disabled={hopIndex === 0} onClick={() => onMove(-1)}>↑</button>
-    <button type="button" className="icon-btn" title="下移" disabled={hopIndex === hopCount - 1} onClick={() => onMove(1)}>↓</button>
-    <button type="button" className="icon-btn danger" title="删除该跳" onClick={onRemove}>×</button>
+    <button type="button" className="icon-btn" title="上移" aria-label={`上移第 ${hopIndex + 1} 跳`} disabled={hopIndex === 0} onClick={() => onMove(-1)}>↑</button>
+    <button type="button" className="icon-btn" title="下移" aria-label={`下移第 ${hopIndex + 1} 跳`} disabled={hopIndex === hopCount - 1} onClick={() => onMove(1)}>↓</button>
+    <button type="button" className="icon-btn danger" title="删除该跳" aria-label={`删除第 ${hopIndex + 1} 跳`} onClick={onRemove}>×</button>
     {warning && <span className="hop-warning">⚠ {warning}</span>}
   </div>
 }
@@ -26,9 +26,9 @@ function PathRow({ path, index, pathCount, nodeOptions, nodes, proxies, placemen
       <span className="path-no">#{index + 1}</span>
       <code className="path-summary">{pathLabel(path.via, { nodes, proxies })}</code>
       <span className="path-actions">
-        <button type="button" className="icon-btn" title="上移路径" disabled={index === 0} onClick={() => onMove(-1)}>↑</button>
-        <button type="button" className="icon-btn" title="下移路径" disabled={index === pathCount - 1} onClick={() => onMove(1)}>↓</button>
-        <button type="button" className="icon-btn danger" title="删除路径" onClick={onRemove}>⌫</button>
+        <button type="button" className="icon-btn" title="上移路径" aria-label={`上移路径 #${index + 1}`} disabled={index === 0} onClick={() => onMove(-1)}>↑</button>
+        <button type="button" className="icon-btn" title="下移路径" aria-label={`下移路径 #${index + 1}`} disabled={index === pathCount - 1} onClick={() => onMove(1)}>↓</button>
+        <button type="button" className="icon-btn danger" title="删除路径" aria-label={`删除路径 #${index + 1}`} onClick={onRemove}>⌫</button>
       </span>
     </div>
     {error && <div className="path-error">{error}</div>}
