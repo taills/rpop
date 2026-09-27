@@ -5,6 +5,9 @@ import LogsPage from '@/views/LogsPage'
 import LogSettingsPage from '@/views/LogSettingsPage'
 import SystemSettingsPage from '@/views/SystemSettingsPage'
 import ProxiesPage from '@/views/ProxiesPage'
+import NodesPage from '@/views/NodesPage'
+import NodeDetailPage from '@/views/NodeDetailPage'
+import TopologyPage from '@/views/TopologyPage'
 import CatalogPage from '@/views/CatalogPage'
 import DemoPage from '@/views/DemoPage'
 import TokensPage from '@/views/TokensPage'
@@ -20,6 +23,9 @@ export default function AppRouter() {
         <Route path="log-settings" element={<LogSettingsPage />} />
         <Route path="system-settings" element={<SystemSettingsPage />} />
         <Route path="proxies" element={<ProxiesPage />} />
+        <Route path="nodes" element={<NodesPage />} />
+        <Route path="nodes/:id" element={<NodeDetailPage />} />
+        <Route path="topology" element={<TopologyPage />} />
         <Route path="catalog" element={<CatalogPage />} />
         <Route path="demo" element={<DemoPage />} />
         <Route path="tokens" element={<TokensPage />} />

@@ -17,6 +17,8 @@ export default function ShellView() {
     { key: 'proxies', label: '具名代理', icon: 'link', to: '/proxies' },
     { key: 'system-settings', label: '系统设置', icon: 'settings', to: '/system-settings' },
     { key: 'trace', label: '请求追踪', icon: 'link', to: '/trace' },
+    { key: 'nodes', label: '节点', icon: 'link', to: '/nodes' },
+    { key: 'topology', label: '拓扑', icon: 'layers', to: '/topology' },
     {
       key: 'catalog',
       label: '组件目录',
