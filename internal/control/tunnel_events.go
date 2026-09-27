@@ -38,6 +38,12 @@ const (
 	// over scanning the full tunnelEventRetentionDays window on every query; widen this constant if it proves too
 	// tight in practice.
 	tunnelQueryWindowDays = 2
+	// tunnelEventStoreDefaultMaxBytes bounds the total size of every day partition the store keeps on disk,
+	// independent of tunnelEventRetentionDays' age-based limit (stage 5 security review item 5): a burst of
+	// tunnel activity within the retention window could otherwise still grow the store without bound. 10GiB is
+	// generous for a diagnostic store, not an audit trail (see the doc comment below on why this is a bespoke
+	// store at all), while still being a real ceiling instead of none.
+	tunnelEventStoreDefaultMaxBytes int64 = 10 << 30
 )
 
 // tunnelEventStore persists overlay.TunnelEvent records so GET /api/logging/tunnels/{tunnelId} (D22) can
@@ -55,6 +61,9 @@ type tunnelEventStore struct {
 	log  *zap.Logger
 	file *os.File
 	day  string
+	// maxBytes bounds the total size of every day partition on disk (item 5); pruneLocked evicts the oldest ones
+	// once it is exceeded, on top of the age-based cutoff it already applies.
+	maxBytes int64
 }
 
 func newTunnelEventStore(logDir string, log *zap.Logger) (*tunnelEventStore, error) {
@@ -62,7 +71,7 @@ func newTunnelEventStore(logDir string, log *zap.Logger) (*tunnelEventStore, err
 	if err := os.MkdirAll(dir, 0750); err != nil {
 		return nil, fmt.Errorf("create tunnel event directory: %w", err)
 	}
-	return &tunnelEventStore{dir: dir, log: log}, nil
+	return &tunnelEventStore{dir: dir, log: log, maxBytes: tunnelEventStoreDefaultMaxBytes}, nil
 }
 
 func tunnelEventPath(dir, day string) string {
@@ -116,23 +125,52 @@ func (s *tunnelEventStore) rotateLocked(day string) error {
 	return nil
 }
 
+// pruneLocked removes partitions the age-based retention window has aged out, then, if the store's total size
+// still exceeds maxBytes, evicts the oldest remaining ones (by day, ascending) until it fits (item 5) — never
+// the partition just opened for writing, even if that leaves the store over the cap: there is nothing older
+// left to remove instead, and the file mid-write must survive regardless.
 func (s *tunnelEventStore) pruneLocked() {
 	cutoff := time.Now().UTC().AddDate(0, 0, -tunnelEventRetentionDays).Format("20060102")
 	paths, err := filepath.Glob(filepath.Join(s.dir, "events-*.jsonl"))
 	if err != nil {
 		return
 	}
+	sort.Strings(paths) // oldest day first, so the size-based pass below evicts in the right order
+	var total int64
+	kept := make([]string, 0, len(paths))
 	for _, path := range paths {
 		day := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), "events-"), ".jsonl")
 		// Never prune the file just opened for writing, even if its own day label is already outside the
 		// retention window (a late event, or a clock far behind): a file must survive at least the write that
 		// just created or reopened it.
 		if day == s.day || len(day) != 8 || day >= cutoff {
+			if info, statErr := os.Stat(path); statErr == nil {
+				total += info.Size()
+			}
+			kept = append(kept, path)
 			continue
 		}
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			s.log.Warn("prune expired tunnel event partition", zap.String("path", path), zap.Error(err))
 		}
+	}
+	for _, path := range kept {
+		if total <= s.maxBytes {
+			break
+		}
+		day := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), "events-"), ".jsonl")
+		if day == s.day {
+			continue
+		}
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			s.log.Warn("evict tunnel event partition over the size cap", zap.String("path", path), zap.Int64("max_bytes", s.maxBytes), zap.Error(err))
+			continue
+		}
+		total -= info.Size()
 	}
 }
 

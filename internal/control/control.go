@@ -90,6 +90,19 @@ func (c *Control) SetLogIngestLimits(maxConcurrent int, rateBytesPerSecond int64
 	}
 }
 
+// SetTunnelEventStoreCapacity overrides the default total-size cap for the tunnel event store (stage 5 security
+// review item 5, see tunnelEventStoreDefaultMaxBytes). Call before serving southbound traffic; maxBytes <= 0
+// leaves the default in place. A no-op if the controller was not built with NewWithLogDir (c.tunnelEvents is
+// nil, as it is for the plain New() constructor tests commonly use).
+func (c *Control) SetTunnelEventStoreCapacity(maxBytes int64) {
+	if c.tunnelEvents == nil || maxBytes <= 0 {
+		return
+	}
+	c.tunnelEvents.mu.Lock()
+	defer c.tunnelEvents.mu.Unlock()
+	c.tunnelEvents.maxBytes = maxBytes
+}
+
 func (c *Control) Handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("/api/health", c.health)

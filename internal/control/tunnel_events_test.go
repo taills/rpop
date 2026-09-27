@@ -2,14 +2,17 @@ package control
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	_ "github.com/mattn/go-sqlite3"
 	"go.uber.org/zap"
 
 	"github.com/rpop-project/rpop/internal/overlay"
+	"github.com/rpop-project/rpop/internal/store"
 )
 
 func TestTunnelEventStoreWriteAndQuery(t *testing.T) {
@@ -162,6 +165,90 @@ func TestReadTunnelEventsSkipsOversizedAndCorruptLines(t *testing.T) {
 	if len(events) != 2 || events[0].NodeID != "n1" || events[1].NodeID != "n2" {
 		t.Fatalf("events = %#v, want two events from n1 and n2 with the bad lines skipped", events)
 	}
+}
+
+// TestTunnelEventStoreEvictsOldestPartitionsOverItsSizeCap covers stage 5 security review item 5: on top of
+// tunnelEventRetentionDays' age-based limit, the store must not grow without bound within that window either.
+// Capping it to a little over one day's partition forces the next day's rotation to evict the oldest one.
+func TestTunnelEventStoreEvictsOldestPartitionsOverItsSizeCap(t *testing.T) {
+	dir := t.TempDir()
+	store, err := newTunnelEventStore(dir, zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	// Far enough in the future that neither partition can ever fall inside the retention window's "older than
+	// tunnelEventRetentionDays" cutoff and get age-pruned instead, regardless of when this test actually runs.
+	base := time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC)
+	write := func(day int, tunnelID string) {
+		t.Helper()
+		if err := store.Write(context.Background(), overlay.TunnelEvent{Timestamp: base.AddDate(0, 0, day), TunnelID: tunnelID, NodeID: "n"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(0, "day-0")
+	firstPath := tunnelEventPath(filepath.Join(dir, tunnelEventsDirName), base.Format("20060102"))
+	info, err := os.Stat(firstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Below day 0's own size: pruneLocked runs right after day 1's (still-empty) file is opened but before its
+	// line is written, so the cap must already exclude day 0 alone to force its eviction on this rotation.
+	store.mu.Lock()
+	store.maxBytes = info.Size() - 1
+	store.mu.Unlock()
+
+	write(1, "day-1")
+	if _, err := os.Stat(firstPath); !os.IsNotExist(err) {
+		t.Fatalf("expected day 0's partition to be evicted over the size cap, stat err = %v", err)
+	}
+	got, err := store.Query(context.Background(), "day-0", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("evicted tunnel events must not be queryable, got %#v", got)
+	}
+	got, err = store.Query(context.Background(), "day-1", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("day 1's own partition must survive (it is the one just opened for writing), got %#v", got)
+	}
+}
+
+// TestSetTunnelEventStoreCapacityOverridesTheDefault covers the Control-level knob for item 5's size cap: a
+// positive override replaces the default and sticks, a non-positive one is a no-op that leaves whatever is
+// already set in place, and calling it on a Control with no tunnel event store (the plain New() constructor)
+// must not panic.
+func TestSetTunnelEventStoreCapacityOverridesTheDefault(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := store.Migrate(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewWithLogDir(store.New(db), zap.NewNop(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseAccessLogs(context.Background())
+
+	c.SetTunnelEventStoreCapacity(12345)
+	if c.tunnelEvents.maxBytes != 12345 {
+		t.Fatalf("maxBytes = %d, want 12345", c.tunnelEvents.maxBytes)
+	}
+	c.SetTunnelEventStoreCapacity(0)
+	if c.tunnelEvents.maxBytes != 12345 {
+		t.Fatalf("maxBytes after a non-positive override = %d, want unchanged at 12345", c.tunnelEvents.maxBytes)
+	}
+
+	plain := New(store.New(db), zap.NewNop())
+	plain.SetTunnelEventStoreCapacity(999)
 }
 
 func TestLocalTunnelEventWriterWritesThrough(t *testing.T) {
