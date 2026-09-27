@@ -47,8 +47,8 @@ export default function NodeLinksTable({ links = [] }) {
               </tr>
             </thead>
             <tbody>
-              {links.map((link, index) => (
-                <tr key={`${link.peer}-${index}`}>
+              {links.map((link) => (
+                <tr key={`${link.peer}-${(link.proxies || []).join('>')}`}>
                   <td>
                     <div className="stacked-cell">
                       <span className="ui-mono">{link.peer}</span>
