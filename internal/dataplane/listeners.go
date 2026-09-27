@@ -34,9 +34,13 @@ type siteRuntime struct {
 	pathGroups []upstreamPathGroup
 }
 
-// release closes idle upstream connections of a replaced runtime; in-flight requests keep theirs.
+// release closes idle upstream connections of a replaced runtime and stops every path's pending D19 probe timer
+// (see pathTransport.closeProbe); in-flight requests keep their connections.
 func (r *siteRuntime) release() {
 	closeIdle(r.transports)
+	for _, group := range r.pathGroups {
+		group.failover.closeProbes()
+	}
 }
 
 // listenerGroup is one bound address shared by sites that route by hostname.

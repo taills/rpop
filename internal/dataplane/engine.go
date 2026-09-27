@@ -32,6 +32,9 @@ type Engine struct {
 	logs    *logQueue
 	// paths dials upstream paths; guarded by mu.
 	paths PathDialer
+	// activeProbe is the engine-wide default for D19 active probing (D30); guarded by mu. SetPathActiveProbe
+	// overrides it; an upstream's Failover.ActiveProbe overrides it again for that upstream alone.
+	activeProbe bool
 }
 
 type running struct {
@@ -44,7 +47,7 @@ type running struct {
 
 // New creates an idle engine. Access logs go to the logger until SetAccessLogWriter provides a destination.
 func New(log *zap.Logger) *Engine {
-	e := &Engine{log: log, runs: make(map[string]*running), listeners: make(map[string]*listenerGroup)}
+	e := &Engine{log: log, runs: make(map[string]*running), listeners: make(map[string]*listenerGroup), activeProbe: true}
 	e.logs = newLogQueue(log, func(siteID string) { e.metricsFor(siteID).dropLog() })
 	return e
 }
@@ -170,9 +173,11 @@ func (e *Engine) Spec(id string) (snapshot.Site, bool) {
 	return run.spec, true
 }
 
-// Handler builds the proxy handler of a site without binding a listener.
+// Handler builds the proxy handler of a site without binding a listener. Nothing ever calls release() on this
+// one-off runtime, so D19 active probing stays off for it regardless of engine/upstream settings: a timer with
+// no owner to close it would keep re-arming itself past the caller's use of the handler.
 func (e *Engine) Handler(site snapshot.Site) (http.Handler, error) {
-	handler, _, _, err := e.siteHandler(site)
+	handler, _, _, err := e.siteHandler(site, false)
 	return handler, err
 }
 
@@ -220,7 +225,7 @@ func (e *Engine) buildRuntime(site snapshot.Site) (*siteRuntime, error) {
 			return nil, err
 		}
 	}
-	handler, transports, pathGroups, err := e.siteHandler(site)
+	handler, transports, pathGroups, err := e.siteHandler(site, true)
 	if err != nil {
 		return nil, err
 	}

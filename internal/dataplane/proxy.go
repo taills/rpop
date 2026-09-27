@@ -23,8 +23,9 @@ type upstreamTarget struct {
 type routeDecisionKey struct{}
 
 // siteHandler builds the routed, observed proxy of a site together with the transports it owns and the
-// per-upstream path failover state PathHealth reports.
-func (e *Engine) siteHandler(site snapshot.Site) (http.Handler, []*http.Transport, []upstreamPathGroup, error) {
+// per-upstream path failover state PathHealth reports. managed reports whether the caller will call
+// siteRuntime.release() on the result, which alone makes it safe to enable D19 active probing (see Engine.Handler).
+func (e *Engine) siteHandler(site snapshot.Site, managed bool) (http.Handler, []*http.Transport, []upstreamPathGroup, error) {
 	if len(site.Upstreams) == 0 {
 		return nil, nil, nil, fmt.Errorf("at least one upstream is required")
 	}
@@ -36,8 +37,9 @@ func (e *Engine) siteHandler(site snapshot.Site) (http.Handler, []*http.Transpor
 	transports := make([]*http.Transport, 0, len(site.Upstreams))
 	dialer := e.pathDialer()
 	logTunnelEvents := accessLoggingEnabled(site.AccessLog)
+	globalActiveProbe := e.pathActiveProbeEnabled()
 	for index, upstream := range site.Upstreams {
-		target, err := newUpstreamTarget(upstream, dialer, logTunnelEvents)
+		target, err := newUpstreamTarget(upstream, dialer, logTunnelEvents, globalActiveProbe, managed)
 		if err != nil {
 			closeIdle(transports)
 			return nil, nil, nil, fmt.Errorf("upstreams[%d]: %w", index, err)
@@ -54,7 +56,9 @@ func (e *Engine) siteHandler(site snapshot.Site) (http.Handler, []*http.Transpor
 	return e.observeSite(site.ID, site.AccessLog, routedHandler(router, targets)), transports, pathGroups, nil
 }
 
-func newUpstreamTarget(upstream snapshot.Upstream, dialer PathDialer, logTunnelEvents bool) (upstreamTarget, error) {
+// newUpstreamTarget builds one upstream's proxy target; globalActiveProbe is the engine-wide D19 default and
+// managed reports whether the caller will release the result (see siteHandler).
+func newUpstreamTarget(upstream snapshot.Upstream, dialer PathDialer, logTunnelEvents bool, globalActiveProbe, managed bool) (upstreamTarget, error) {
 	u, err := url.Parse(upstream.URL)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return upstreamTarget{}, fmt.Errorf("invalid upstream URL")
@@ -67,7 +71,8 @@ func newUpstreamTarget(upstream snapshot.Upstream, dialer PathDialer, logTunnelE
 	transports := []*http.Transport{transport}
 	var failover *failoverTransport
 	if len(upstream.Paths) > 0 {
-		failover, transports = newPathTransports(transport, upstream.Paths, dialer, logTunnelEvents)
+		cfg := resolvePathFailoverConfig(upstream.Failover, globalActiveProbe)
+		failover, transports = newPathTransports(transport, upstream.Paths, dialer, logTunnelEvents, cfg, managed && cfg.activeProbe)
 		roundTripper = failover
 	}
 	proxy := &httputil.ReverseProxy{

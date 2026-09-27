@@ -17,12 +17,54 @@ import (
 )
 
 const (
-	minPathCooldown = time.Second
-	maxPathCooldown = time.Minute
-	// pathEstablishTimeout bounds connecting along one path, including every relay and the exit's dial to the
-	// upstream; links are kept warm, so it only has to cover the tunnel and the final hop.
-	pathEstablishTimeout = 10 * time.Second
+	// MinPathCooldown and MaxPathCooldown are the default lower and upper bounds of a path's exponential
+	// cooldown after a connection failure; an upstream's Failover override (D30) can replace either bound.
+	// Exported so internal/control/paths.go's validateFailover can validate an override's effect against them
+	// without duplicating the values (see control.HeaderTimeout for the same pattern).
+	MinPathCooldown = time.Second
+	MaxPathCooldown = time.Minute
+	// PathEstablishTimeout bounds connecting along one path, including every relay and the exit's dial to the
+	// upstream; links are kept warm, so it only has to cover the tunnel and the final hop. An upstream's
+	// Failover.DialTimeoutMs override (D30) replaces it.
+	PathEstablishTimeout = 10 * time.Second
 )
+
+// pathFailoverConfig is the resolved, always-fully-populated per-upstream D19/D30 degradation tuning: how long a
+// dial along one candidate path may take, how its cooldown grows and is capped, and whether it is actively
+// probed while cooling down. defaultPathFailoverConfig gives the node-wide defaults; resolvePathFailoverConfig
+// overlays an upstream's optional Failover override onto them.
+type pathFailoverConfig struct {
+	dialTimeout              time.Duration
+	minCooldown, maxCooldown time.Duration
+	activeProbe              bool
+}
+
+func defaultPathFailoverConfig(globalActiveProbe bool) pathFailoverConfig {
+	return pathFailoverConfig{dialTimeout: PathEstablishTimeout, minCooldown: MinPathCooldown, maxCooldown: MaxPathCooldown, activeProbe: globalActiveProbe}
+}
+
+// resolvePathFailoverConfig merges an upstream's optional Failover override onto the node-wide defaults; a nil
+// override, or a zero/nil field within it, keeps its default. globalActiveProbe is the engine-wide D19 switch
+// (SetPathActiveProbe), which override.ActiveProbe can replace for this upstream alone.
+func resolvePathFailoverConfig(override *snapshot.UpstreamFailover, globalActiveProbe bool) pathFailoverConfig {
+	cfg := defaultPathFailoverConfig(globalActiveProbe)
+	if override == nil {
+		return cfg
+	}
+	if override.DialTimeoutMs > 0 {
+		cfg.dialTimeout = time.Duration(override.DialTimeoutMs) * time.Millisecond
+	}
+	if override.MinCooldownMs > 0 {
+		cfg.minCooldown = time.Duration(override.MinCooldownMs) * time.Millisecond
+	}
+	if override.MaxCooldownMs > 0 {
+		cfg.maxCooldown = time.Duration(override.MaxCooldownMs) * time.Millisecond
+	}
+	if override.ActiveProbe != nil {
+		cfg.activeProbe = *override.ActiveProbe
+	}
+	return cfg
+}
 
 // PathDialer opens connections along upstream paths.
 type PathDialer interface {
@@ -55,6 +97,21 @@ func (e *Engine) pathDialer() PathDialer {
 	return e.paths
 }
 
+// SetPathActiveProbe overrides the engine-wide default for D19 active probing (D30, enabled by default); an
+// upstream's Failover.ActiveProbe still overrides this default for that upstream alone. Call before Apply for a
+// consistent first snapshot; a later call only affects sites built or rebuilt afterward.
+func (e *Engine) SetPathActiveProbe(enabled bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.activeProbe = enabled
+}
+
+func (e *Engine) pathActiveProbeEnabled() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.activeProbe
+}
+
 // pathDialError marks a failure to establish a connection along a path: nothing reached the upstream, so the
 // request may safely try the next path.
 type pathDialError struct {
@@ -71,6 +128,13 @@ func (e *pathDialError) Unwrap() error { return e.err }
 type pathTransport struct {
 	label     string
 	transport *http.Transport
+	// minCooldown/maxCooldown bound this path's exponential cooldown (D30); resolved once at construction from
+	// the upstream's Failover override or the node-wide defaults, see resolvePathFailoverConfig.
+	minCooldown, maxCooldown time.Duration
+	// probe drives D19 active probing while this path is cooling down; nil when probing is disabled for it
+	// (globally, per-upstream, or because this pathTransport was built outside the engine's Apply/Stop
+	// lifecycle, which alone guarantees closeProbe is ever called to release it).
+	probe *pathProbe
 
 	mu       sync.Mutex
 	failures int
@@ -87,18 +151,39 @@ func (p *pathTransport) coolingDown(now time.Time) bool {
 
 func (p *pathTransport) failed(now time.Time, err error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.failures++
-	p.until = now.Add(min(minPathCooldown<<min(p.failures-1, 10), maxPathCooldown))
+	p.until = now.Add(min(p.minCooldown<<min(p.failures-1, 10), p.maxCooldown))
 	if err != nil {
 		p.lastErr = err.Error()
+	}
+	until, probe := p.until, p.probe
+	p.mu.Unlock()
+	// Scheduling outside the lock lets scheduleAt take pathProbe's own lock without nesting the two.
+	if probe != nil {
+		probe.scheduleAt(until)
 	}
 }
 
 func (p *pathTransport) succeeded() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.failures, p.until, p.lastErr = 0, time.Time{}, ""
+	probe := p.probe
+	p.mu.Unlock()
+	if probe != nil {
+		probe.cancel()
+	}
+}
+
+// closeProbe stops this path's pending D19 probe timer, if any, and prevents scheduling new ones. Call when the
+// runtime that owns this path is released (site removed, rebuilt, or the engine stops) so no timer or goroutine
+// outlives it; see siteRuntime.release.
+func (p *pathTransport) closeProbe() {
+	p.mu.Lock()
+	probe := p.probe
+	p.mu.Unlock()
+	if probe != nil {
+		probe.close()
+	}
 }
 
 // PathHealth is the failover state of one candidate path of an upstream (D18/D19/D20), for status reporting.
@@ -136,8 +221,8 @@ type failoverTransport struct {
 	establishTimeout time.Duration
 }
 
-func newPathTransports(base *http.Transport, paths []snapshot.Path, dialer PathDialer, logTunnelEvents bool) (*failoverTransport, []*http.Transport) {
-	f := &failoverTransport{establishTimeout: pathEstablishTimeout}
+func newPathTransports(base *http.Transport, paths []snapshot.Path, dialer PathDialer, logTunnelEvents bool, cfg pathFailoverConfig, probeEnabled bool) (*failoverTransport, []*http.Transport) {
+	f := &failoverTransport{establishTimeout: cfg.dialTimeout}
 	transports := make([]*http.Transport, 0, len(paths))
 	for _, path := range paths {
 		transport := base.Clone()
@@ -155,10 +240,22 @@ func newPathTransports(base *http.Transport, paths []snapshot.Path, dialer PathD
 			}
 			return conn, nil
 		}
-		f.paths = append(f.paths, &pathTransport{label: path.Label, transport: transport})
+		pt := &pathTransport{label: path.Label, transport: transport, minCooldown: cfg.minCooldown, maxCooldown: cfg.maxCooldown}
+		if probeEnabled {
+			pt.probe = newPathProbe(path, dialer, logTunnelEvents, cfg.dialTimeout, pt)
+		}
+		f.paths = append(f.paths, pt)
 		transports = append(transports, transport)
 	}
 	return f, transports
+}
+
+// closeProbes stops every path's pending D19 probe timer and prevents scheduling new ones; see
+// pathTransport.closeProbe.
+func (f *failoverTransport) closeProbes() {
+	for _, p := range f.paths {
+		p.closeProbe()
+	}
 }
 
 // UpstreamPathHealth is the failover state of every candidate path of one upstream, for status reporting.
