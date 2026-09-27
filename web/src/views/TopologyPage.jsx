@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '@/api.js'
 import { UiAlert, UiEmpty, UiPageHeader, UiSkeleton, UiTag } from '@/components/ui'
+import { clockSkewStatusLabel, formatClockSkew, protocolStatusLabel } from '@/nodeHealth'
 import {
   curveControlPoint,
   edgeColor,
@@ -41,6 +42,16 @@ function edgeTitle(edge) {
   if (edge.proxies?.length) lines.push(`代理链: ${edge.proxies.join(' → ')}`)
   lines.push(`在途连接: ${edge.connections ?? 0} · 隧道: ${edge.tunnels ?? 0} · 失败: ${edge.failures ?? 0}`)
   if (edge.lastError) lines.push(`最近错误: ${edge.lastError}`)
+  return lines.join('\n')
+}
+
+// nodeTooltip is the topology SVG node's <title> hover text: role/online summary plus D27's protocol version and
+// D28's clock skew, both mirroring nodeView/NodesPage's own fields so an operator does not have to leave the
+// topology page to notice an outdated node or a large clock skew.
+function nodeTooltip(node) {
+  const lines = [`${node.name} (${node.id})`, `角色: ${(node.roles || []).join('、') || '无'}`, node.online ? '在线' : '离线']
+  lines.push(`协议版本: v${node.protocolVersion || '—'}（${protocolStatusLabel(node.protocolStatus)}）`)
+  lines.push(`时钟偏差: ${formatClockSkew(node.clockSkewMillis)}（${clockSkewStatusLabel(node.clockSkewStatus)}）`)
   return lines.join('\n')
 }
 
@@ -163,7 +174,7 @@ export default function TopologyPage() {
                         strokeDasharray={node.embedded ? '4 3' : undefined}
                         opacity={node.online ? 1 : 0.55}
                       />
-                      <title>{`${node.name} (${node.id})\n角色: ${(node.roles || []).join('、') || '无'}\n${node.online ? '在线' : '离线'}`}</title>
+                      <title>{nodeTooltip(node)}</title>
                       <text y={4} textAnchor="middle" className="topology-svg__label">{label}</text>
                       <text y={NODE_RADIUS + 16} textAnchor="middle" className="topology-svg__sub">{node.id}</text>
                     </g>

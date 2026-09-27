@@ -19,6 +19,7 @@ import NodeLogHealth from '@/components/NodeLogHealth.jsx'
 import NodeFormDrawer from '@/components/NodeFormDrawer.jsx'
 import JoinTokenDialog from '@/components/JoinTokenDialog.jsx'
 import TimeCell from '@/components/TimeCell.jsx'
+import { ClockSkewSummary, ProtocolHealthSummary } from '@/components/NodeHealthSummary.jsx'
 import '@/components/NodeHealthBlocks.css'
 import { useToast } from '@/stores/toast'
 import './NodeDetailPage.css'
@@ -120,6 +121,8 @@ export default function NodeDetailPage() {
     { label: '版本', value: node.version, mono: true },
     { label: 'Revision', render: () => <span className="ui-mono">{node.appliedRevision} / {node.publishedRevision}</span> },
     { label: '同步状态', render: () => <UiTag tone={node.inSync ? 'success' : 'warn'}>{node.inSync ? '已同步' : '待同步'}</UiTag> },
+    { label: '协议版本', render: () => <ProtocolHealthSummary protocolVersion={node.protocolVersion} protocolStatus={node.protocolStatus} /> },
+    { label: '时钟偏差', render: () => <ClockSkewSummary clockSkewMillis={node.clockSkewMillis} clockSkewStatus={node.clockSkewStatus} /> },
     { label: '证书代数', render: () => node.embedded ? <span className="ui-cell-dim">内嵌节点</span> : <UiTag tone={node.certGeneration > 0 ? 'success' : 'muted'}>{node.certGeneration > 0 ? `第 ${node.certGeneration} 代` : '未注册'}</UiTag> },
     { label: '证书有效期至', render: () => <TimeCell value={node.certNotAfter} /> },
     { label: 'join token 有效期至', render: () => <TimeCell value={node.tokenExpiresAt} /> },

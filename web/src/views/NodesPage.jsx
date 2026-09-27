@@ -15,7 +15,7 @@ import {
 import NodeFormDrawer from '@/components/NodeFormDrawer.jsx'
 import JoinTokenDialog from '@/components/JoinTokenDialog.jsx'
 import TimeCell from '@/components/TimeCell.jsx'
-import { LinkHealthSummary, LogHealthSummary, PathHealthSummary } from '@/components/NodeHealthSummary.jsx'
+import { LinkHealthSummary, LogHealthSummary, PathHealthSummary, ClockSkewSummary, ProtocolHealthSummary } from '@/components/NodeHealthSummary.jsx'
 import '@/components/NodeHealthBlocks.css'
 import { nodeNeedsAttention } from '@/nodeHealth'
 import { useToast } from '@/stores/toast'
@@ -148,6 +148,14 @@ export default function NodesPage() {
     { key: 'paths', title: '路径健康', minWidth: '160px', render: (row) => <PathHealthSummary paths={row.paths} /> },
     { key: 'logs', title: '日志 spool', minWidth: '150px', render: (row) => <LogHealthSummary logs={row.logs} /> },
     {
+      key: 'protocol', title: '协议版本', minWidth: '140px',
+      render: (row) => <ProtocolHealthSummary protocolVersion={row.protocolVersion} protocolStatus={row.protocolStatus} />,
+    },
+    {
+      key: 'clockSkew', title: '时钟偏差', minWidth: '140px',
+      render: (row) => <ClockSkewSummary clockSkewMillis={row.clockSkewMillis} clockSkewStatus={row.clockSkewStatus} />,
+    },
+    {
       key: 'actions', title: '操作', minWidth: '220px',
       render: (row) => row.embedded
         ? <span className="ui-cell-dim">无需管理</span>
@@ -171,7 +179,7 @@ export default function NodesPage() {
       />
       {error && <UiAlert type="error" title="加载失败">{error}</UiAlert>}
       {attentionCount > 0 && (
-        <UiAlert type="warn" title="需要关注">{attentionCount} 个节点离线、链路/路径异常或日志 spool 有问题，请查看下表或详情页。</UiAlert>
+        <UiAlert type="warn" title="需要关注">{attentionCount} 个节点离线、链路/路径异常、日志 spool 有问题、协议版本落后或时钟偏差过大，请查看下表或详情页。</UiAlert>
       )}
       <div className="nodes-toolbar">
         <UiSearch value={query} onChange={setQuery} placeholder="搜索节点 ID 或名称" />
