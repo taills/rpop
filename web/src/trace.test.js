@@ -203,13 +203,25 @@ test('formatClockSkew signs and scales a skew, and renders an unknown one as 未
   assert.equal(formatClockSkew(undefined), '未知')
 })
 
-test('isClockSkewWarn/anyClockSkewWarn fire only once the magnitude exceeds the default threshold', () => {
-  assert.equal(isClockSkewWarn(1999), false)
-  assert.equal(isClockSkewWarn(2001), true)
-  assert.equal(isClockSkewWarn(-2001), true)
-  assert.equal(isClockSkewWarn(null), false)
-  assert.equal(anyClockSkewWarn([{ clockSkewMillis: 500 }, { clockSkewMillis: 2500 }]), true)
+test('isClockSkewWarn honors the controller\'s own clockSkewStatus over the fallback threshold', () => {
+  // A controller-supplied status always wins, even when it disagrees with the fallback threshold heuristic —
+  // this is what lets an operator-raised -clock-skew-warn-threshold (stage 7 review item 3) take effect.
+  assert.equal(isClockSkewWarn(50, 'warn'), true)
+  assert.equal(isClockSkewWarn(9000, 'ok'), false)
+})
+
+test('isClockSkewWarn falls back to the default threshold when no clockSkewStatus is present (a controller predating it)', () => {
+  assert.equal(isClockSkewWarn(1999, undefined), false)
+  assert.equal(isClockSkewWarn(2001, undefined), true)
+  assert.equal(isClockSkewWarn(-2001, ''), true)
+  assert.equal(isClockSkewWarn(null, undefined), false)
+})
+
+test('anyClockSkewWarn checks each event\'s own clockSkewStatus, falling back to the threshold per event', () => {
+  assert.equal(anyClockSkewWarn([{ clockSkewMillis: 500, clockSkewStatus: 'ok' }, { clockSkewMillis: 2500, clockSkewStatus: 'warn' }]), true)
   assert.equal(anyClockSkewWarn([{ clockSkewMillis: 500 }, { clockSkewMillis: null }]), false)
+  // A stale controller's raw millis alone still triggers a warning above the fallback threshold.
+  assert.equal(anyClockSkewWarn([{ clockSkewMillis: 2500 }]), true)
 })
 
 test('applyClockSkew is a no-op, returning the same array, when disabled', () => {
@@ -264,16 +276,20 @@ test('backend +skew (node fast) round-trips through applyClockSkew back to contr
   assert.equal(corrected[0].timestamp, controllerReferenceInstant)
 })
 
-test('hopDurationBars attaches each hop\'s reporting node clockSkewMillis, defaulting to null when unknown', () => {
+test('hopDurationBars attaches each hop\'s reporting node clockSkewMillis/clockSkewStatus, defaulting to null/"" when unknown', () => {
   const hops = groupHops(
     withRelativeTiming(
       sortTunnelEvents([
-        { nodeId: 'entry-1', role: 'entry', stage: 'arrived', timestamp: '2026-01-01T00:00:00.000Z', clockSkewMillis: 1500 },
+        { nodeId: 'entry-1', role: 'entry', stage: 'arrived', timestamp: '2026-01-01T00:00:00.000Z', clockSkewMillis: 1500, clockSkewStatus: 'ok' },
         { nodeId: 'exit-1', role: 'exit', stage: 'arrived', timestamp: '2026-01-01T00:00:00.100Z' },
       ]),
     ),
   )
   const bars = hopDurationBars(hops)
-  assert.equal(bars.find((b) => b.nodeId === 'entry-1').clockSkewMillis, 1500)
-  assert.equal(bars.find((b) => b.nodeId === 'exit-1').clockSkewMillis, null)
+  const entry = bars.find((b) => b.nodeId === 'entry-1')
+  assert.equal(entry.clockSkewMillis, 1500)
+  assert.equal(entry.clockSkewStatus, 'ok')
+  const exit = bars.find((b) => b.nodeId === 'exit-1')
+  assert.equal(exit.clockSkewMillis, null)
+  assert.equal(exit.clockSkewStatus, '')
 })

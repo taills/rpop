@@ -130,8 +130,9 @@ func TestLocalNodeViewClockSkewIsAlwaysZero(t *testing.T) {
 }
 
 // TestTunnelEventViewsAttachTheReportingNodesCurrentClockSkew covers D28's tunnel-timeline annotation: each
-// event's ClockSkewMillis is the reporting node's *current* known skew (not a historical reconstruction), nil for
-// a node that never reported one, and always exactly 0 for the embedded node.
+// event's ClockSkewMillis/ClockSkewStatus are the reporting node's *current* known skew and warn/ok status (not a
+// historical reconstruction), nil/empty for a node that never reported one, and always exactly 0/"ok" for the
+// embedded node — exactly like nodeView's fields of the same name, since both go through clockSkewView.
 func TestTunnelEventViewsAttachTheReportingNodesCurrentClockSkew(t *testing.T) {
 	c := newTestControl(t)
 	offset := int64(1200)
@@ -145,14 +146,14 @@ func TestTunnelEventViewsAttachTheReportingNodesCurrentClockSkew(t *testing.T) {
 	if len(views) != 3 {
 		t.Fatalf("views = %d, want 3", len(views))
 	}
-	if views[0].ClockSkewMillis == nil || *views[0].ClockSkewMillis != offset {
-		t.Fatalf("entry-1 view = %#v, want ClockSkewMillis %d", views[0], offset)
+	if views[0].ClockSkewMillis == nil || *views[0].ClockSkewMillis != offset || views[0].ClockSkewStatus != "ok" {
+		t.Fatalf("entry-1 view = %#v, want ClockSkewMillis %d/ok", views[0], offset)
 	}
-	if views[1].ClockSkewMillis != nil {
-		t.Fatalf("exit-1 (never reported) view = %#v, want nil", views[1])
+	if views[1].ClockSkewMillis != nil || views[1].ClockSkewStatus != "" {
+		t.Fatalf("exit-1 (never reported) view = %#v, want nil/empty", views[1])
 	}
-	if views[2].ClockSkewMillis == nil || *views[2].ClockSkewMillis != 0 {
-		t.Fatalf("embedded node view = %#v, want exactly 0", views[2])
+	if views[2].ClockSkewMillis == nil || *views[2].ClockSkewMillis != 0 || views[2].ClockSkewStatus != "ok" {
+		t.Fatalf("embedded node view = %#v, want exactly 0/ok", views[2])
 	}
 	// The underlying event fields must still round-trip unchanged.
 	if views[0].TunnelID != "t1" || views[0].Role != overlay.RoleEntry {
@@ -234,7 +235,8 @@ func TestSouthboundStatusFromANodePredatingD28StillGetsAJSONResponse(t *testing.
 }
 
 // TestLoggingTunnelEventsAttachesClockSkewOverHTTP covers GET /api/logging/tunnels/{tunnelId} end to end: once a
-// node's clock skew is known, the query response's events carry it, keyed by each event's own reporting node.
+// node's clock skew is known, the query response's events carry it (and its warn/ok status), keyed by each
+// event's own reporting node.
 func TestLoggingTunnelEventsAttachesClockSkewOverHTTP(t *testing.T) {
 	h := newIngestHarness(t)
 	entryToken := h.createNode("edge-1")
@@ -254,6 +256,7 @@ func TestLoggingTunnelEventsAttachesClockSkewOverHTTP(t *testing.T) {
 	var views []struct {
 		NodeID          string `json:"nodeId"`
 		ClockSkewMillis *int64 `json:"clockSkewMillis"`
+		ClockSkewStatus string `json:"clockSkewStatus"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &views); err != nil {
 		t.Fatal(err)
@@ -261,7 +264,19 @@ func TestLoggingTunnelEventsAttachesClockSkewOverHTTP(t *testing.T) {
 	if len(views) != 1 || views[0].NodeID != "edge-1" {
 		t.Fatalf("tunnel events = %#v, want exactly one from edge-1", views)
 	}
-	if views[0].ClockSkewMillis == nil || *views[0].ClockSkewMillis != offset {
-		t.Fatalf("event clockSkewMillis = %v, want %d", views[0].ClockSkewMillis, offset)
+	if views[0].ClockSkewMillis == nil || *views[0].ClockSkewMillis != offset || views[0].ClockSkewStatus != "ok" {
+		t.Fatalf("event clock skew = %#v, want %d/ok", views[0], offset)
+	}
+
+	// Raising the threshold above the reported offset flips this same event's status without any new report —
+	// tunnelEventViews recomputes it from the current threshold on every query, exactly like nodeView.
+	h.control.SetClockSkewWarnThreshold(offset + 1)
+	response = h.call(http.MethodGet, "/api/logging/tunnels/"+tunnelID, "", http.StatusOK)
+	views = nil
+	if err := json.Unmarshal(response.Body.Bytes(), &views); err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 || views[0].ClockSkewStatus != "ok" {
+		t.Fatalf("event clock skew after raising the threshold = %#v, want ok", views)
 	}
 }

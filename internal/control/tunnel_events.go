@@ -460,19 +460,23 @@ func (c *Control) SetTunnelEventRetention(days int) {
 // tunnelEventView is one entry of GET /api/logging/tunnels/{tunnelId}'s response (D28): the stored
 // overlay.TunnelEvent, plus the reporting node's clock skew *as currently known*, not a reconstruction of what it
 // was at the moment the event happened — the store only keeps a node's single most recent measurement (see
-// nodeRegistry), not one per historical event. Nil when the reporting node never reported a measurement (see
-// Control.nodeClockOffsetMillis), exactly like nodeView.ClockSkewMillis.
+// nodeRegistry), not one per historical event. ClockSkewMillis/ClockSkewStatus are nil/empty when the reporting
+// node never reported a measurement (see Control.nodeClockOffsetMillis), exactly like nodeView's fields of the
+// same name — ClockSkewStatus was added in the stage 7 review so TracePage.jsx can honor an operator-configured
+// -clock-skew-warn-threshold instead of guessing at the console's default (see clockSkewView).
 type tunnelEventView struct {
 	overlay.TunnelEvent
 	ClockSkewMillis *int64 `json:"clockSkewMillis,omitempty"`
+	ClockSkewStatus string `json:"clockSkewStatus,omitempty"`
 }
 
-// tunnelEventViews attaches each event's reporting node's current clock skew (D28), so the console can warn that
-// a tunnel's timeline may be off and, if the operator opts in, correct it.
+// tunnelEventViews attaches each event's reporting node's current clock skew and warn/ok status (D28), so the
+// console can warn that a tunnel's timeline may be off and, if the operator opts in, correct it.
 func (c *Control) tunnelEventViews(events []overlay.TunnelEvent) []tunnelEventView {
 	views := make([]tunnelEventView, len(events))
 	for i, event := range events {
-		views[i] = tunnelEventView{TunnelEvent: event, ClockSkewMillis: c.nodeClockOffsetMillis(event.NodeID)}
+		millis, status := c.clockSkewView(c.nodeClockOffsetMillis(event.NodeID))
+		views[i] = tunnelEventView{TunnelEvent: event, ClockSkewMillis: millis, ClockSkewStatus: status}
 	}
 	return views
 }

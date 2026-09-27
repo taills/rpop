@@ -100,36 +100,45 @@ export function hopDurationBars(hops) {
     const offsetPercent = totalMs > 0 ? ((hop.startMs - spanStart) / totalMs) * 100 : 0
     const rawWidthPercent = totalMs > 0 ? ((hop.endMs - hop.startMs) / totalMs) * 100 : 100 / hops.length
     const widthPercent = Math.min(Math.max(rawWidthPercent, MIN_BAR_PERCENT), 100)
+    // clockSkewMillis/clockSkewStatus are the hop's reporting node's current skew and warn/ok status (D28): every
+    // event of a hop shares the same values (tunnelEventView attaches them per node, not per event), so the
+    // first event that has a clockSkewMillis is enough; null/"" if the node never reported one, same nil-means-
+    // unknown convention as nodeView.
+    const skewSource = hop.events.find((event) => typeof event.clockSkewMillis === 'number')
     return {
       nodeId: hop.nodeId,
       role: hop.role,
       offsetPercent: Math.min(offsetPercent, 100 - MIN_BAR_PERCENT),
       widthPercent,
       durationMs: hop.endMs - hop.startMs,
-      // clockSkewMillis is the hop's reporting node's current skew (D28): every event of a hop shares the same
-      // value (tunnelEventView attaches it per node, not per event), so the first event that has one is enough;
-      // null if the node never reported one, same nil-means-unknown convention as nodeView.
-      clockSkewMillis: hop.events.find((event) => typeof event.clockSkewMillis === 'number')?.clockSkewMillis ?? null,
+      clockSkewMillis: skewSource?.clockSkewMillis ?? null,
+      clockSkewStatus: skewSource?.clockSkewStatus ?? '',
     }
   })
 }
 
-// CLOCK_SKEW_WARN_THRESHOLD_MILLIS mirrors control.DefaultClockSkewWarnThresholdMillis (D28). GET
-// /api/logging/tunnels/{id} attaches each hop's raw clockSkewMillis but, unlike nodeView/topologyNode, no
-// precomputed "warn" status — the store only keeps a node's single current measurement, not a threshold decision
-// per historical event — so this page falls back to the same default the controller ships with to decide when a
-// hop's badge and the tunnel-level banner turn into a warning. An operator-raised -clock-skew-warn-threshold
-// would not be reflected here; that is an accepted approximation, not a bug.
+// CLOCK_SKEW_WARN_THRESHOLD_MILLIS mirrors control.DefaultClockSkewWarnThresholdMillis (D28) and is only a
+// fallback: GET /api/logging/tunnels/{id} attaches each hop's own already-decided clockSkewStatus (computed by
+// the controller's clockSkewView against its live, possibly operator-raised -clock-skew-warn-threshold — the
+// stage 7 review's item 3), which isClockSkewWarn/anyClockSkewWarn honor whenever it is present. This constant
+// only decides the outcome for a controller predating that field (an older build that sends clockSkewMillis with
+// no clockSkewStatus at all), so an operator-raised threshold on an up-to-date controller is always reflected
+// exactly; only talking to a stale controller falls back to this approximation.
 const CLOCK_SKEW_WARN_THRESHOLD_MILLIS = 2000
 
-export function isClockSkewWarn(millis) {
+// isClockSkewWarn trusts the controller's own clockSkewStatus ("warn"/"ok") when it sent one, and only falls
+// back to comparing millis against CLOCK_SKEW_WARN_THRESHOLD_MILLIS when it did not (status is "" or undefined,
+// e.g. an older controller, or millis itself is unknown).
+export function isClockSkewWarn(millis, status) {
+  if (status === 'warn') return true
+  if (status === 'ok') return false
   return typeof millis === 'number' && Math.abs(millis) > CLOCK_SKEW_WARN_THRESHOLD_MILLIS
 }
 
 // anyClockSkewWarn drives the tunnel-level "跨节点时钟偏差较大" banner: true as soon as one hop's current skew
-// exceeds the threshold above.
+// is (or, absent a clockSkewStatus, looks like) a warning — see isClockSkewWarn.
 export function anyClockSkewWarn(events) {
-  return events.some((event) => isClockSkewWarn(event.clockSkewMillis))
+  return events.some((event) => isClockSkewWarn(event.clockSkewMillis, event.clockSkewStatus))
 }
 
 // applyClockSkew is the opt-in "按偏差校正显示" toggle's math (D28): correcting timestamp by the reporting node's

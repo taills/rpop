@@ -85,7 +85,8 @@ function eventTone(event) {
 // HopDurationChart is the "each hop's duration" mini-Gantt beside the vertical timeline: one row per hop,
 // bar offset/width already computed as percentages of the tunnel's total observed span (see hopDurationBars in
 // trace.js). Each row also carries the hop's D28 clock skew badge — "未知" when the node never reported one,
-// warn-toned once it exceeds the default threshold (see isClockSkewWarn in trace.js). Hand-rolled with CSS, no
+// warn-toned once the controller's own clockSkewStatus says so (falling back to the console's default threshold
+// only against a controller predating that field; see isClockSkewWarn in trace.js). Hand-rolled with CSS, no
 // charting dependency.
 function HopDurationChart({ bars }) {
   return (
@@ -101,7 +102,7 @@ function HopDurationChart({ bars }) {
           </div>
           <div className="trace-gantt__duration">{millis(bar.durationMs)}</div>
           <UiTooltip content="跨节点时间受该节点时钟偏差影响，此处为其相对控制器的最近一次已知偏差">
-            <UiTag tone={isClockSkewWarn(bar.clockSkewMillis) ? 'warn' : 'muted'}>{formatClockSkew(bar.clockSkewMillis)}</UiTag>
+            <UiTag tone={isClockSkewWarn(bar.clockSkewMillis, bar.clockSkewStatus) ? 'warn' : 'muted'}>{formatClockSkew(bar.clockSkewMillis)}</UiTag>
           </UiTooltip>
         </div>
       ))}
@@ -316,7 +317,7 @@ export default function TracePage() {
           </div>
           {skewWarning && (
             <UiAlert type="warn" title="跨节点时钟偏差较大，时间线可能不准确">
-              至少一个节点的时钟偏差超出默认告警阈值，如需更准确的顺序与耗时，可开启“按偏差校正显示”。
+              至少一个节点的时钟偏差超出告警阈值，如需更准确的顺序与耗时，可开启“按偏差校正显示”。
             </UiAlert>
           )}
           {sectionState === 'loading' && <UiSkeleton type="block" height="160px" />}
