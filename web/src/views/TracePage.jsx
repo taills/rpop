@@ -13,15 +13,50 @@ import {
   UiDescriptions,
   UiTimeline,
   UiStatusDot,
+  UiSwitch,
+  UiTag,
+  UiTooltip,
 } from '@/components/ui'
 import { useToast } from '@/stores/toast'
 import { api } from '@/api'
-import { groupHops, hopDurationBars, isValidTraceId, sortTunnelEvents, tunnelSectionState, withRelativeTiming } from '@/trace'
+import {
+  anyClockSkewWarn,
+  applyClockSkew,
+  formatClockSkew,
+  groupHops,
+  hopDurationBars,
+  isClockSkewWarn,
+  isValidTraceId,
+  sortTunnelEvents,
+  tunnelSectionState,
+  withRelativeTiming,
+} from '@/trace'
 import './TracePage.css'
 
 const ROLE_LABEL = { entry: '入口', relay: '中继', exit: '出口' }
 const ROLE_TONE = { entry: 'brand', relay: 'warn', exit: 'success' }
 const STAGE_LABEL = { arrived: '到达', established: '建立', ended: '结束' }
+
+// CLOCK_SKEW_CORRECTION_KEY persists the opt-in "按偏差校正显示" toggle (D28) across visits; both directions are
+// wrapped in try/catch since localStorage can throw (private browsing quota, storage disabled by policy) and
+// losing the remembered preference is a much smaller problem than a crashed page.
+const CLOCK_SKEW_CORRECTION_KEY = 'rpop.trace.correctClockSkew'
+
+function loadClockSkewCorrection() {
+  try {
+    return localStorage.getItem(CLOCK_SKEW_CORRECTION_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+function saveClockSkewCorrection(enabled) {
+  try {
+    localStorage.setItem(CLOCK_SKEW_CORRECTION_KEY, String(enabled))
+  } catch {
+    // Best-effort only; the toggle still works for the rest of this session either way.
+  }
+}
 
 function millis(value) {
   return `${Number(value || 0).toFixed(1)} ms`
@@ -49,10 +84,12 @@ function eventTone(event) {
 
 // HopDurationChart is the "each hop's duration" mini-Gantt beside the vertical timeline: one row per hop,
 // bar offset/width already computed as percentages of the tunnel's total observed span (see hopDurationBars in
-// trace.js). Hand-rolled with CSS, no charting dependency.
+// trace.js). Each row also carries the hop's D28 clock skew badge — "未知" when the node never reported one,
+// warn-toned once it exceeds the default threshold (see isClockSkewWarn in trace.js). Hand-rolled with CSS, no
+// charting dependency.
 function HopDurationChart({ bars }) {
   return (
-    <div className="trace-gantt" role="img" aria-label="每跳耗时占比">
+    <div className="trace-gantt" role="img" aria-label="每跳耗时占比与时钟偏差">
       {bars.map((bar) => (
         <div className="trace-gantt__row" key={bar.nodeId}>
           <div className="trace-gantt__label">
@@ -63,6 +100,9 @@ function HopDurationChart({ bars }) {
             <div className="trace-gantt__bar" style={{ left: `${bar.offsetPercent}%`, width: `${bar.widthPercent}%` }} />
           </div>
           <div className="trace-gantt__duration">{millis(bar.durationMs)}</div>
+          <UiTooltip content="跨节点时间受该节点时钟偏差影响，此处为其相对控制器的最近一次已知偏差">
+            <UiTag tone={isClockSkewWarn(bar.clockSkewMillis) ? 'warn' : 'muted'}>{formatClockSkew(bar.clockSkewMillis)}</UiTag>
+          </UiTooltip>
         </div>
       ))}
     </div>
@@ -167,6 +207,8 @@ export default function TracePage() {
   }, [trackId, searchParams, navigate])
 
   const { record, recordError, recordStatus, recordLoading, events, eventsError, eventsLoading } = useTraceQuery(trackId, tunnelParam)
+  const [correctSkew, setCorrectSkew] = useState(loadClockSkewCorrection)
+  useEffect(() => { saveClockSkewCorrection(correctSkew) }, [correctSkew])
 
   function submit(event) {
     event.preventDefault()
@@ -182,10 +224,11 @@ export default function TracePage() {
 
   const timeline = useMemo(() => {
     if (!events || !events.length) return { hops: [], bars: [], items: [] }
-    const hops = groupHops(withRelativeTiming(sortTunnelEvents(events)))
+    const hops = groupHops(withRelativeTiming(sortTunnelEvents(applyClockSkew(events, correctSkew))))
     const items = hops.flatMap((hop) => hop.events.map((event) => eventItem(event, hop)))
     return { hops, bars: hopDurationBars(hops), items }
-  }, [events])
+  }, [events, correctSkew])
+  const skewWarning = useMemo(() => events && anyClockSkewWarn(events), [events])
 
   const hasQuery = Boolean(trackId || tunnelParam)
   const sectionState = tunnelSectionState({ trackId, recordLoading, recordError, record, eventsLoading, eventsError, events })
@@ -260,7 +303,22 @@ export default function TracePage() {
 
       {sectionState !== 'hidden' && (
         <UiCard title="隧道时间线" icon="clock" className="mt">
-          <p className="trace-skew-note">跨节点时间以各节点本地上报时的本地时钟为准，节点间可能存在轻微偏差（时钟偏差标注见阶段 7）。</p>
+          <div className="trace-skew-toolbar">
+            <p className="trace-skew-note">
+              跨节点时间以各节点本地上报时的本地时钟为准；每跳旁的徽标是该节点相对控制器最近一次已知的时钟偏差，偏差较大会影响时间线的准确性。
+            </p>
+            <UiTooltip content="开启后按各节点最近一次已知的时钟偏差重新估算排序、相对耗时与时长条；偏差本身仍是估计值，结果不代表事实">
+              <label className="trace-skew-toggle">
+                <UiSwitch value={correctSkew} onChange={setCorrectSkew} />
+                <span>按偏差校正显示</span>
+              </label>
+            </UiTooltip>
+          </div>
+          {skewWarning && (
+            <UiAlert type="warn" title="跨节点时钟偏差较大，时间线可能不准确">
+              至少一个节点的时钟偏差超出默认告警阈值，如需更准确的顺序与耗时，可开启“按偏差校正显示”。
+            </UiAlert>
+          )}
           {sectionState === 'loading' && <UiSkeleton type="block" height="160px" />}
           {sectionState === 'error' && <UiAlert type="error" title="查询失败">{eventsError}</UiAlert>}
           {sectionState === 'no-tunnel' && (

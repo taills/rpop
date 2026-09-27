@@ -1,6 +1,17 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { groupHops, hopDurationBars, isValidTraceId, sortTunnelEvents, tunnelSectionState, withRelativeTiming } from './trace.js'
+import {
+  anyClockSkewWarn,
+  applyClockSkew,
+  formatClockSkew,
+  groupHops,
+  hopDurationBars,
+  isClockSkewWarn,
+  isValidTraceId,
+  sortTunnelEvents,
+  tunnelSectionState,
+  withRelativeTiming,
+} from './trace.js'
 
 test('isValidTraceId accepts only UUID-shaped strings, matching the controller pattern', () => {
   assert.equal(isValidTraceId('0190f3d1-9e2b-7c3a-8b1a-1234567890ab'), true)
@@ -183,4 +194,70 @@ test('tunnelSectionState supports a bare tunnel id query with no track id at all
   assert.equal(tunnelSectionState({ events: [] }), 'empty')
   assert.equal(tunnelSectionState({ events: [{}] }), 'ready')
   assert.equal(tunnelSectionState({}), 'hidden')
+})
+
+test('formatClockSkew signs and scales a skew, and renders an unknown one as 未知 (re-exported from nodeHealth.js)', () => {
+  assert.equal(formatClockSkew(1200), '+1.2s')
+  assert.equal(formatClockSkew(-350), '−350ms')
+  assert.equal(formatClockSkew(null), '未知')
+  assert.equal(formatClockSkew(undefined), '未知')
+})
+
+test('isClockSkewWarn/anyClockSkewWarn fire only once the magnitude exceeds the default threshold', () => {
+  assert.equal(isClockSkewWarn(1999), false)
+  assert.equal(isClockSkewWarn(2001), true)
+  assert.equal(isClockSkewWarn(-2001), true)
+  assert.equal(isClockSkewWarn(null), false)
+  assert.equal(anyClockSkewWarn([{ clockSkewMillis: 500 }, { clockSkewMillis: 2500 }]), true)
+  assert.equal(anyClockSkewWarn([{ clockSkewMillis: 500 }, { clockSkewMillis: null }]), false)
+})
+
+test('applyClockSkew is a no-op, returning the same array, when disabled', () => {
+  const events = [{ timestamp: '2026-01-01T00:00:00.000Z', clockSkewMillis: 500 }]
+  assert.equal(applyClockSkew(events, false), events)
+})
+
+test('applyClockSkew subtracts a positive skew (node clock ahead) without mutating the input', () => {
+  const events = [{ timestamp: '2026-01-01T00:00:01.000Z', clockSkewMillis: 300 }]
+  const corrected = applyClockSkew(events, true)
+  assert.equal(corrected[0].timestamp, '2026-01-01T00:00:00.700Z')
+  assert.equal(events[0].timestamp, '2026-01-01T00:00:01.000Z')
+  assert.notEqual(corrected, events)
+})
+
+test('applyClockSkew adds back a negative skew (node clock behind)', () => {
+  const events = [{ timestamp: '2026-01-01T00:00:01.000Z', clockSkewMillis: -300 }]
+  assert.equal(applyClockSkew(events, true)[0].timestamp, '2026-01-01T00:00:01.300Z')
+})
+
+test('applyClockSkew treats an unknown skew as exactly 0, leaving the timestamp untouched', () => {
+  const events = [{ timestamp: '2026-01-01T00:00:01.000Z', clockSkewMillis: null }, { timestamp: '2026-01-01T00:00:02.000Z' }]
+  const corrected = applyClockSkew(events, true)
+  assert.equal(corrected[0].timestamp, '2026-01-01T00:00:01.000Z')
+  assert.equal(corrected[1].timestamp, '2026-01-01T00:00:02.000Z')
+})
+
+test('applyClockSkew can change ordering: a large enough correction moves a later hop ahead of an earlier one', () => {
+  const events = [
+    { nodeId: 'entry', timestamp: '2026-01-01T00:00:00.000Z', clockSkewMillis: 0 },
+    // exit's clock reads 5s ahead of entry's, so its *true* time is 5s earlier than its reported timestamp.
+    { nodeId: 'exit', timestamp: '2026-01-01T00:00:03.000Z', clockSkewMillis: 5000 },
+  ]
+  assert.deepEqual(sortTunnelEvents(events).map((e) => e.nodeId), ['entry', 'exit'])
+  const corrected = applyClockSkew(events, true)
+  assert.deepEqual(sortTunnelEvents(corrected).map((e) => e.nodeId), ['exit', 'entry'])
+})
+
+test('hopDurationBars attaches each hop\'s reporting node clockSkewMillis, defaulting to null when unknown', () => {
+  const hops = groupHops(
+    withRelativeTiming(
+      sortTunnelEvents([
+        { nodeId: 'entry-1', role: 'entry', stage: 'arrived', timestamp: '2026-01-01T00:00:00.000Z', clockSkewMillis: 1500 },
+        { nodeId: 'exit-1', role: 'exit', stage: 'arrived', timestamp: '2026-01-01T00:00:00.100Z' },
+      ]),
+    ),
+  )
+  const bars = hopDurationBars(hops)
+  assert.equal(bars.find((b) => b.nodeId === 'entry-1').clockSkewMillis, 1500)
+  assert.equal(bars.find((b) => b.nodeId === 'exit-1').clockSkewMillis, null)
 })

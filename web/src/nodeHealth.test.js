@@ -2,14 +2,19 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   absoluteTime,
+  clockSkewStatusLabel,
+  clockSkewStatusTone,
   describeTime,
   formatBytes,
+  formatClockSkew,
   linkStatusTone,
   linksNeedAttention,
   logsNeedAttention,
   nodeNeedsAttention,
   pathStatusTone,
   pathsNeedAttention,
+  protocolStatusLabel,
+  protocolStatusTone,
   relativeTime,
   summarizeLinks,
   summarizePaths,
@@ -88,6 +93,12 @@ test('nodeNeedsAttention flags offline, unhealthy links/paths/logs, relay errors
   assert.equal(nodeNeedsAttention({ online: true, errors: { site1: 'bad config' } }), true)
 })
 
+test('nodeNeedsAttention also flags an outdated protocol version (D27) or a warn-level clock skew (D28)', () => {
+  assert.equal(nodeNeedsAttention({ online: true, protocolStatus: 'current', clockSkewStatus: 'ok' }), false)
+  assert.equal(nodeNeedsAttention({ online: true, protocolStatus: 'outdated', clockSkewStatus: 'ok' }), true)
+  assert.equal(nodeNeedsAttention({ online: true, protocolStatus: 'current', clockSkewStatus: 'warn' }), true)
+})
+
 test('status tone mappers default to neutral for unrecognized values', () => {
   assert.equal(linkStatusTone('up'), 'success')
   assert.equal(linkStatusTone('dialing'), 'warn')
@@ -96,4 +107,31 @@ test('status tone mappers default to neutral for unrecognized values', () => {
   assert.equal(pathStatusTone('healthy'), 'success')
   assert.equal(pathStatusTone('cooling'), 'warn')
   assert.equal(pathStatusTone(''), 'neutral')
+})
+
+test('formatClockSkew signs and scales a skew, switching to seconds once big enough, and unknown renders 未知', () => {
+  assert.equal(formatClockSkew(1200), '+1.2s')
+  assert.equal(formatClockSkew(-350), '−350ms')
+  assert.equal(formatClockSkew(0), '+0ms')
+  assert.equal(formatClockSkew(-1000), '−1.0s')
+  assert.equal(formatClockSkew(null), '未知')
+  assert.equal(formatClockSkew(undefined), '未知')
+})
+
+test('clockSkewStatusTone/clockSkewStatusLabel cover ok/warn and fall back for empty ("never reported")', () => {
+  assert.equal(clockSkewStatusTone('ok'), 'success')
+  assert.equal(clockSkewStatusTone('warn'), 'warn')
+  assert.equal(clockSkewStatusTone(''), 'muted')
+  assert.equal(clockSkewStatusLabel('ok'), '正常')
+  assert.equal(clockSkewStatusLabel('warn'), '偏差较大')
+  assert.equal(clockSkewStatusLabel(''), '未知')
+})
+
+test('protocolStatusTone/protocolStatusLabel cover current/outdated and fall back for empty ("never reported")', () => {
+  assert.equal(protocolStatusTone('current'), 'success')
+  assert.equal(protocolStatusTone('outdated'), 'warn')
+  assert.equal(protocolStatusTone(''), 'muted')
+  assert.equal(protocolStatusLabel('current'), '当前')
+  assert.equal(protocolStatusLabel('outdated'), '落后，建议升级节点')
+  assert.equal(protocolStatusLabel(''), '未知')
 })

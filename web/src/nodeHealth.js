@@ -116,7 +116,8 @@ export function logsNeedAttention(logs) {
 
 // nodeNeedsAttention decides whether a node's row should be flagged in the list: offline (embedded nodes are
 // always "online" by definition, see localNodeView), a down link, a cooling path, an unhealthy spool, a relay
-// port that failed to bind, or a site that failed to apply.
+// port that failed to bind, a site that failed to apply, an outdated protocol version (D27), or a clock skew
+// large enough to warn (D28).
 export function nodeNeedsAttention(node) {
   if (!node.embedded && !node.online) return true
   if (linksNeedAttention(node.links)) return true
@@ -124,6 +125,8 @@ export function nodeNeedsAttention(node) {
   if (logsNeedAttention(node.logs)) return true
   if (node.relayError) return true
   if (node.errors && Object.keys(node.errors).length > 0) return true
+  if (node.protocolStatus === 'outdated') return true
+  if (node.clockSkewStatus === 'warn') return true
   return false
 }
 
@@ -147,4 +150,41 @@ export function linkStatusLabel(status) {
 
 export function pathStatusLabel(status) {
   return PATH_STATUS_LABEL[status] || status || '未知'
+}
+
+// formatClockSkew renders a node's most recently reported clock offset relative to the controller (D28,
+// milliseconds; positive means the node's clock is ahead) as a compact signed magnitude — e.g. "+1.2s" or
+// "−350ms" — switching from milliseconds to seconds once that stays more readable. null/undefined (the node
+// never reported one, or sanitizeStatus dropped an out-of-range value) renders as "未知" rather than "+0ms",
+// since those two situations must stay visually distinct.
+export function formatClockSkew(millis) {
+  if (millis === null || millis === undefined) return '未知'
+  const abs = Math.abs(millis)
+  const sign = millis < 0 ? '−' : '+'
+  return abs >= 1000 ? `${sign}${(abs / 1000).toFixed(1)}s` : `${sign}${Math.round(abs)}ms`
+}
+
+const CLOCK_SKEW_STATUS_TONE = { ok: 'success', warn: 'warn' }
+const CLOCK_SKEW_STATUS_LABEL = { ok: '正常', warn: '偏差较大' }
+
+export function clockSkewStatusTone(status) {
+  return CLOCK_SKEW_STATUS_TONE[status] || 'muted'
+}
+
+export function clockSkewStatusLabel(status) {
+  return CLOCK_SKEW_STATUS_LABEL[status] || '未知'
+}
+
+const PROTOCOL_STATUS_TONE = { current: 'success', outdated: 'warn' }
+const PROTOCOL_STATUS_LABEL = { current: '当前', outdated: '落后，建议升级节点' }
+
+// protocolStatusTone/protocolStatusLabel render nodeView/topologyNode's D27 protocolStatus ("current"/
+// "outdated"); empty (the node never made an authenticated southbound call yet) falls back to "muted"/"未知",
+// the same convention every other status pair in this file uses.
+export function protocolStatusTone(status) {
+  return PROTOCOL_STATUS_TONE[status] || 'muted'
+}
+
+export function protocolStatusLabel(status) {
+  return PROTOCOL_STATUS_LABEL[status] || '未知'
 }

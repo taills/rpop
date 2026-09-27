@@ -1,7 +1,13 @@
 // Pure helpers for the request trace timeline (stage 6.3, docs/architecture/control-data-plane.md §5 "阶段
 // 6(控制台)设计"): UUID-shape validation shared with the controller's traceIDPattern, tunnel event ordering /
-// hop grouping, and the per-hop duration bars TracePage.jsx renders. Kept dependency-free and separate from the
-// view so node --test can exercise the timeline math without a DOM.
+// hop grouping, and the per-hop duration bars TracePage.jsx renders. Also D28's clock skew badge/correction (阶段
+// 7 第 6 步): each event from GET /api/logging/tunnels/{id} carries the reporting node's current clockSkewMillis
+// (tunnelEventView), and applyClockSkew below optionally rewrites timestamps before the rest of this file's
+// ordering/timing math ever sees them. Kept dependency-free and separate from the view so node --test can
+// exercise the timeline math without a DOM.
+import { formatClockSkew } from './nodeHealth.js'
+
+export { formatClockSkew }
 
 // Mirrors internal/control/logs_ingest.go's traceIDPattern exactly: shape-only (no UUID version/variant check),
 // since the controller itself falls back to a full, unwindowed scan rather than rejecting an ID this generator
@@ -18,10 +24,10 @@ function stageRank(stage) {
   return stage in STAGE_ORDER ? STAGE_ORDER[stage] : 99
 }
 
-// sortTunnelEvents orders events by timestamp ascending. Node clocks may not agree exactly (skew display is
-// stage 7's job — this page just says so in a caption), so timestamps are the only ordering signal available;
-// ties break on stage progression (arrived < established < ended), then on the original array position, making
-// the sort fully deterministic even when two hops report the very same instant.
+// sortTunnelEvents orders events by timestamp ascending. Node clocks may not agree exactly (see applyClockSkew
+// below for the optional, opt-in correction), so timestamps are the only ordering signal available; ties break
+// on stage progression (arrived < established < ended), then on the original array position, making the sort
+// fully deterministic even when two hops report the very same instant.
 export function sortTunnelEvents(events) {
   return events
     .map((event, index) => ({ event, index }))
@@ -100,7 +106,43 @@ export function hopDurationBars(hops) {
       offsetPercent: Math.min(offsetPercent, 100 - MIN_BAR_PERCENT),
       widthPercent,
       durationMs: hop.endMs - hop.startMs,
+      // clockSkewMillis is the hop's reporting node's current skew (D28): every event of a hop shares the same
+      // value (tunnelEventView attaches it per node, not per event), so the first event that has one is enough;
+      // null if the node never reported one, same nil-means-unknown convention as nodeView.
+      clockSkewMillis: hop.events.find((event) => typeof event.clockSkewMillis === 'number')?.clockSkewMillis ?? null,
     }
+  })
+}
+
+// CLOCK_SKEW_WARN_THRESHOLD_MILLIS mirrors control.DefaultClockSkewWarnThresholdMillis (D28). GET
+// /api/logging/tunnels/{id} attaches each hop's raw clockSkewMillis but, unlike nodeView/topologyNode, no
+// precomputed "warn" status — the store only keeps a node's single current measurement, not a threshold decision
+// per historical event — so this page falls back to the same default the controller ships with to decide when a
+// hop's badge and the tunnel-level banner turn into a warning. An operator-raised -clock-skew-warn-threshold
+// would not be reflected here; that is an accepted approximation, not a bug.
+const CLOCK_SKEW_WARN_THRESHOLD_MILLIS = 2000
+
+export function isClockSkewWarn(millis) {
+  return typeof millis === 'number' && Math.abs(millis) > CLOCK_SKEW_WARN_THRESHOLD_MILLIS
+}
+
+// anyClockSkewWarn drives the tunnel-level "跨节点时钟偏差较大" banner: true as soon as one hop's current skew
+// exceeds the threshold above.
+export function anyClockSkewWarn(events) {
+  return events.some((event) => isClockSkewWarn(event.clockSkewMillis))
+}
+
+// applyClockSkew is the opt-in "按偏差校正显示" toggle's math (D28): correcting timestamp by the reporting node's
+// own clockSkewMillis (timestamp − skew) before sortTunnelEvents/withRelativeTiming/hopDurationBars ever see it,
+// so ordering, relative timing and the duration bars all reflect the correction consistently. A node with no
+// known skew is treated as exactly 0 (no correction), matching formatClockSkew's "未知" display convention rather
+// than silently dropping the event. Returns a new array of new event objects; the input is never mutated, and
+// disabled (enabled=false) is a no-op that hands the same array straight back.
+export function applyClockSkew(events, enabled) {
+  if (!enabled) return events
+  return events.map((event) => {
+    const skew = typeof event.clockSkewMillis === 'number' ? event.clockSkewMillis : 0
+    return { ...event, timestamp: new Date(Date.parse(event.timestamp) - skew).toISOString() }
   })
 }
 
