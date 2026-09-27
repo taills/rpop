@@ -10,6 +10,20 @@ test('primaryLayer picks the first pipeline role and falls back to a trailing id
   assert.equal(primaryLayer(['relay', 'exit']), 1)
   assert.equal(primaryLayer([]), 3, 'a node with no role at all gets its own trailing column')
   assert.equal(primaryLayer(undefined), 3)
+  assert.equal(primaryLayer(null), 3, 'a null roles value (e.g. a malformed API response) must not throw')
+})
+
+test('layoutTopology tolerates a node whose roles is null instead of an array', () => {
+  // GET /api/topology is expected to always send an array (see internal/control/topology.go), but a node with
+  // roles: null must not white-screen the whole topology page; it should just land in the trailing idle column
+  // like a node with an empty roles array.
+  const nodes = [
+    { id: 'a', online: true, roles: null },
+    { id: 'b', online: true, roles: ['entry'] },
+  ]
+  const layout = layoutTopology(nodes)
+  assert.equal(layout.byId.get('a').layer, 3)
+  assert.equal(layout.byId.get('b').layer, 0)
 })
 
 test('layoutTopology places each layer at a deterministic x and orders rows online-first then by id', () => {

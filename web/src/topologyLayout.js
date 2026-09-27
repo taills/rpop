@@ -15,10 +15,14 @@ export const ROLE_LABELS = { entry: '入口', relay: '中继', exit: '出口', i
 // this is equivalent to roles[0], but is written against ROLE_ORDER directly so it does not depend on that
 // upstream ordering being preserved. A node with no role at all (registered but currently idle: no site, no
 // relay route, no direct-dial upstream) gets a trailing column of its own so it stays visible rather than
-// silently vanishing from the graph.
+// silently vanishing from the graph. roles defaulting to [] only covers the undefined case (JS default
+// parameters do not apply to null), so this also treats a null/non-array value the same way; GET /api/topology
+// is expected to always send an array (see internal/control/topology.go), but the layout must not crash the
+// whole page over a malformed one.
 export function primaryLayer(roles = []) {
+  const list = Array.isArray(roles) ? roles : []
   for (let i = 0; i < ROLE_ORDER.length; i++) {
-    if (roles.includes(ROLE_ORDER[i])) return i
+    if (list.includes(ROLE_ORDER[i])) return i
   }
   return ROLE_ORDER.length
 }
