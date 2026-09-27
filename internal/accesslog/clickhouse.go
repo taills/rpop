@@ -13,12 +13,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 type clickHouseSink struct {
 	config      ClickHouseConfig
 	client      *http.Client
 	location    *time.Location
+	log         *zap.Logger
 	mu          sync.Mutex
 	tablesReady map[string]bool
 }
@@ -34,7 +37,7 @@ func newClickHouseSink(config ClickHouseConfig) (*clickHouseSink, error) {
 	if config.SplitMode == "" {
 		config.SplitMode = defaults.SplitMode
 	}
-	return &clickHouseSink{config: config, client: &http.Client{Timeout: 30 * time.Second}, location: time.UTC, tablesReady: make(map[string]bool)}, nil
+	return &clickHouseSink{config: config, client: &http.Client{Timeout: 30 * time.Second}, location: time.UTC, log: zap.NewNop(), tablesReady: make(map[string]bool)}, nil
 }
 
 func (s *clickHouseSink) SetTimeZone(location *time.Location) {
@@ -42,6 +45,15 @@ func (s *clickHouseSink) SetTimeZone(location *time.Location) {
 		location = time.UTC
 	}
 	s.location = location
+}
+
+// SetLogger directs warnIfLegacyEngineLocked's warning (D29) to log; a nil log falls back to a no-op logger, like
+// SetTimeZone falling back to UTC.
+func (s *clickHouseSink) SetLogger(log *zap.Logger) {
+	if log == nil {
+		log = zap.NewNop()
+	}
+	s.log = log
 }
 
 func (s *clickHouseSink) tableForTimestamp(timestamp time.Time) string {
@@ -61,12 +73,38 @@ func (s *clickHouseSink) ensureTable(ctx context.Context, table string) error {
 	if s.tablesReady[table] {
 		return nil
 	}
-	query := fmt.Sprintf("CREATE TABLE IF NOT EXISTS `%s`.`%s` (timestamp DateTime64(3, 'UTC'), site_id String, record String) ENGINE=MergeTree PARTITION BY toDate(timestamp, '%s') ORDER BY (timestamp, site_id)", s.config.Database, table, sqlQuote(s.location.String()))
+	// dedup_key plus ReplacingMergeTree (D29): a row's dedup_key/timestamp/site_id triple identifies one record,
+	// so ClickHouse's own background merges (and Search's FINAL, below) collapse a retransmitted record down to
+	// one. This CREATE is a no-op against a table already on disk — ClickHouse has no ALTER ... MODIFY ENGINE, so
+	// a table created before this change keeps its old MergeTree engine and two-column-narrower schema forever;
+	// warnIfLegacyEngineLocked below tells the operator when that happened.
+	query := fmt.Sprintf("CREATE TABLE IF NOT EXISTS `%s`.`%s` (timestamp DateTime64(3, 'UTC'), site_id String, record String, dedup_key String) ENGINE=ReplacingMergeTree PARTITION BY toDate(timestamp, '%s') ORDER BY (timestamp, site_id, dedup_key)", s.config.Database, table, sqlQuote(s.location.String()))
 	if _, err := s.request(ctx, query, nil); err != nil {
 		return err
 	}
+	s.warnIfLegacyEngineLocked(ctx, table)
 	s.tablesReady[table] = true
 	return nil
+}
+
+// warnIfLegacyEngineLocked logs a Warn once per table (tablesReady, set by ensureTable right after this returns,
+// keeps it from running again for the same table) if table already existed under the pre-D29 schema: ensureTable's
+// CREATE TABLE IF NOT EXISTS is a no-op against an existing table, so a table created before this change keeps
+// producing duplicate rows on every retransmit until an operator migrates it by hand (see the migration SQL in
+// docs/architecture/control-data-plane.md §5). Best-effort: a failed check (e.g. the querying user lacks
+// system.tables access) is silently skipped rather than failing the write path over a diagnostic. Called with
+// s.mu held, from ensureTable.
+func (s *clickHouseSink) warnIfLegacyEngineLocked(ctx context.Context, table string) {
+	data, err := s.request(ctx, fmt.Sprintf("SELECT engine FROM system.tables WHERE database='%s' AND name='%s' FORMAT TabSeparated", sqlQuote(s.config.Database), sqlQuote(table)), nil)
+	if err != nil {
+		return
+	}
+	engine := strings.TrimSpace(string(data))
+	if engine == "" || engine == "ReplacingMergeTree" {
+		return
+	}
+	s.log.Warn("clickhouse access log table predates deduplication support and cannot be upgraded in place; duplicate rows from retransmitted segments will keep appearing until it is migrated by hand (see docs/architecture/control-data-plane.md §5)",
+		zap.String("database", s.config.Database), zap.String("table", table), zap.String("engine", engine))
 }
 
 func (s *clickHouseSink) tablesForSearch(ctx context.Context, query Query) ([]string, error) {
@@ -180,11 +218,14 @@ func (s *clickHouseSink) Write(ctx context.Context, record Record) error {
 	if err != nil {
 		return err
 	}
+	// dedup_key comes straight from the record already in hand (D29), never by parsing raw back out of the JSON
+	// just marshaled from it.
 	row, err := json.Marshal(struct {
 		Timestamp string `json:"timestamp"`
 		SiteID    string `json:"site_id"`
 		Record    string `json:"record"`
-	}{record.Timestamp.Format("2006-01-02 15:04:05.000"), record.SiteID, string(raw)})
+		DedupKey  string `json:"dedup_key"`
+	}{record.Timestamp.Format("2006-01-02 15:04:05.000"), record.SiteID, string(raw), record.DedupKey()})
 	if err != nil {
 		return err
 	}
@@ -202,7 +243,13 @@ func (s *clickHouseSink) Search(ctx context.Context, query Query) (SearchResult,
 	}
 	selects := make([]string, 0, len(tables))
 	for _, table := range tables {
-		selects = append(selects, fmt.Sprintf("SELECT timestamp, site_id, record FROM `%s`.`%s`", s.config.Database, table))
+		// FINAL forces ClickHouse to fully merge each table before reading it, so ReplacingMergeTree's
+		// deduplication by (timestamp, site_id, dedup_key) actually applies to the read, not just to whatever
+		// background merges happen to have run already (D29). Retransmitted records are a long-tail event and
+		// each table individually is usually small relative to the whole partitioned set, so the extra merge cost
+		// is acceptable here; it is also harmless — a no-op read amplification, not an error — against a legacy
+		// MergeTree table that predates this column, since MergeTree still accepts FINAL.
+		selects = append(selects, fmt.Sprintf("SELECT timestamp, site_id, record FROM `%s`.`%s` FINAL", s.config.Database, table))
 	}
 	source := "(" + strings.Join(selects, " UNION ALL ") + ") AS access_log_partitions"
 	where := []string{"1"}

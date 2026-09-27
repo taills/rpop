@@ -106,7 +106,16 @@ func (s *elasticsearchSink) Write(ctx context.Context, record Record) error {
 	if err != nil {
 		return err
 	}
-	metadata, err := json.Marshal(map[string]any{"index": map[string]string{}})
+	// An explicit _id equal to the record's dedup_key (D29) makes a retransmitted record's bulk index action
+	// overwrite the same document instead of creating a second one — Elasticsearch already treats indexing the
+	// same _id twice as an update, so this needs no code beyond setting it. A record with no dedup_key (no
+	// trackId; see Record.DedupKey) falls back to Elasticsearch auto-generating one, exactly like before this
+	// change, since an empty _id is not a valid document id.
+	action := map[string]any{}
+	if dedupKey := record.DedupKey(); dedupKey != "" {
+		action["_id"] = dedupKey
+	}
+	metadata, err := json.Marshal(map[string]any{"index": action})
 	if err != nil {
 		return err
 	}

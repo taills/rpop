@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 type Sink interface {
@@ -19,12 +21,20 @@ type timeZoneAwareSink interface {
 	SetTimeZone(*time.Location)
 }
 
+// logAwareSink is implemented by sinks that need a logger for something other than the query path itself — today
+// only clickHouseSink, to warn once about a table it cannot upgrade in place (D29). Mirrors timeZoneAwareSink:
+// most sinks do not implement it, and Manager treats that as "nothing to log to" rather than an error.
+type logAwareSink interface {
+	SetLogger(*zap.Logger)
+}
+
 type Manager struct {
 	mu       sync.RWMutex
 	dir      string
 	config   Config
 	sink     Sink
 	location *time.Location
+	log      *zap.Logger
 }
 
 func NewManager(dir string, config Config) (*Manager, error) {
@@ -36,7 +46,7 @@ func NewManager(dir string, config Config) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Manager{dir: dir, config: config, sink: sink, location: time.UTC}, nil
+	return &Manager{dir: dir, config: config, sink: sink, location: time.UTC, log: zap.NewNop()}, nil
 }
 
 func normalizeConfig(c Config) Config {
@@ -123,6 +133,15 @@ func setSinkTimeZone(sink Sink, location *time.Location) {
 	}
 }
 
+func setSinkLogger(sink Sink, log *zap.Logger) {
+	if log == nil {
+		log = zap.NewNop()
+	}
+	if aware, ok := sink.(logAwareSink); ok {
+		aware.SetLogger(log)
+	}
+}
+
 func (m *Manager) SetTimeZone(location *time.Location) {
 	if location == nil {
 		location = time.UTC
@@ -131,6 +150,19 @@ func (m *Manager) SetTimeZone(location *time.Location) {
 	defer m.mu.Unlock()
 	m.location = location
 	setSinkTimeZone(m.sink, location)
+}
+
+// SetLogger directs any warning a sink needs to log outside the query path (D29's legacy ClickHouse table check)
+// to log; a nil log falls back to a no-op logger, and a sink that does not implement logAwareSink simply ignores
+// the call, exactly like SetTimeZone does for timeZoneAwareSink.
+func (m *Manager) SetLogger(log *zap.Logger) {
+	if log == nil {
+		log = zap.NewNop()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.log = log
+	setSinkLogger(m.sink, log)
 }
 
 // Configure opens and validates the replacement sink before persisting and swapping it.
@@ -150,6 +182,7 @@ func (m *Manager) Configure(ctx context.Context, config Config, persist func([]b
 	}
 	m.mu.Lock()
 	setSinkTimeZone(next, m.location)
+	setSinkLogger(next, m.log)
 	if persist != nil {
 		if err := persist(serialized); err != nil {
 			m.mu.Unlock()
@@ -232,7 +265,32 @@ func matches(record Record, query Query) bool {
 	return true
 }
 
+// dedupRecords collapses records sharing the same non-empty DedupKey (D29) down to their first occurrence in
+// slice order. The file and S3 sinks (the only callers of paginate, which calls this) both gather every record
+// matching the whole query before pagination runs, so deduplicating here — before paginate slices out one page —
+// makes Total and the returned page agree on the deduplicated count; there is no earlier LIMIT for it to interact
+// with, unlike ClickHouse (dedup_key plus FINAL, in SQL) or Elasticsearch (dedup_key as the document _id, at
+// write time). A record with an empty DedupKey (no trackId; see Record.DedupKey) is never collapsed with
+// anything, including another empty-keyed record — merging unrelated, unidentified records would be worse than
+// leaving a harmless duplicate in the result.
+func dedupRecords(records []Record) []Record {
+	seen := make(map[string]bool, len(records))
+	deduped := make([]Record, 0, len(records))
+	for _, record := range records {
+		key := record.DedupKey()
+		if key != "" {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+		}
+		deduped = append(deduped, record)
+	}
+	return deduped
+}
+
 func paginate(records []Record, query Query) SearchResult {
+	records = dedupRecords(records)
 	sort.Slice(records, func(i, j int) bool { return records[i].Timestamp.After(records[j].Timestamp) })
 	total := len(records)
 	start := (query.Page - 1) * query.PageSize

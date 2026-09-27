@@ -59,6 +59,19 @@ type TunnelEvent struct {
 	Error     string        `json:"error,omitempty"`
 }
 
+// DedupKey identifies this event across a retransmitted delivery of the same segment (D24, mirroring
+// Record.DedupKey in internal/accesslog): tunnelEventStore's bounded write-time cache and its query-time fallback
+// both use it to collapse a redelivered event back down to one (D29). tunnelId+"|"+nodeId+"|"+stage already
+// uniquely names one event without adding a field — a given hop records each stage of a given tunnel's lifecycle
+// at most once. A tunnelId-less event (should never happen; see TunnelIDHeader) returns "" so callers skip
+// deduplicating it instead of risking collisions between unrelated events.
+func (e TunnelEvent) DedupKey() string {
+	if e.TunnelID == "" {
+		return ""
+	}
+	return e.TunnelID + "|" + e.NodeID + "|" + e.Stage
+}
+
 // TunnelEventSink receives tunnel lifecycle events for eventual delivery to the controller, through the node's
 // local spool (a later stage). Overlay never blocks forwarding on it (P8); SetTunnelEventSink installs one.
 type TunnelEventSink interface {

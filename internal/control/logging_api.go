@@ -59,6 +59,7 @@ func NewWithLogDir(s *store.Store, logger *zap.Logger, logDir string) (*Control,
 		return nil, err
 	}
 	registry.SetTimeZone(location)
+	registry.SetLogger(logger)
 	tunnelEvents, err := newTunnelEventStore(logDir, logger)
 	if err != nil {
 		_ = registry.Close()

@@ -51,6 +51,18 @@ type Record struct {
 	ResponseMillis         float64             `json:"responseMillis"`
 }
 
+// DedupKey identifies this record across a retransmitted delivery of the same segment (D24's "controller crash
+// before advancing its high-water mark" case, and any equivalent replay): the ClickHouse, Elasticsearch, file, and
+// S3 adapters all use it to collapse a record that arrives more than once back down to one visible copy (D29). It
+// is exactly the record's trackId — minted once per request (D22) and stable across any retransmission of the
+// same JSON line, so it costs nothing to compute and never needs parsing anything else in the record. A record
+// with no trackId (written before D22, or one that somehow lost it) returns "": callers must treat that as "do
+// not deduplicate this record" rather than collapsing every such record into one, since an empty key does not
+// identify a request at all.
+func (r Record) DedupKey() string {
+	return r.TrackID
+}
+
 type Query struct {
 	Text   string
 	SiteID string

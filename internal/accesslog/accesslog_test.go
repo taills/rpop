@@ -175,6 +175,8 @@ func TestClickHouseAdapterWritesAndSearchesJSONRecords(t *testing.T) {
 				return
 			}
 			inserted = row.Record
+		case strings.HasPrefix(query, "SELECT engine FROM system.tables"):
+			_, _ = io.WriteString(w, "ReplacingMergeTree\n")
 		case strings.HasPrefix(query, "SELECT name FROM system.tables"):
 			_, _ = io.WriteString(w, "access_logs\n")
 		case strings.Contains(query, "count()"):
@@ -224,6 +226,8 @@ func TestClickHouseAdapterSplitsTablesAndSearchesMatchingPartitions(t *testing.T
 				return
 			}
 			inserted = row.Record
+		case strings.HasPrefix(query, "SELECT engine FROM system.tables"):
+			_, _ = io.WriteString(w, "ReplacingMergeTree\n")
 		case strings.HasPrefix(query, "SELECT name FROM system.tables"):
 			_, _ = io.WriteString(w, "access_logs\naccess_logs_20260922\naccess_logs_20260925\naccess_logs_20260926\naccess_logs_2026092609\naccess_logs_2026092611\naccess_logs_20260927\naccess_logs_archive\n")
 		case strings.Contains(query, "count()"):
@@ -265,7 +269,11 @@ func TestClickHouseAdapterSplitsTablesAndSearchesMatchingPartitions(t *testing.T
 func TestClickHousePartitionsUseConfiguredTimeZone(t *testing.T) {
 	var createQuery string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		createQuery = r.URL.Query().Get("query")
+		// ensureTable now also fires the D29 legacy-engine check right after CREATE; only capture the CREATE
+		// itself so it stays what this test asserts on.
+		if query := r.URL.Query().Get("query"); strings.HasPrefix(query, "CREATE TABLE") {
+			createQuery = query
+		}
 	}))
 	defer server.Close()
 	sink, err := newClickHouseSink(ClickHouseConfig{URL: server.URL, Database: "default", Table: "access_logs", SplitMode: "hour"})

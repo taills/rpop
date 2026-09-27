@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 var (
@@ -33,12 +35,13 @@ type Registry struct {
 	dir      string
 	adapters map[string]adapterEntry
 	location *time.Location
+	log      *zap.Logger
 }
 
 var adapterIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 
 func NewRegistry(dir string, configs []AdapterConfig) (*Registry, error) {
-	registry := &Registry{dir: dir, adapters: make(map[string]adapterEntry, len(configs)), location: time.UTC}
+	registry := &Registry{dir: dir, adapters: make(map[string]adapterEntry, len(configs)), location: time.UTC, log: zap.NewNop()}
 	for _, config := range configs {
 		normalized, err := normalizeAdapterConfig(config)
 		if err != nil {
@@ -114,6 +117,21 @@ func (r *Registry) SetTimeZone(location *time.Location) {
 	}
 }
 
+// SetLogger directs every adapter's manager (and so, transitively, any sink that needs one — D29's legacy
+// ClickHouse table warning today) to log, and remembers log for every adapter added afterwards. A nil log falls
+// back to a no-op logger, mirroring SetTimeZone.
+func (r *Registry) SetLogger(log *zap.Logger) {
+	if log == nil {
+		log = zap.NewNop()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.log = log
+	for _, entry := range r.adapters {
+		entry.manager.SetLogger(log)
+	}
+}
+
 func (r *Registry) Has(id string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -151,6 +169,7 @@ func (r *Registry) put(config AdapterConfig, requireExisting bool, persist func(
 		return ErrAdapterExists
 	}
 	next.SetTimeZone(r.location)
+	next.SetLogger(r.log)
 	configs := r.listLocked()
 	if exists {
 		for i := range configs {
