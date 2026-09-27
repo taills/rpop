@@ -172,7 +172,7 @@ func (e *Engine) Spec(id string) (snapshot.Site, bool) {
 
 // Handler builds the proxy handler of a site without binding a listener.
 func (e *Engine) Handler(site snapshot.Site) (http.Handler, error) {
-	handler, _, err := e.siteHandler(site)
+	handler, _, _, err := e.siteHandler(site)
 	return handler, err
 }
 
@@ -220,11 +220,11 @@ func (e *Engine) buildRuntime(site snapshot.Site) (*siteRuntime, error) {
 			return nil, err
 		}
 	}
-	handler, transports, err := e.siteHandler(site)
+	handler, transports, pathGroups, err := e.siteHandler(site)
 	if err != nil {
 		return nil, err
 	}
-	route := &siteRuntime{id: site.ID, handler: handler, hostnames: hostnames, transports: transports}
+	route := &siteRuntime{id: site.ID, handler: handler, hostnames: hostnames, transports: transports, pathGroups: pathGroups}
 	route.certificate.Store(certificate)
 	return route, nil
 }

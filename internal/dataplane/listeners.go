@@ -29,6 +29,9 @@ type siteRuntime struct {
 	hostnames   []string
 	certificate atomic.Pointer[tls.Certificate]
 	transports  []*http.Transport
+	// pathGroups lists the upstreams that have candidate paths (D18), for PathHealth; nil for a site whose
+	// upstreams all dial a single direct or proxied target with no failover.
+	pathGroups []upstreamPathGroup
 }
 
 // release closes idle upstream connections of a replaced runtime; in-flight requests keep theirs.

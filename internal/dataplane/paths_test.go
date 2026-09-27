@@ -203,3 +203,44 @@ func TestFailoverBoundsHowLongOnePathMayTakeToConnect(t *testing.T) {
 		t.Fatalf("falling back from a hanging path took %v", waited)
 	}
 }
+
+// TestPathHealthReportsCoolingFailuresAndErrors covers PathHealth on a site actually applied to the engine (as
+// opposed to a bare Handler() used only for HTTP round trips): PathHealth walks the sites the engine is
+// currently serving (e.Apply's e.runs), so a site never bound to a listener would not appear in it either.
+func TestPathHealthReportsCoolingFailuresAndErrors(t *testing.T) {
+	engine := newTestEngine(t)
+	engine.SetPathDialer(&fakePaths{})
+	upstream := textUpstream(t, "ok")
+	target := strings.TrimPrefix(upstream.URL, "http://")
+	port := freePort(t)
+	site := snapshot.Site{ID: "paths", ListenAddress: "127.0.0.1", ListenPort: port, Upstreams: []snapshot.Upstream{{URL: upstream.URL,
+		Paths: []snapshot.Path{{Label: "down", Target: target}, {Label: "good", Target: target}}}}}
+	mustApply(t, engine, site)
+	get(t, port, "")
+
+	health := engine.PathHealth()
+	if len(health) != 1 || health[0].SiteID != "paths" || health[0].Upstream == "" {
+		t.Fatalf("path health = %#v", health)
+	}
+	paths := health[0].Paths
+	if len(paths) != 2 {
+		t.Fatalf("paths = %#v", paths)
+	}
+	if paths[0].Index != 0 || paths[0].Label != "down" || paths[0].Status != "cooling" || paths[0].Failures != 1 || paths[0].LastError == "" || paths[0].Until == "" {
+		t.Fatalf("down path health = %#v", paths[0])
+	}
+	if paths[1].Index != 1 || paths[1].Label != "good" || paths[1].Status != "healthy" || paths[1].Failures != 0 || paths[1].LastError != "" || paths[1].Until != "" {
+		t.Fatalf("good path health = %#v", paths[1])
+	}
+}
+
+func TestPathHealthOmitsUpstreamsWithoutPaths(t *testing.T) {
+	engine := newTestEngine(t)
+	upstream := textUpstream(t, "ok")
+	port := freePort(t)
+	mustApply(t, engine, plainSite("direct", port, upstream.URL))
+	get(t, port, "")
+	if health := engine.PathHealth(); len(health) != 0 {
+		t.Fatalf("path health for an upstream with no paths = %#v, want none", health)
+	}
+}

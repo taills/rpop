@@ -16,18 +16,21 @@ type upstreamTarget struct {
 	label      string
 	proxy      *httputil.ReverseProxy
 	transports []*http.Transport
+	// failover is non-nil when the upstream has candidate paths (D18); it lets siteHandler report their health.
+	failover *failoverTransport
 }
 
 type routeDecisionKey struct{}
 
-// siteHandler builds the routed, observed proxy of a site together with the transports it owns.
-func (e *Engine) siteHandler(site snapshot.Site) (http.Handler, []*http.Transport, error) {
+// siteHandler builds the routed, observed proxy of a site together with the transports it owns and the
+// per-upstream path failover state PathHealth reports.
+func (e *Engine) siteHandler(site snapshot.Site) (http.Handler, []*http.Transport, []upstreamPathGroup, error) {
 	if len(site.Upstreams) == 0 {
-		return nil, nil, fmt.Errorf("at least one upstream is required")
+		return nil, nil, nil, fmt.Errorf("at least one upstream is required")
 	}
 	router, err := routing.Compile(site.Routes, len(site.Upstreams))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	targets := make([]upstreamTarget, 0, len(site.Upstreams))
 	transports := make([]*http.Transport, 0, len(site.Upstreams))
@@ -37,12 +40,18 @@ func (e *Engine) siteHandler(site snapshot.Site) (http.Handler, []*http.Transpor
 		target, err := newUpstreamTarget(upstream, dialer, logTunnelEvents)
 		if err != nil {
 			closeIdle(transports)
-			return nil, nil, fmt.Errorf("upstreams[%d]: %w", index, err)
+			return nil, nil, nil, fmt.Errorf("upstreams[%d]: %w", index, err)
 		}
 		targets = append(targets, target)
 		transports = append(transports, target.transports...)
 	}
-	return e.observeSite(site.ID, site.AccessLog, routedHandler(router, targets)), transports, nil
+	var pathGroups []upstreamPathGroup
+	for index, target := range targets {
+		if target.failover != nil {
+			pathGroups = append(pathGroups, upstreamPathGroup{index: index, label: target.label, failover: target.failover})
+		}
+	}
+	return e.observeSite(site.ID, site.AccessLog, routedHandler(router, targets)), transports, pathGroups, nil
 }
 
 func newUpstreamTarget(upstream snapshot.Upstream, dialer PathDialer, logTunnelEvents bool) (upstreamTarget, error) {
@@ -56,8 +65,10 @@ func newUpstreamTarget(upstream snapshot.Upstream, dialer PathDialer, logTunnelE
 	}
 	var roundTripper http.RoundTripper = transport
 	transports := []*http.Transport{transport}
+	var failover *failoverTransport
 	if len(upstream.Paths) > 0 {
-		roundTripper, transports = newPathTransports(transport, upstream.Paths, dialer, logTunnelEvents)
+		failover, transports = newPathTransports(transport, upstream.Paths, dialer, logTunnelEvents)
+		roundTripper = failover
 	}
 	proxy := &httputil.ReverseProxy{
 		Transport: roundTripper,
@@ -66,7 +77,7 @@ func newUpstreamTarget(upstream snapshot.Upstream, dialer PathDialer, logTunnelE
 			routing.Apply(pr, u, decision)
 		},
 	}
-	return upstreamTarget{label: u.Redacted(), proxy: proxy, transports: transports}, nil
+	return upstreamTarget{label: u.Redacted(), proxy: proxy, transports: transports, failover: failover}, nil
 }
 
 // routedHandler dispatches each request to the upstream chosen by the site's routes and reports the choice to observeSite.

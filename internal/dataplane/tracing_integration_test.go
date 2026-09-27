@@ -123,7 +123,7 @@ func TestRequestThroughOverlayCarriesOneTrackAndTunnelIDAcrossEveryHop(t *testin
 	engine.SetAccessLogWriter(writer)
 	site := snapshot.Site{ID: "s", AccessLog: snapshot.AccessLog{AdapterID: "default"},
 		Upstreams: []snapshot.Upstream{{URL: upstream.URL, Paths: []snapshot.Path{path}}}}
-	handler, transports, err := engine.siteHandler(site)
+	handler, transports, _, err := engine.siteHandler(site)
 	if err != nil {
 		t.Fatal(err)
 	}

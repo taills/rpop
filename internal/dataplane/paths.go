@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -74,6 +75,8 @@ type pathTransport struct {
 	mu       sync.Mutex
 	failures int
 	until    time.Time
+	// lastErr is the most recent connection failure on this path (D19); cleared once it succeeds again.
+	lastErr string
 }
 
 func (p *pathTransport) coolingDown(now time.Time) bool {
@@ -82,17 +85,47 @@ func (p *pathTransport) coolingDown(now time.Time) bool {
 	return now.Before(p.until)
 }
 
-func (p *pathTransport) failed(now time.Time) {
+func (p *pathTransport) failed(now time.Time, err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.failures++
 	p.until = now.Add(min(minPathCooldown<<min(p.failures-1, 10), maxPathCooldown))
+	if err != nil {
+		p.lastErr = err.Error()
+	}
 }
 
 func (p *pathTransport) succeeded() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.failures, p.until = 0, time.Time{}
+	p.failures, p.until, p.lastErr = 0, time.Time{}, ""
+}
+
+// PathHealth is the failover state of one candidate path of an upstream (D18/D19/D20), for status reporting.
+type PathHealth struct {
+	// Index is the path's priority position among its upstream's candidates, matching the order failoverTransport
+	// tries them when none are cooling down.
+	Index int    `json:"index"`
+	Label string `json:"label"`
+	// Status is "healthy" (ready to be tried first) or "cooling" (backing off after a connection failure).
+	Status string `json:"status"`
+	// Until is when the path's cooldown ends (RFC3339, UTC); empty when it is not cooling down.
+	Until    string `json:"until,omitempty"`
+	Failures int    `json:"failures,omitempty"`
+	// LastError is the most recent connection failure on this path; cleared once it succeeds again.
+	LastError string `json:"lastError,omitempty"`
+}
+
+func (p *pathTransport) health(now time.Time, index int) PathHealth {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	status := "healthy"
+	var until string
+	if now.Before(p.until) {
+		status = "cooling"
+		until = p.until.UTC().Format(time.RFC3339)
+	}
+	return PathHealth{Index: index, Label: p.label, Status: status, Until: until, Failures: p.failures, LastError: p.lastErr}
 }
 
 // failoverTransport sends each request on the first path, in priority order, that is not cooling down after
@@ -128,6 +161,22 @@ func newPathTransports(base *http.Transport, paths []snapshot.Path, dialer PathD
 	return f, transports
 }
 
+// UpstreamPathHealth is the failover state of every candidate path of one upstream, for status reporting.
+type UpstreamPathHealth struct {
+	SiteID   string       `json:"siteId"`
+	Upstream string       `json:"upstream"`
+	Paths    []PathHealth `json:"paths"`
+}
+
+// health reports the state of every candidate path, in priority order (independent of which are cooling down).
+func (f *failoverTransport) health(now time.Time) []PathHealth {
+	health := make([]PathHealth, len(f.paths))
+	for i, p := range f.paths {
+		health[i] = p.health(now, i)
+	}
+	return health
+}
+
 // order lists the paths to try: those ready in priority order, then those cooling down, so a request still
 // goes out when every path recently failed.
 func (f *failoverTransport) order(now time.Time) []*pathTransport {
@@ -156,7 +205,7 @@ func (f *failoverTransport) RoundTrip(req *http.Request) (*http.Response, error)
 		if !errors.As(err, &dialErr) {
 			return nil, err
 		}
-		p.failed(time.Now())
+		p.failed(time.Now(), dialErr.err)
 		lastErr = err
 		// Defense in depth: our own DialContext never touches the body, but net/http's own internal retry
 		// (reusing an idle connection that turns out to be dead) can still open a second, real connection and
@@ -194,4 +243,47 @@ func withReplayGuard(req *http.Request) (*http.Request, *replayGuard) {
 	*attempt = *req
 	attempt.Body = guard
 	return attempt, guard
+}
+
+// upstreamPathGroup is one upstream's failover transport across its candidate paths, kept alongside a running
+// site's runtime so PathHealth can report it without walking the handler chain. index is the upstream's
+// position among its site's upstreams; label is its redacted URL (see newUpstreamTarget).
+type upstreamPathGroup struct {
+	index    int
+	label    string
+	failover *failoverTransport
+}
+
+// PathHealth reports the failover state of every path-based upstream currently running (D18/D19/D20), sorted
+// by site ID then upstream label for a stable status report.
+func (e *Engine) PathHealth() []UpstreamPathHealth {
+	e.mu.Lock()
+	runs := make([]*running, 0, len(e.runs))
+	for _, run := range e.runs {
+		runs = append(runs, run)
+	}
+	e.mu.Unlock()
+	now := time.Now()
+	var health []UpstreamPathHealth
+	for _, run := range runs {
+		for _, group := range run.route.pathGroups {
+			health = append(health, UpstreamPathHealth{SiteID: run.route.id, Upstream: group.label, Paths: group.failover.health(now)})
+		}
+	}
+	slices.SortFunc(health, func(a, b UpstreamPathHealth) int {
+		if a.SiteID != b.SiteID {
+			if a.SiteID < b.SiteID {
+				return -1
+			}
+			return 1
+		}
+		if a.Upstream < b.Upstream {
+			return -1
+		}
+		if a.Upstream > b.Upstream {
+			return 1
+		}
+		return 0
+	})
+	return health
 }
