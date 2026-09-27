@@ -20,11 +20,11 @@ import (
 
 const (
 	tunnelEventsDirName = "tunnel-events"
-	// tunnelEventRetentionDays bounds how long tunnel events stay queryable: old partitions are pruned once a
-	// new one opens, so the store cannot grow without bound (D22's trace query only ever needs recent history to
-	// debug a path, not a permanent record). It mirrors accesslog's file adapter default retention
-	// (DefaultConfig().File.KeepFiles = 30 daily files) at roughly half that, since tunnel events are
-	// diagnostic, not an audit trail.
+	// tunnelEventRetentionDays bounds how long tunnel events stay queryable: pruneLoop removes partitions older
+	// than this on its own schedule (see tunnelEventPruneInterval), so the store cannot grow without bound
+	// (D22's trace query only ever needs recent history to debug a path, not a permanent record). It mirrors
+	// accesslog's file adapter default retention (DefaultConfig().File.KeepFiles = 30 daily files) at roughly
+	// half that, since tunnel events are diagnostic, not an audit trail.
 	tunnelEventRetentionDays = 14
 	// maxTunnelEventLineBytes bounds one stored line. Unlike an access log record, a TunnelEvent never carries
 	// request/response bodies, so a generous static ceiling (rather than a configurable limit) is enough to
@@ -44,6 +44,19 @@ const (
 	// generous for a diagnostic store, not an audit trail (see the doc comment below on why this is a bespoke
 	// store at all), while still being a real ceiling instead of none.
 	tunnelEventStoreDefaultMaxBytes int64 = 10 << 30
+	// maxOpenTunnelEventFiles bounds how many day partitions' file handles the store keeps open at once (stage 5
+	// low-priority finding item 6): out-of-order or delayed events crossing a day boundary can make consecutive
+	// writes alternate between a couple of days, and a store that only ever kept the single most recent one open
+	// would Close+Open on every alternation. A small LRU absorbs that without letting an unbounded number of
+	// handles accumulate; 3 covers "today and yesterday" with one more to spare for a third day appearing
+	// briefly, without needing to be configurable for what is purely an implementation detail.
+	maxOpenTunnelEventFiles = 3
+	// tunnelEventPruneInterval controls how often the background loop that enforces tunnelEventRetentionDays and
+	// tunnelEventStoreDefaultMaxBytes runs (item 6). Pruning used to run inline, every time Write opened a new
+	// day's partition; decoupling it from the write path means a node cannot force a directory Glob plus a Stat
+	// of every partition on every write just by alternating which day its reported event timestamps fall on. An
+	// hour is frequent enough that neither limit is ever meaningfully exceeded in practice.
+	tunnelEventPruneInterval = time.Hour
 )
 
 // tunnelEventStore persists overlay.TunnelEvent records so GET /api/logging/tunnels/{tunnelId} (D22) can
@@ -56,29 +69,61 @@ const (
 // configure, so a self-contained store with a fixed retention is simpler than threading a new record type
 // through every accesslog Sink implementation.
 type tunnelEventStore struct {
-	mu   sync.Mutex
-	dir  string
-	log  *zap.Logger
-	file *os.File
-	day  string
+	mu  sync.Mutex
+	dir string
+	log *zap.Logger
+	// handles caches up to maxOpenTunnelEventFiles day partitions' open file handles (item 6), keyed by day; lru
+	// holds those same keys ordered least- to most-recently-used, so alternating writes between a handful of
+	// recent days reuse an already-open handle instead of a Close+Open every time.
+	handles map[string]*os.File
+	lru     []string
+	// opens counts actual cache misses (a day this store had to open, or reopen, a handle for): tests use it to
+	// prove alternating writes across a small set of days no longer reopen a handle per write.
+	opens int
+	// pruneRuns counts every pruneLocked call, including pruneLoop's own periodic ones: tests use it to observe
+	// the background loop running (and, after Close, having actually stopped) without an exported hook.
+	pruneRuns int
 	// maxBytes bounds the total size of every day partition on disk (item 5); pruneLocked evicts the oldest ones
 	// once it is exceeded, on top of the age-based cutoff it already applies.
 	maxBytes int64
+	// pruneInterval is tunnelEventPruneInterval in production; tests inject a short one (see
+	// newTunnelEventStoreWithPruneInterval) to observe pruneLoop without waiting for it.
+	pruneInterval time.Duration
+	stop          chan struct{}
+	stopOnce      sync.Once
+	stopped       chan struct{} // closed by pruneLoop right before it returns.
 }
 
 func newTunnelEventStore(logDir string, log *zap.Logger) (*tunnelEventStore, error) {
+	return newTunnelEventStoreWithPruneInterval(logDir, log, tunnelEventPruneInterval)
+}
+
+// newTunnelEventStoreWithPruneInterval is newTunnelEventStore with an injectable background prune cadence, so
+// tests can observe pruneLoop (item 6) run repeatedly without waiting tunnelEventPruneInterval for real.
+func newTunnelEventStoreWithPruneInterval(logDir string, log *zap.Logger, pruneInterval time.Duration) (*tunnelEventStore, error) {
 	dir := filepath.Join(logDir, tunnelEventsDirName)
 	if err := os.MkdirAll(dir, 0750); err != nil {
 		return nil, fmt.Errorf("create tunnel event directory: %w", err)
 	}
-	return &tunnelEventStore{dir: dir, log: log, maxBytes: tunnelEventStoreDefaultMaxBytes}, nil
+	s := &tunnelEventStore{
+		dir:           dir,
+		log:           log,
+		handles:       make(map[string]*os.File),
+		maxBytes:      tunnelEventStoreDefaultMaxBytes,
+		pruneInterval: pruneInterval,
+		stop:          make(chan struct{}),
+		stopped:       make(chan struct{}),
+	}
+	go s.pruneLoop()
+	return s, nil
 }
 
 func tunnelEventPath(dir, day string) string {
 	return filepath.Join(dir, "events-"+day+".jsonl")
 }
 
-// Write appends one event to today's partition, opening or rotating to it as needed.
+// Write appends one event to day's partition, opening it (or reusing an already-cached handle, see handles) as
+// needed.
 func (s *tunnelEventStore) Write(ctx context.Context, event overlay.TunnelEvent) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -96,40 +141,102 @@ func (s *tunnelEventStore) Write(ctx context.Context, event overlay.TunnelEvent)
 	day := event.Timestamp.Format("20060102")
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.file == nil || day != s.day {
-		if err := s.rotateLocked(day); err != nil {
-			return err
-		}
+	file, err := s.openLocked(day)
+	if err != nil {
+		return err
 	}
-	_, err = s.file.Write(line)
+	_, err = file.Write(line)
 	return err
 }
 
-// rotateLocked switches the active file to day's partition, pruning partitions the retention window has aged
-// out. Events are timestamped by the hop that produced them (D22), so a burst of late-arriving events from a
-// slow spool can still target yesterday's file; opening files by name rather than keeping only "the current
-// one" handles that without any special-casing here.
-func (s *tunnelEventStore) rotateLocked(day string) error {
-	if s.file != nil {
-		if err := s.file.Close(); err != nil {
-			return err
-		}
+// openLocked returns day's file handle, from the LRU cache if already open, so alternating writes between a
+// handful of recent days do not Close+Open on every one (item 6). A genuine cache miss opens the file, evicting
+// the least recently used handle first if the cache is now over capacity. It never prunes; see pruneLoop.
+func (s *tunnelEventStore) openLocked(day string) (*os.File, error) {
+	if file, ok := s.handles[day]; ok {
+		s.touchLocked(day)
+		return file, nil
 	}
 	file, err := os.OpenFile(tunnelEventPath(s.dir, day), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0640)
 	if err != nil {
-		s.file, s.day = nil, ""
-		return err
+		return nil, err
 	}
-	s.file, s.day = file, day
+	s.opens++
+	s.handles[day] = file
+	s.lru = append(s.lru, day)
+	if len(s.lru) > maxOpenTunnelEventFiles {
+		s.closeHandleLocked(s.lru[0])
+	}
+	return file, nil
+}
+
+// touchLocked moves day to the most-recently-used end of the LRU order.
+func (s *tunnelEventStore) touchLocked(day string) {
+	for i, d := range s.lru {
+		if d == day {
+			s.lru = append(s.lru[:i], s.lru[i+1:]...)
+			break
+		}
+	}
+	s.lru = append(s.lru, day)
+}
+
+// closeHandleLocked closes and evicts day's cached file handle, if one is open, so a later write for that same
+// day reopens it fresh rather than reusing a handle pruneLocked may since have removed the file out from under.
+// A no-op if day has no cached handle.
+func (s *tunnelEventStore) closeHandleLocked(day string) {
+	file, ok := s.handles[day]
+	if !ok {
+		return
+	}
+	_ = file.Close()
+	delete(s.handles, day)
+	for i, d := range s.lru {
+		if d == day {
+			s.lru = append(s.lru[:i], s.lru[i+1:]...)
+			break
+		}
+	}
+}
+
+// pruneLoop runs pruneLocked once immediately and then every pruneInterval, until Close stops it (item 6): a
+// background cadence, rather than inline with every Write, so a node cannot force a directory Glob plus a Stat
+// of every partition on every write just by alternating which day its reported event timestamps fall on.
+func (s *tunnelEventStore) pruneLoop() {
+	defer close(s.stopped)
+	s.pruneNow()
+	ticker := time.NewTicker(s.pruneInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.stop:
+			return
+		case <-ticker.C:
+			s.pruneNow()
+		}
+	}
+}
+
+func (s *tunnelEventStore) pruneNow() {
+	s.mu.Lock()
 	s.pruneLocked()
-	return nil
+	s.mu.Unlock()
 }
 
 // pruneLocked removes partitions the age-based retention window has aged out, then, if the store's total size
-// still exceeds maxBytes, evicts the oldest remaining ones (by day, ascending) until it fits (item 5) — never
-// the partition just opened for writing, even if that leaves the store over the cap: there is nothing older
-// left to remove instead, and the file mid-write must survive regardless.
+// still exceeds maxBytes, evicts the oldest remaining ones (by day, ascending) until it fits (item 5) — except
+// the partition most recently written to (mostRecentDay below), even if that leaves the store over the cap or
+// past the retention window: a late or backdated event, or a clock far behind, must not make the store delete
+// the very partition a write just landed in (this generalizes the single *os.File store this replaced, which
+// protected "the currently open file" the same way). Any other day's cached handle (see handles) never protects
+// its partition, in either pass: closeHandleLocked closes it first, so a handle can never be left pointing at a
+// file this store just unlinked, and a later write for that day reopens (and thereby recreates) it.
 func (s *tunnelEventStore) pruneLocked() {
+	s.pruneRuns++
+	var mostRecentDay string
+	if len(s.lru) > 0 {
+		mostRecentDay = s.lru[len(s.lru)-1]
+	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -tunnelEventRetentionDays).Format("20060102")
 	paths, err := filepath.Glob(filepath.Join(s.dir, "events-*.jsonl"))
 	if err != nil {
@@ -140,32 +247,31 @@ func (s *tunnelEventStore) pruneLocked() {
 	kept := make([]string, 0, len(paths))
 	for _, path := range paths {
 		day := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), "events-"), ".jsonl")
-		// Never prune the file just opened for writing, even if its own day label is already outside the
-		// retention window (a late event, or a clock far behind): a file must survive at least the write that
-		// just created or reopened it.
-		if day == s.day || len(day) != 8 || day >= cutoff {
-			if info, statErr := os.Stat(path); statErr == nil {
-				total += info.Size()
+		if day != mostRecentDay && len(day) == 8 && day < cutoff {
+			s.closeHandleLocked(day)
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				s.log.Warn("prune expired tunnel event partition", zap.String("path", path), zap.Error(err))
 			}
-			kept = append(kept, path)
 			continue
 		}
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			s.log.Warn("prune expired tunnel event partition", zap.String("path", path), zap.Error(err))
+		if info, statErr := os.Stat(path); statErr == nil {
+			total += info.Size()
 		}
+		kept = append(kept, path)
 	}
 	for _, path := range kept {
 		if total <= s.maxBytes {
 			break
 		}
 		day := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), "events-"), ".jsonl")
-		if day == s.day {
+		if day == mostRecentDay {
 			continue
 		}
 		info, statErr := os.Stat(path)
 		if statErr != nil {
 			continue
 		}
+		s.closeHandleLocked(day)
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			s.log.Warn("evict tunnel event partition over the size cap", zap.String("path", path), zap.Int64("max_bytes", s.maxBytes), zap.Error(err))
 			continue
@@ -251,15 +357,22 @@ func readTunnelEvents(path, tunnelID string) ([]overlay.TunnelEvent, error) {
 	return found, nil
 }
 
+// Close stops pruneLoop, waiting for it to actually exit (item 6: a prune already in flight must finish before
+// Close starts closing the handles it might otherwise still be examining), then closes every cached handle.
 func (s *tunnelEventStore) Close() error {
+	s.stopOnce.Do(func() { close(s.stop) })
+	<-s.stopped
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.file == nil {
-		return nil
+	var firstErr error
+	for day, file := range s.handles {
+		if err := file.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		delete(s.handles, day)
 	}
-	err := s.file.Close()
-	s.file = nil
-	return err
+	s.lru = nil
+	return firstErr
 }
 
 // localTunnelEventWriter adapts a tunnelEventStore to overlay.TunnelEventSink for the embedded "local" node

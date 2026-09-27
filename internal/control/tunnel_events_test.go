@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -75,10 +76,14 @@ func TestTunnelEventStorePartitionsByDayAndPrunesOldOnes(t *testing.T) {
 		t.Fatalf("expected old partition file to exist right after writing: %v", err)
 	}
 
-	// Writing today's event opens a new partition and, in doing so, prunes the one beyond the retention window.
+	// Writing today's event opens a new partition. Pruning itself now runs on its own periodic schedule (item
+	// 6), off the write path, so trigger one directly to observe its effect deterministically.
 	if err := store.Write(ctx, overlay.TunnelEvent{Timestamp: time.Now().UTC(), TunnelID: "fresh", NodeID: "n"}); err != nil {
 		t.Fatal(err)
 	}
+	store.mu.Lock()
+	store.pruneLocked()
+	store.mu.Unlock()
 	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
 		t.Fatalf("expected the expired partition to be pruned, stat err = %v", err)
 	}
@@ -169,7 +174,7 @@ func TestReadTunnelEventsSkipsOversizedAndCorruptLines(t *testing.T) {
 
 // TestTunnelEventStoreEvictsOldestPartitionsOverItsSizeCap covers stage 5 security review item 5: on top of
 // tunnelEventRetentionDays' age-based limit, the store must not grow without bound within that window either.
-// Capping it to a little over one day's partition forces the next day's rotation to evict the oldest one.
+// Capping it to a little over one day's partition forces the next prune to evict the oldest one.
 func TestTunnelEventStoreEvictsOldestPartitionsOverItsSizeCap(t *testing.T) {
 	dir := t.TempDir()
 	store, err := newTunnelEventStore(dir, zap.NewNop())
@@ -193,13 +198,17 @@ func TestTunnelEventStoreEvictsOldestPartitionsOverItsSizeCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Below day 0's own size: pruneLocked runs right after day 1's (still-empty) file is opened but before its
-	// line is written, so the cap must already exclude day 0 alone to force its eviction on this rotation.
+	// Below day 0's own size, so the cap must already exclude day 0 alone to force its eviction.
 	store.mu.Lock()
 	store.maxBytes = info.Size() - 1
 	store.mu.Unlock()
 
 	write(1, "day-1")
+	// Pruning now runs on its own periodic schedule (item 6), off the write path, so trigger one directly to
+	// observe its effect deterministically instead of relying on it firing inline with the write above.
+	store.mu.Lock()
+	store.pruneLocked()
+	store.mu.Unlock()
 	if _, err := os.Stat(firstPath); !os.IsNotExist(err) {
 		t.Fatalf("expected day 0's partition to be evicted over the size cap, stat err = %v", err)
 	}
@@ -215,7 +224,257 @@ func TestTunnelEventStoreEvictsOldestPartitionsOverItsSizeCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got) != 1 {
-		t.Fatalf("day 1's own partition must survive (it is the one just opened for writing), got %#v", got)
+		t.Fatalf("day 1's own partition must survive (it is the most recent one), got %#v", got)
+	}
+}
+
+// TestTunnelEventStorePruneClosesTheEvictedPartitionsCachedHandle covers the correctness half of item 6: a
+// cached handle protects its partition from pruneLocked only while it is the most recently written-to one
+// (mirroring the single *os.File store this replaced, which only ever protected "the currently open file" the
+// same way); any other day's cached handle must not, or a node could keep alternating writes across a couple of
+// fresh days plus one stale one, always within the LRU's capacity, to keep that stale day permanently exempt
+// from tunnelEventRetentionDays.
+func TestTunnelEventStorePruneClosesTheEvictedPartitionsCachedHandle(t *testing.T) {
+	dir := t.TempDir()
+	store, err := newTunnelEventStore(dir, zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+
+	stale := time.Now().UTC().AddDate(0, 0, -(tunnelEventRetentionDays + 1))
+	if err := store.Write(ctx, overlay.TunnelEvent{Timestamp: stale, TunnelID: "stale", NodeID: "n"}); err != nil {
+		t.Fatal(err)
+	}
+	// A second, more recent write makes stale's day no longer the most-recently-written one (well within
+	// maxOpenTunnelEventFiles, so its handle stays cached rather than being LRU-evicted), so pruneLocked's
+	// protection for the most-recently-written partition no longer covers it.
+	if err := store.Write(ctx, overlay.TunnelEvent{Timestamp: time.Now().UTC(), TunnelID: "fresh", NodeID: "n"}); err != nil {
+		t.Fatal(err)
+	}
+	stalePath := tunnelEventPath(filepath.Join(dir, tunnelEventsDirName), stale.Format("20060102"))
+
+	store.mu.Lock()
+	if _, cached := store.handles[stale.Format("20060102")]; !cached {
+		store.mu.Unlock()
+		t.Fatal("expected the stale day's handle to still be cached (well within maxOpenTunnelEventFiles)")
+	}
+	store.pruneLocked()
+	_, stillCached := store.handles[stale.Format("20060102")]
+	store.mu.Unlock()
+	if stillCached {
+		t.Fatal("pruneLocked must evict a pruned (non-most-recent) partition's cached handle along with its file")
+	}
+	if _, err := os.Stat(stalePath); !os.IsNotExist(err) {
+		t.Fatalf("expected the stale, non-most-recent partition to be pruned, stat err = %v", err)
+	}
+
+	// A later write for the same (still stale) day must reopen the file rather than reuse a stale reference to
+	// the one pruneLocked already removed; it lands in a fresh file, immediately queryable again.
+	if err := store.Write(ctx, overlay.TunnelEvent{Timestamp: stale, TunnelID: "stale", NodeID: "n"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Query(ctx, "stale", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %#v, want the one event written after the file was recreated", got)
+	}
+}
+
+// TestTunnelEventStoreCachesOpenFileHandlesAcrossDaySwitches covers stage 5 low-priority finding item 6:
+// out-of-order or delayed events crossing a day boundary can make consecutive writes alternate between two (or
+// a few) days. Without a small handle cache, every alternation would force a Close+Open, even though the same
+// handful of days keep recurring. opens (incremented only on an actual cache miss) must equal the number of
+// distinct days touched, not the number of writes.
+func TestTunnelEventStoreCachesOpenFileHandlesAcrossDaySwitches(t *testing.T) {
+	s, err := newTunnelEventStore(t.TempDir(), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	dayA := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	dayB := dayA.AddDate(0, 0, 1)
+	const writes = 20
+	for i := range writes {
+		ts := dayA
+		if i%2 == 1 {
+			ts = dayB
+		}
+		if err := s.Write(context.Background(), overlay.TunnelEvent{Timestamp: ts, TunnelID: "t", NodeID: "n"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.mu.Lock()
+	opens := s.opens
+	s.mu.Unlock()
+	if opens != 2 {
+		t.Fatalf("opens = %d, want 2 (one per distinct day), even though %d writes alternated between them", opens, writes)
+	}
+
+	got, err := s.Query(context.Background(), "t", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != writes {
+		t.Fatalf("stored events = %d, want %d (every write must still have landed in its own day's partition)", len(got), writes)
+	}
+}
+
+// TestTunnelEventStoreEvictsTheLeastRecentlyUsedHandleOverCapacity covers the small-LRU part of item 6: only a
+// bounded number of file handles stay open at once, and the least recently touched one is evicted first, not
+// whichever happens to be oldest by day.
+func TestTunnelEventStoreEvictsTheLeastRecentlyUsedHandleOverCapacity(t *testing.T) {
+	s, err := newTunnelEventStore(t.TempDir(), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	base := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	write := func(day int) {
+		t.Helper()
+		if err := s.Write(context.Background(), overlay.TunnelEvent{Timestamp: base.AddDate(0, 0, day), TunnelID: "t", NodeID: "n"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(0)
+	write(1)
+	write(2)
+	s.mu.Lock()
+	openHandles := len(s.handles)
+	s.mu.Unlock()
+	if openHandles != maxOpenTunnelEventFiles {
+		t.Fatalf("open handles = %d, want the cap of %d", openHandles, maxOpenTunnelEventFiles)
+	}
+	write(0) // touches day 0 again, so it is no longer the least recently used
+	write(3) // one more distinct day pushes the cache over its cap; day 1 (untouched since) must be evicted
+
+	s.mu.Lock()
+	_, day1Open := s.handles[base.AddDate(0, 0, 1).Format("20060102")]
+	_, day0Open := s.handles[base.Format("20060102")]
+	s.mu.Unlock()
+	if day1Open {
+		t.Fatal("day 1's handle should have been evicted as the least recently used")
+	}
+	if !day0Open {
+		t.Fatal("day 0's handle should still be cached: it was touched again before the eviction")
+	}
+}
+
+// TestTunnelEventStorePruneLoopRunsInTheBackground covers item 6's own periodic cadence directly: retention is
+// enforced by a loop that runs on its own schedule, not by anything tied to Write, so an expired partition must
+// eventually disappear on its own, with no explicit trigger from the test at all.
+func TestTunnelEventStorePruneLoopRunsInTheBackground(t *testing.T) {
+	dir := t.TempDir()
+	const pruneInterval = 10 * time.Millisecond
+	s, err := newTunnelEventStoreWithPruneInterval(dir, zap.NewNop(), pruneInterval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	stale := time.Now().UTC().AddDate(0, 0, -(tunnelEventRetentionDays + 1))
+	if err := s.Write(context.Background(), overlay.TunnelEvent{Timestamp: stale, TunnelID: "stale", NodeID: "n"}); err != nil {
+		t.Fatal(err)
+	}
+	// A second, more recent write makes stale's day no longer the most-recently-written one, so pruneLocked's
+	// protection for that single partition (see pruneLocked) no longer applies to it.
+	if err := s.Write(context.Background(), overlay.TunnelEvent{Timestamp: time.Now().UTC(), TunnelID: "fresh", NodeID: "n"}); err != nil {
+		t.Fatal(err)
+	}
+	stalePath := tunnelEventPath(filepath.Join(dir, tunnelEventsDirName), stale.Format("20060102"))
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(stalePath); os.IsNotExist(err) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected the background prune loop to remove the stale partition without an explicit trigger")
+		}
+		time.Sleep(pruneInterval)
+	}
+}
+
+// TestTunnelEventStoreCloseStopsThePruneLoop covers the shutdown half of item 6: Close must wait for the
+// background loop to actually exit, not just signal it and return, so it never keeps running past Close.
+func TestTunnelEventStoreCloseStopsThePruneLoop(t *testing.T) {
+	const pruneInterval = 5 * time.Millisecond
+	s, err := newTunnelEventStoreWithPruneInterval(t.TempDir(), zap.NewNop(), pruneInterval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * pruneInterval) // let the loop tick a few times, so there is something to actually stop
+
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	runsAtClose := s.pruneRuns
+	s.mu.Unlock()
+
+	time.Sleep(10 * pruneInterval)
+	s.mu.Lock()
+	runsAfterClose := s.pruneRuns
+	s.mu.Unlock()
+	if runsAfterClose != runsAtClose {
+		t.Fatalf("pruneRuns advanced from %d to %d after Close returned: the background loop did not actually stop",
+			runsAtClose, runsAfterClose)
+	}
+}
+
+// TestTunnelEventStoreConcurrentWriteAndQueryIsRaceFree exercises Write and Query from several goroutines at
+// once, across more distinct days than the handle cache holds (so both the LRU eviction path and the
+// concurrently running background prune loop are exercised too), to be run with -race.
+func TestTunnelEventStoreConcurrentWriteAndQueryIsRaceFree(t *testing.T) {
+	s, err := newTunnelEventStoreWithPruneInterval(t.TempDir(), zap.NewNop(), 2*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	base := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	var wg sync.WaitGroup
+	for worker := range 8 {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for i := range 50 {
+				day := (worker + i) % 5 // more distinct days than maxOpenTunnelEventFiles, to force eviction too
+				ts := base.AddDate(0, 0, day)
+				if err := s.Write(context.Background(), overlay.TunnelEvent{Timestamp: ts, TunnelID: "concurrent", NodeID: "n"}); err != nil {
+					t.Error(err)
+				}
+				if _, err := s.Query(context.Background(), "concurrent", time.Time{}); err != nil {
+					t.Error(err)
+				}
+			}
+		}(worker)
+	}
+	wg.Wait()
+}
+
+func BenchmarkTunnelEventStoreAlternatingDayWrites(b *testing.B) {
+	s, err := newTunnelEventStore(b.TempDir(), zap.NewNop())
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer s.Close()
+	dayA := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	dayB := dayA.AddDate(0, 0, 1)
+	b.ResetTimer()
+	for i := 0; b.Loop(); i++ {
+		ts := dayA
+		if i%2 == 1 {
+			ts = dayB
+		}
+		if err := s.Write(context.Background(), overlay.TunnelEvent{Timestamp: ts, TunnelID: "t", NodeID: "n"}); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
