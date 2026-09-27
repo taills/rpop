@@ -20,6 +20,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/rpop-project/rpop/internal/accesslog"
+	"github.com/rpop-project/rpop/internal/routing"
 	"github.com/rpop-project/rpop/internal/store"
 )
 
@@ -381,7 +382,7 @@ func (c *Control) proxyHandler(ctx context.Context, id string, cfg store.Config)
 	if len(cfg.Upstreams) == 0 {
 		return nil, fmt.Errorf("at least one upstream is required")
 	}
-	router, err := compileRoutes(cfg.Routes, len(cfg.Upstreams))
+	router, err := routing.Compile(cfg.Routes, len(cfg.Upstreams))
 	if err != nil {
 		return nil, err
 	}
@@ -396,7 +397,7 @@ func (c *Control) proxyHandler(ctx context.Context, id string, cfg store.Config)
 	return c.observeSite(id, cfg.AccessLog, routedHandler(router, targets)), nil
 }
 
-// upstreamTarget is one upstream with its own transport; the per-request routeDecision decides the path rewrite.
+// upstreamTarget is one upstream with its own transport; the per-request routing.Decision decides the path rewrite.
 type upstreamTarget struct {
 	label string
 	proxy *httputil.ReverseProxy
@@ -424,20 +425,20 @@ func (c *Control) upstreamTarget(ctx context.Context, id string, upstream store.
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			decision, _ := pr.In.Context().Value(routeDecisionKey{}).(routeDecision)
-			applyRoute(pr, u, decision)
+			decision, _ := pr.In.Context().Value(routeDecisionKey{}).(routing.Decision)
+			routing.Apply(pr, u, decision)
 		},
 	}
 	return upstreamTarget{label: u.Redacted(), proxy: proxy}, nil
 }
 
 // routedHandler dispatches each request to the upstream chosen by the site's routes and reports the choice to observeSite.
-func routedHandler(router siteRouter, targets []upstreamTarget) http.Handler {
+func routedHandler(router routing.Router, targets []upstreamTarget) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		decision := router.resolve(r)
-		target := targets[decision.upstream]
+		decision := router.Resolve(r)
+		target := targets[decision.Upstream]
 		if trace, ok := r.Context().Value(routeTraceKey{}).(*routeTrace); ok {
-			trace.upstream, trace.route = target.label, decision.label
+			trace.upstream, trace.route = target.label, decision.Label
 		}
 		target.proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), routeDecisionKey{}, decision)))
 	})
@@ -464,7 +465,7 @@ func validate(x store.Site) error {
 	if _, err := normalizedHostnames(x.Config.Hostnames); err != nil {
 		return err
 	}
-	if _, err := compileRoutes(x.Config.Routes, len(x.Config.Upstreams)); err != nil {
+	if _, err := routing.Compile(x.Config.Routes, len(x.Config.Upstreams)); err != nil {
 		return err
 	}
 	for index, u := range x.Config.Upstreams {

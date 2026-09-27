@@ -1,4 +1,4 @@
-package control
+package routing
 
 import (
 	"fmt"
@@ -8,26 +8,43 @@ import (
 	"path"
 	"sort"
 	"strings"
-
-	"github.com/rpop-project/rpop/internal/store"
 )
+
+// HeaderMatch is one request-header condition of a Route, following Caddy's header matcher:
+// each value may be exact, "prefix*", "*suffix" or "*substring*"; values are ORed.
+// No values means the header must be present; Absent means it must not be present.
+type HeaderMatch struct {
+	Name   string   `json:"name" yaml:"name"`
+	Values []string `json:"values,omitempty" yaml:"values,omitempty"`
+	Absent bool     `json:"absent,omitempty" yaml:"absent,omitempty"`
+}
+
+// Route sends matching requests to Upstreams[Upstream]. Path is exact unless it ends in "*"
+// (prefix match) and is compared case-insensitively; an empty Path matches every path.
+// All header conditions must hold. StripPrefix removes the matched path prefix before proxying.
+type Route struct {
+	Path        string        `json:"path,omitempty" yaml:"path,omitempty"`
+	Headers     []HeaderMatch `json:"headers,omitempty" yaml:"headers,omitempty"`
+	StripPrefix bool          `json:"stripPrefix,omitempty" yaml:"stripPrefix,omitempty"`
+	Upstream    int           `json:"upstream" yaml:"upstream"`
+}
 
 // Route matching follows Caddy's handle/handle_path semantics: paths are exact unless they end in "*",
 // compare case-insensitively against the cleaned request path, and the most specific rule wins.
 const (
-	maxRoutes          = 100
+	MaxRoutes          = 100
 	maxRouteHeaders    = 16
 	maxRoutePathLength = 1024
 	catchAllPath       = "/*"
 )
 
-// Route check results reported by explain.
+// Route check results reported by Explain.
 const (
-	routeMatched       = "matched"
-	routePathMismatch  = "path"
-	routeHeaderFailed  = "header"
-	routeNotEvaluated  = "skipped"
-	defaultRouteResult = -1
+	ResultMatched      = "matched"
+	ResultPathMismatch = "path"
+	ResultHeaderFailed = "header"
+	ResultSkipped      = "skipped"
+	DefaultRoute       = -1
 )
 
 type headerCondition struct {
@@ -38,28 +55,28 @@ type headerCondition struct {
 
 type compiledRoute struct {
 	index   int // position in the configured route list
-	route   store.Route
+	route   Route
 	label   string
 	base    string // path pattern without the trailing "*"
 	prefix  bool
 	headers []headerCondition
 }
 
-type siteRouter struct {
+type Router struct {
 	routes []compiledRoute // in effective (evaluation) order
 }
 
-// routeDecision is the outcome of routing one request; index is -1 (and label empty) when no rule matched
+// Decision is the outcome of routing one request; index is -1 (and label empty) when no rule matched
 // and the first upstream is used.
-type routeDecision struct {
-	index       int
-	upstream    int
-	label       string
-	stripPrefix string
+type Decision struct {
+	Index       int
+	Upstream    int
+	Label       string
+	StripPrefix string
 }
 
-// routeCheck describes how one rule fared against a request, in evaluation order.
-type routeCheck struct {
+// Check describes how one rule fared against a request, in evaluation order.
+type Check struct {
 	Index    int    `json:"index"`
 	Label    string `json:"label"`
 	Upstream int    `json:"upstream"`
@@ -67,29 +84,29 @@ type routeCheck struct {
 	Header   string `json:"header,omitempty"`
 }
 
-func compileRoutes(routes []store.Route, upstreams int) (siteRouter, error) {
-	if len(routes) > maxRoutes {
-		return siteRouter{}, fmt.Errorf("at most %d routes are allowed", maxRoutes)
+func Compile(routes []Route, upstreams int) (Router, error) {
+	if len(routes) > MaxRoutes {
+		return Router{}, fmt.Errorf("at most %d routes are allowed", MaxRoutes)
 	}
 	compiled := make([]compiledRoute, 0, len(routes))
 	seen := make(map[string]int, len(routes))
 	for index, route := range routes {
 		item, err := compileRoute(index, route, upstreams)
 		if err != nil {
-			return siteRouter{}, err
+			return Router{}, err
 		}
 		key := routeKey(item)
 		if previous, exists := seen[key]; exists {
-			return siteRouter{}, fmt.Errorf("routes[%d] duplicates routes[%d]", index, previous)
+			return Router{}, fmt.Errorf("routes[%d] duplicates routes[%d]", index, previous)
 		}
 		seen[key] = index
 		compiled = append(compiled, item)
 	}
 	sort.SliceStable(compiled, func(i, j int) bool { return moreSpecific(compiled[i], compiled[j]) })
-	return siteRouter{routes: compiled}, nil
+	return Router{routes: compiled}, nil
 }
 
-func compileRoute(index int, route store.Route, upstreams int) (compiledRoute, error) {
+func compileRoute(index int, route Route, upstreams int) (compiledRoute, error) {
 	if route.Upstream < 0 || route.Upstream >= upstreams {
 		return compiledRoute{}, fmt.Errorf("routes[%d] upstream %d is out of range", index, route.Upstream)
 	}
@@ -111,7 +128,7 @@ func compileRoute(index int, route store.Route, upstreams int) (compiledRoute, e
 		return compiledRoute{}, fmt.Errorf("routes[%d] %w", index, err)
 	}
 	base := strings.TrimSuffix(pattern, "*")
-	return compiledRoute{index: index, route: route, label: routeLabel(route), base: base, prefix: base != pattern, headers: headers}, nil
+	return compiledRoute{index: index, route: route, label: Label(route), base: base, prefix: base != pattern, headers: headers}, nil
 }
 
 func validateRoutePath(pattern string) error {
@@ -132,14 +149,14 @@ func validateRoutePath(pattern string) error {
 	return nil
 }
 
-func compileHeaderConditions(matches []store.HeaderMatch) ([]headerCondition, error) {
+func compileHeaderConditions(matches []HeaderMatch) ([]headerCondition, error) {
 	if len(matches) > maxRouteHeaders {
 		return nil, fmt.Errorf("at most %d header conditions are allowed", maxRouteHeaders)
 	}
 	out := make([]headerCondition, 0, len(matches))
 	seen := make(map[string]bool, len(matches))
 	for _, match := range matches {
-		if !validHeaderName(match.Name) {
+		if !ValidHeaderName(match.Name) {
 			return nil, fmt.Errorf("invalid header name %q", match.Name)
 		}
 		name := http.CanonicalHeaderKey(match.Name)
@@ -160,8 +177,8 @@ func compileHeaderConditions(matches []store.HeaderMatch) ([]headerCondition, er
 	return out, nil
 }
 
-// validHeaderName reports whether name is an RFC 9110 token.
-func validHeaderName(name string) bool {
+// ValidHeaderName reports whether name is an RFC 9110 token.
+func ValidHeaderName(name string) bool {
 	if name == "" {
 		return false
 	}
@@ -200,7 +217,7 @@ func moreSpecific(a, b compiledRoute) bool {
 	return len(a.headers) > len(b.headers)
 }
 
-func routeLabel(route store.Route) string {
+func Label(route Route) string {
 	var label strings.Builder
 	if route.Path == "" {
 		label.WriteString("*")
@@ -221,52 +238,52 @@ func routeLabel(route store.Route) string {
 	return label.String()
 }
 
-// resolve picks the upstream for a request; requests matching no rule go to the first upstream.
-func (sr siteRouter) resolve(r *http.Request) routeDecision {
-	cleaned := cleanRequestPath(r.URL.Path)
+// Resolve picks the upstream for a request; requests matching no rule go to the first upstream.
+func (sr Router) Resolve(r *http.Request) Decision {
+	cleaned := CleanPath(r.URL.Path)
 	for _, route := range sr.routes {
-		if result, _ := route.check(r, cleaned); result == routeMatched {
+		if result, _ := route.check(r, cleaned); result == ResultMatched {
 			return route.decision()
 		}
 	}
-	return routeDecision{index: defaultRouteResult, upstream: 0}
+	return Decision{Index: DefaultRoute, Upstream: 0}
 }
 
-// explain reports every rule in evaluation order; rules after the first match are marked skipped.
-func (sr siteRouter) explain(r *http.Request) []routeCheck {
-	cleaned := cleanRequestPath(r.URL.Path)
-	checks := make([]routeCheck, 0, len(sr.routes))
+// Explain reports every rule in evaluation order; rules after the first match are marked skipped.
+func (sr Router) Explain(r *http.Request) []Check {
+	cleaned := CleanPath(r.URL.Path)
+	checks := make([]Check, 0, len(sr.routes))
 	matched := false
 	for _, route := range sr.routes {
-		check := routeCheck{Index: route.index, Label: route.label, Upstream: route.route.Upstream, Result: routeNotEvaluated}
+		check := Check{Index: route.index, Label: route.label, Upstream: route.route.Upstream, Result: ResultSkipped}
 		if !matched {
 			check.Result, check.Header = route.check(r, cleaned)
-			matched = check.Result == routeMatched
+			matched = check.Result == ResultMatched
 		}
 		checks = append(checks, check)
 	}
 	return checks
 }
 
-func (route compiledRoute) decision() routeDecision {
-	decision := routeDecision{index: route.index, upstream: route.route.Upstream, label: route.label}
+func (route compiledRoute) decision() Decision {
+	decision := Decision{Index: route.index, Upstream: route.route.Upstream, Label: route.label}
 	if route.route.StripPrefix {
-		decision.stripPrefix = strings.TrimSuffix(route.base, "/")
+		decision.StripPrefix = strings.TrimSuffix(route.base, "/")
 	}
 	return decision
 }
 
-// check returns routeMatched, routePathMismatch, or routeHeaderFailed together with the failing header name.
+// check returns ResultMatched, ResultPathMismatch, or ResultHeaderFailed together with the failing header name.
 func (route compiledRoute) check(r *http.Request, cleanedPath string) (string, string) {
 	if !route.matchesPath(cleanedPath) {
-		return routePathMismatch, ""
+		return ResultPathMismatch, ""
 	}
 	for _, header := range route.headers {
 		if !header.matches(r) {
-			return routeHeaderFailed, header.name
+			return ResultHeaderFailed, header.name
 		}
 	}
-	return routeMatched, ""
+	return ResultMatched, ""
 }
 
 func (route compiledRoute) matchesPath(cleanedPath string) bool {
@@ -316,8 +333,8 @@ func headerValueMatches(pattern, value string) bool {
 	}
 }
 
-// cleanRequestPath resolves "." / ".." segments and repeated slashes, keeping a trailing slash.
-func cleanRequestPath(requestPath string) string {
+// CleanPath resolves "." / ".." segments and repeated slashes, keeping a trailing slash.
+func CleanPath(requestPath string) string {
 	if requestPath == "" {
 		return "/"
 	}
@@ -335,18 +352,18 @@ func trimPrefixFold(value, prefix string) (string, bool) {
 	return value[len(prefix):], true
 }
 
-// applyRoute rewrites the outbound request for the chosen upstream: it strips the matched prefix
+// Apply rewrites the outbound request for the chosen upstream: it strips the matched prefix
 // (from the cleaned path, preserving escaping such as %2F) and then joins the upstream base path.
-func applyRoute(pr *httputil.ProxyRequest, target *url.URL, decision routeDecision) {
-	if decision.stripPrefix != "" {
-		stripPathPrefix(pr.Out.URL, decision.stripPrefix)
+func Apply(pr *httputil.ProxyRequest, target *url.URL, decision Decision) {
+	if decision.StripPrefix != "" {
+		StripPathPrefix(pr.Out.URL, decision.StripPrefix)
 	}
 	pr.SetURL(target)
 	pr.Out.Host = target.Host
 }
 
-func stripPathPrefix(u *url.URL, prefix string) {
-	escaped := cleanRequestPath(u.EscapedPath())
+func StripPathPrefix(u *url.URL, prefix string) {
+	escaped := CleanPath(u.EscapedPath())
 	if rest, ok := trimPrefixFold(escaped, prefix); ok {
 		rest = ensureLeadingSlash(rest)
 		if decoded, err := url.PathUnescape(rest); err == nil {
@@ -354,7 +371,7 @@ func stripPathPrefix(u *url.URL, prefix string) {
 			return
 		}
 	}
-	rest, _ := trimPrefixFold(cleanRequestPath(u.Path), prefix)
+	rest, _ := trimPrefixFold(CleanPath(u.Path), prefix)
 	u.Path, u.RawPath = ensureLeadingSlash(rest), ""
 }
 
