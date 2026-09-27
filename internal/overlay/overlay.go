@@ -2,6 +2,7 @@ package overlay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -16,6 +17,11 @@ import (
 	"github.com/rpop-project/rpop/internal/traceid"
 )
 
+// ErrClosed is returned by an overlay's methods once Close has run: a node replaces its overlay wholesale when
+// it registers again, and the old one must refuse new work rather than start links or a relay port nobody will
+// ever close.
+var ErrClosed = errors.New("overlay is closed")
+
 // Overlay is a node's side of the overlay network: its links to peers, the tunnels it opens on them, and its
 // relay port.
 type Overlay struct {
@@ -29,6 +35,7 @@ type Overlay struct {
 	relay *relayServer
 	// events queues tunnel lifecycle events for asynchronous delivery; see SetTunnelEventSink.
 	events *eventQueue
+	closed bool
 }
 
 // New creates the overlay of the node identity names.
@@ -75,6 +82,9 @@ func (o *Overlay) Apply(s snapshot.Snapshot) error {
 
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.closed {
+		return ErrClosed
+	}
 	keep := make(map[string]bool, len(wanted))
 	for _, spec := range wanted {
 		address := peers[spec.peer].Address
@@ -170,7 +180,10 @@ func (o *Overlay) tunnel(ctx context.Context, peer string, proxies []snapshot.Pr
 	if address == "" {
 		return nil, fmt.Errorf("node %s has no relay address", peer)
 	}
-	l := o.link(peer, address, proxies)
+	l, err := o.link(peer, address, proxies)
+	if err != nil {
+		return nil, err
+	}
 	cc, err := l.acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("link to %s: %w", peer, err)
@@ -188,16 +201,19 @@ func (o *Overlay) tunnel(ctx context.Context, peer string, proxies []snapshot.Pr
 	return openTunnel(ctx, cc, peer, header, trace)
 }
 
-func (o *Overlay) link(peer, address string, proxies []snapshot.Proxy) *link {
+func (o *Overlay) link(peer, address string, proxies []snapshot.Proxy) (*link, error) {
 	key := linkKey(peer, address, proxies)
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.closed {
+		return nil, ErrClosed
+	}
 	l := o.links[key]
 	if l == nil {
 		l = newLink(o.identity, peer, address, proxies, o.log)
 		o.links[key] = l
 	}
-	return l
+	return l, nil
 }
 
 // Links reports the state of every link.
@@ -215,10 +231,13 @@ func (o *Overlay) Links() []LinkStatus {
 	return statuses
 }
 
-// Close closes the relay port and every link, ending all tunnels.
+// Close closes the relay port and every link, ending all tunnels. Once it returns, every method that would
+// start new work (Apply, DialPath) refuses it with ErrClosed instead of starting a link or relay port that
+// this overlay, being discarded, will never close again.
 func (o *Overlay) Close() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.closed = true
 	if o.relay != nil {
 		o.relay.close()
 		o.relay = nil
