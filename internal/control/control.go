@@ -283,6 +283,18 @@ func (c *Control) site(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := parts[2]
+	if len(parts) == 3 && r.Method == http.MethodGet {
+		site, err := c.store.Get(r.Context(), id)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		c.opMu.Lock()
+		site.Running = c.siteRunning(site)
+		c.opMu.Unlock()
+		writeJSON(w, http.StatusOK, site)
+		return
+	}
 	if len(parts) == 4 && parts[3] == "metrics" && r.Method == http.MethodGet {
 		site, err := c.store.Get(r.Context(), id)
 		if err != nil {
