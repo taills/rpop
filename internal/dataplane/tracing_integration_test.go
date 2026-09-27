@@ -90,14 +90,14 @@ func TestRequestThroughOverlayCarriesOneTrackAndTunnelIDAcrossEveryHop(t *testin
 	relayAddr, exitAddr := tracingFreeAddress(t), tracingFreeAddress(t)
 	const key = "route-1"
 
-	exit := overlay.New(tracingIdentity(t, ca, "exit"), zap.NewNop())
+	exit := overlay.New(tracingIdentity(t, ca, "exit"), zap.NewNop(), overlay.DefaultConfig())
 	defer exit.Close()
 	if err := exit.Apply(snapshot.Snapshot{NodeID: "exit", Peers: []snapshot.Peer{{ID: "relay", Generation: 1}}, RelayListen: exitAddr,
 		Relay: []snapshot.RelayRoute{{Key: key, From: []string{"relay"}, Target: target}}}); err != nil {
 		t.Fatal(err)
 	}
 
-	relay := overlay.New(tracingIdentity(t, ca, "relay"), zap.NewNop())
+	relay := overlay.New(tracingIdentity(t, ca, "relay"), zap.NewNop(), overlay.DefaultConfig())
 	defer relay.Close()
 	if err := relay.Apply(snapshot.Snapshot{NodeID: "relay",
 		Peers:       []snapshot.Peer{{ID: "ingress", Generation: 1}, {ID: "exit", Address: exitAddr, Generation: 1}},
@@ -106,7 +106,7 @@ func TestRequestThroughOverlayCarriesOneTrackAndTunnelIDAcrossEveryHop(t *testin
 	}
 
 	path := snapshot.Path{Key: key, Label: "relay", FirstNode: "relay", Target: target}
-	ingress := overlay.New(tracingIdentity(t, ca, "ingress"), zap.NewNop())
+	ingress := overlay.New(tracingIdentity(t, ca, "ingress"), zap.NewNop(), overlay.DefaultConfig())
 	defer ingress.Close()
 	if err := ingress.Apply(snapshot.Snapshot{NodeID: "ingress", Peers: []snapshot.Peer{{ID: "relay", Address: relayAddr, Generation: 1}},
 		Sites: []snapshot.Site{{ID: "s", Upstreams: []snapshot.Upstream{{URL: upstream.URL, Paths: []snapshot.Path{path}}}}}}); err != nil {

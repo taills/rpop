@@ -42,6 +42,26 @@ func TestEnvDefaultInt64(t *testing.T) {
 	}
 }
 
+func TestEnvDefaultInt(t *testing.T) {
+	t.Setenv("RPOP_TEST_INT_SET", "12345")
+	t.Setenv("RPOP_TEST_INT_EMPTY", "")
+	t.Setenv("RPOP_TEST_INT_BAD", "not-a-number")
+	tests := []struct {
+		key  string
+		want int
+	}{
+		{"RPOP_TEST_INT_SET", 12345},
+		{"RPOP_TEST_INT_EMPTY", 99},
+		{"RPOP_TEST_INT_UNSET", 99},
+		{"RPOP_TEST_INT_BAD", 99},
+	}
+	for _, tt := range tests {
+		if got := envDefaultInt(tt.key, 99); got != tt.want {
+			t.Errorf("envDefaultInt(%q) = %d, want %d", tt.key, got, tt.want)
+		}
+	}
+}
+
 func TestHealthCheckURL(t *testing.T) {
 	tests := []struct{ addr, want string }{
 		{"0.0.0.0:60000", "http://127.0.0.1:60000/api/health"},

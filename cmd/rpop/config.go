@@ -34,6 +34,20 @@ func envDefaultInt64(key string, fallback int64) int64 {
 	return parsed
 }
 
+// envDefaultInt is envDefaultInt64 for a plain int setting (D31's window sizes and concurrency limits, well
+// within the platform int range); an unset, empty, or unparsable value falls back the same way.
+func envDefaultInt(key string, fallback int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
 // healthCheckURL maps the control API listen address to a URL reachable from the same host:
 // wildcard hosts (empty, 0.0.0.0, ::) are probed on loopback.
 func healthCheckURL(addr string) (string, error) {
