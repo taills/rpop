@@ -273,6 +273,27 @@ type nodeView struct {
 // noteworthy, only one large enough to plausibly matter for reading a trace timeline.
 const DefaultClockSkewWarnThresholdMillis = 2000
 
+// MinClockSkewWarnThresholdMillis and MaxClockSkewWarnThresholdMillis bound the value
+// ValidateClockSkewWarnThreshold accepts (D28's -clock-skew-warn-threshold), mirroring how
+// ValidateSouthboundMaxStreamsPerConn bounds its own D31 CLI knob: below the floor a normal NTP-style estimate
+// over a real network would trip "warn" on nearly every heartbeat, and above the ceiling the setting stops being
+// a meaningful trace-timeline caveat at all.
+const (
+	MinClockSkewWarnThresholdMillis = 100
+	MaxClockSkewWarnThresholdMillis = 60 * 60 * 1000 // 1h
+)
+
+// ValidateClockSkewWarnThreshold rejects a value outside [MinClockSkewWarnThresholdMillis,
+// MaxClockSkewWarnThresholdMillis] (D28), so a bad -clock-skew-warn-threshold flag or RPOP_CLOCK_SKEW_WARN_THRESHOLD
+// environment variable fails at startup with a clear message instead of silently misconfiguring the console's
+// clock skew warning.
+func ValidateClockSkewWarnThreshold(ms int64) error {
+	if ms < MinClockSkewWarnThresholdMillis || ms > MaxClockSkewWarnThresholdMillis {
+		return fmt.Errorf("clock skew warn threshold must be between %d and %d milliseconds, got %d", MinClockSkewWarnThresholdMillis, MaxClockSkewWarnThresholdMillis, ms)
+	}
+	return nil
+}
+
 // clockSkewZero returns a fresh pointer to 0: the embedded node's constant clock skew (D28), since it runs in the
 // same process and clock as the controller and has nothing to measure. A fresh allocation each call rather than
 // one shared package-level pointer, consistent with every other field of nodeView/topologyNode being its own copy

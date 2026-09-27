@@ -19,6 +19,7 @@ func defaultOptionsForLimits() options {
 		logIngestRateBytesPerSecond:  control.DefaultLogIngestRateBytesPerSecond,
 		tunnelEventStoreMaxBytes:     control.DefaultTunnelEventStoreMaxBytes,
 		tunnelEventRetentionDays:     control.DefaultTunnelEventRetentionDays,
+		clockSkewWarnThresholdMillis: control.DefaultClockSkewWarnThresholdMillis,
 		pathActiveProbe:              true,
 	}
 }
@@ -76,6 +77,8 @@ func TestValidateControllerLimits(t *testing.T) {
 		{"log ingest rate bytes must be positive", func(o *options) { o.logIngestRateBytesPerSecond = 0 }, true},
 		{"tunnel event store max bytes must be positive", func(o *options) { o.tunnelEventStoreMaxBytes = -1 }, true},
 		{"tunnel event retention days must be positive", func(o *options) { o.tunnelEventRetentionDays = 0 }, true},
+		{"clock skew warn threshold below the minimum is rejected", func(o *options) { o.clockSkewWarnThresholdMillis = control.MinClockSkewWarnThresholdMillis - 1 }, true},
+		{"clock skew warn threshold above the maximum is rejected", func(o *options) { o.clockSkewWarnThresholdMillis = control.MaxClockSkewWarnThresholdMillis + 1 }, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

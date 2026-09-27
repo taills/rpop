@@ -40,5 +40,8 @@ func validateControllerLimits(o options) error {
 	if o.tunnelEventRetentionDays < 1 {
 		return fmt.Errorf("-tunnel-event-retention-days must be at least 1, got %d", o.tunnelEventRetentionDays)
 	}
+	if err := control.ValidateClockSkewWarnThreshold(o.clockSkewWarnThresholdMillis); err != nil {
+		return err
+	}
 	return nil
 }
