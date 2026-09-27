@@ -18,6 +18,7 @@ import (
 
 	"github.com/rpop-project/rpop/internal/accesslog"
 	"github.com/rpop-project/rpop/internal/dataplane"
+	"github.com/rpop-project/rpop/internal/overlay"
 	"github.com/rpop-project/rpop/internal/pki"
 	"github.com/rpop-project/rpop/internal/routing"
 	"github.com/rpop-project/rpop/internal/store"
@@ -53,6 +54,10 @@ type Control struct {
 	// overlay carries the embedded node's upstream paths across other nodes; it is created, under opMu, when a
 	// site on that node first needs it.
 	overlay *localOverlay
+	// overlayConfig tunes the HTTP/2 window and per-connection stream limits the embedded node's overlay is built
+	// with (D31, see SetOverlayConfig); read under opMu when newLocalOverlay creates that overlay, the same lock
+	// that guards overlay itself.
+	overlayConfig overlay.Config
 
 	accessLogs *accesslog.Registry
 	// tunnelEvents stores overlay.TunnelEvent records reported by every node (D22); nil unless the controller
@@ -73,8 +78,19 @@ func New(s *store.Store, l *zap.Logger) *Control {
 	return &Control{store: s, log: l, engine: dataplane.New(l), desired: make(map[string]bool), published: newPublication(),
 		embedded: true, nodes: newNodeRegistry(), registrations: newFailureLimiter(maxRegisterFailures, registerFailureWindow),
 		logIngestLocks: newKeyedMutex(), logIngestSemaphore: make(chan struct{}, DefaultMaxConcurrentLogIngests),
-		logIngestRate:  newNodeRateLimiter(DefaultLogIngestRateBytesPerSecond),
+		logIngestRate: newNodeRateLimiter(DefaultLogIngestRateBytesPerSecond), overlayConfig: overlay.DefaultConfig(),
 		systemSettings: defaultSystemSettings(), sessions: make(map[string]time.Time), loginAttempts: make(map[string]loginAttempt)}
+}
+
+// SetOverlayConfig overrides the HTTP/2 window and per-connection stream limits the embedded node's overlay is
+// built with (D31, see overlay.DefaultConfig). Call before serving southbound traffic; the caller (cmd/rpop) is
+// responsible for validating cfg with overlay.ValidateConfig first, so this only ever stores an already-valid
+// value. A no-op on an overlay already created — like SetEmbeddedNode, this is a startup-time setting, not one
+// that changes a running embedded node.
+func (c *Control) SetOverlayConfig(cfg overlay.Config) {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	c.overlayConfig = cfg
 }
 
 // SetLogIngestLimits overrides the default global concurrency cap and per-node upload rate cap for log segment
@@ -94,7 +110,7 @@ func (c *Control) SetLogIngestLimits(maxConcurrent int, rateBytesPerSecond int64
 }
 
 // SetTunnelEventStoreCapacity overrides the default total-size cap for the tunnel event store (stage 5 security
-// review item 5, see tunnelEventStoreDefaultMaxBytes). Call before serving southbound traffic; maxBytes <= 0
+// review item 5, see DefaultTunnelEventStoreMaxBytes). Call before serving southbound traffic; maxBytes <= 0
 // leaves the default in place. A no-op if the controller was not built with NewWithLogDir (c.tunnelEvents is
 // nil, as it is for the plain New() constructor tests commonly use).
 func (c *Control) SetTunnelEventStoreCapacity(maxBytes int64) {

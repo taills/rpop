@@ -67,7 +67,7 @@ func TestTunnelEventStorePartitionsByDayAndPrunesOldOnes(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	old := time.Now().UTC().AddDate(0, 0, -(tunnelEventRetentionDays + 5))
+	old := time.Now().UTC().AddDate(0, 0, -(DefaultTunnelEventRetentionDays + 5))
 	if err := store.Write(ctx, overlay.TunnelEvent{Timestamp: old, TunnelID: "ancient", NodeID: "n"}); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestTunnelEventStoreQueryWithAStartLimitsToItsWindow(t *testing.T) {
 	ctx := context.Background()
 
 	// Far enough in the future that none of these partitions can ever fall inside the retention window's
-	// "older than tunnelEventRetentionDays" cutoff and get pruned out from under the test, regardless of when it
+	// "older than DefaultTunnelEventRetentionDays" cutoff and get pruned out from under the test, regardless of when it
 	// actually runs.
 	start := time.Date(2035, 6, 1, 0, 0, 0, 0, time.UTC)
 	inWindow := []time.Time{start, start.AddDate(0, 0, tunnelQueryWindowDays-1).Add(2 * time.Hour)}
@@ -173,7 +173,7 @@ func TestReadTunnelEventsSkipsOversizedAndCorruptLines(t *testing.T) {
 }
 
 // TestTunnelEventStoreEvictsOldestPartitionsOverItsSizeCap covers stage 5 security review item 5: on top of
-// tunnelEventRetentionDays' age-based limit, the store must not grow without bound within that window either.
+// DefaultTunnelEventRetentionDays' age-based limit, the store must not grow without bound within that window either.
 // Capping it to a little over one day's partition forces the next prune to evict the oldest one.
 func TestTunnelEventStoreEvictsOldestPartitionsOverItsSizeCap(t *testing.T) {
 	dir := t.TempDir()
@@ -184,7 +184,7 @@ func TestTunnelEventStoreEvictsOldestPartitionsOverItsSizeCap(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	// Far enough in the future that neither partition can ever fall inside the retention window's "older than
-	// tunnelEventRetentionDays" cutoff and get age-pruned instead, regardless of when this test actually runs.
+	// DefaultTunnelEventRetentionDays" cutoff and get age-pruned instead, regardless of when this test actually runs.
 	base := time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC)
 	write := func(day int, tunnelID string) {
 		t.Helper()
@@ -233,7 +233,7 @@ func TestTunnelEventStoreEvictsOldestPartitionsOverItsSizeCap(t *testing.T) {
 // (mirroring the single *os.File store this replaced, which only ever protected "the currently open file" the
 // same way); any other day's cached handle must not, or a node could keep alternating writes across a couple of
 // fresh days plus one stale one, always within the LRU's capacity, to keep that stale day permanently exempt
-// from tunnelEventRetentionDays.
+// from DefaultTunnelEventRetentionDays.
 func TestTunnelEventStorePruneClosesTheEvictedPartitionsCachedHandle(t *testing.T) {
 	dir := t.TempDir()
 	store, err := newTunnelEventStore(dir, zap.NewNop())
@@ -243,7 +243,7 @@ func TestTunnelEventStorePruneClosesTheEvictedPartitionsCachedHandle(t *testing.
 	t.Cleanup(func() { _ = store.Close() })
 	ctx := context.Background()
 
-	stale := time.Now().UTC().AddDate(0, 0, -(tunnelEventRetentionDays + 1))
+	stale := time.Now().UTC().AddDate(0, 0, -(DefaultTunnelEventRetentionDays + 1))
 	if err := store.Write(ctx, overlay.TunnelEvent{Timestamp: stale, TunnelID: "stale", NodeID: "n"}); err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +377,7 @@ func TestTunnelEventStorePruneLoopRunsInTheBackground(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 
-	stale := time.Now().UTC().AddDate(0, 0, -(tunnelEventRetentionDays + 1))
+	stale := time.Now().UTC().AddDate(0, 0, -(DefaultTunnelEventRetentionDays + 1))
 	if err := s.Write(context.Background(), overlay.TunnelEvent{Timestamp: stale, TunnelID: "stale", NodeID: "n"}); err != nil {
 		t.Fatal(err)
 	}
@@ -508,6 +508,72 @@ func TestSetTunnelEventStoreCapacityOverridesTheDefault(t *testing.T) {
 
 	plain := New(store.New(db), zap.NewNop())
 	plain.SetTunnelEventStoreCapacity(999)
+}
+
+// TestSetTunnelEventRetentionOverridesTheDefault covers the Control-level knob for D31's retention window,
+// mirroring TestSetTunnelEventStoreCapacityOverridesTheDefault above: a positive override replaces the default
+// and sticks, a non-positive one is a no-op that leaves whatever is already set in place, and calling it on a
+// Control with no tunnel event store (the plain New() constructor) must not panic.
+func TestSetTunnelEventRetentionOverridesTheDefault(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := store.Migrate(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewWithLogDir(store.New(db), zap.NewNop(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseAccessLogs(context.Background())
+
+	if c.tunnelEvents.retentionDays != DefaultTunnelEventRetentionDays {
+		t.Fatalf("retentionDays before any override = %d, want %d", c.tunnelEvents.retentionDays, DefaultTunnelEventRetentionDays)
+	}
+	c.SetTunnelEventRetention(30)
+	if c.tunnelEvents.retentionDays != 30 {
+		t.Fatalf("retentionDays = %d, want 30", c.tunnelEvents.retentionDays)
+	}
+	c.SetTunnelEventRetention(0)
+	if c.tunnelEvents.retentionDays != 30 {
+		t.Fatalf("retentionDays after a non-positive override = %d, want unchanged at 30", c.tunnelEvents.retentionDays)
+	}
+
+	plain := New(store.New(db), zap.NewNop())
+	plain.SetTunnelEventRetention(7)
+}
+
+// TestSetTunnelEventRetentionAffectsPruning covers that the override actually changes which partitions
+// pruneLocked keeps, not just the stored field: a partition older than the shortened window is removed, and one
+// that would only have aged out under the old default survives.
+func TestSetTunnelEventRetentionAffectsPruning(t *testing.T) {
+	s, err := newTunnelEventStore(t.TempDir(), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.mu.Lock()
+	s.retentionDays = 1
+	s.mu.Unlock()
+
+	old := time.Now().UTC().AddDate(0, 0, -5)
+	recent := time.Now().UTC()
+	if err := s.Write(context.Background(), overlay.TunnelEvent{Timestamp: old, TunnelID: "old"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Write(context.Background(), overlay.TunnelEvent{Timestamp: recent, TunnelID: "recent"}); err != nil {
+		t.Fatal(err)
+	}
+	s.pruneNow()
+
+	if _, err := os.Stat(tunnelEventPath(s.dir, old.Format("20060102"))); !os.IsNotExist(err) {
+		t.Fatalf("old partition still exists after pruning with a 1-day retention override: %v", err)
+	}
+	if _, err := os.Stat(tunnelEventPath(s.dir, recent.Format("20060102"))); err != nil {
+		t.Fatalf("recent partition was pruned away: %v", err)
+	}
 }
 
 func TestLocalTunnelEventWriterWritesThrough(t *testing.T) {

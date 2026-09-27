@@ -20,12 +20,13 @@ import (
 
 const (
 	tunnelEventsDirName = "tunnel-events"
-	// tunnelEventRetentionDays bounds how long tunnel events stay queryable: pruneLoop removes partitions older
-	// than this on its own schedule (see tunnelEventPruneInterval), so the store cannot grow without bound
+	// DefaultTunnelEventRetentionDays bounds how long tunnel events stay queryable: pruneLoop removes partitions
+	// older than this on its own schedule (see tunnelEventPruneInterval), so the store cannot grow without bound
 	// (D22's trace query only ever needs recent history to debug a path, not a permanent record). It mirrors
 	// accesslog's file adapter default retention (DefaultConfig().File.KeepFiles = 30 daily files) at roughly
-	// half that, since tunnel events are diagnostic, not an audit trail.
-	tunnelEventRetentionDays = 14
+	// half that, since tunnel events are diagnostic, not an audit trail. Configurable since D31
+	// (-tunnel-event-retention-days; see SetTunnelEventRetention).
+	DefaultTunnelEventRetentionDays = 14
 	// maxTunnelEventLineBytes bounds one stored line. Unlike an access log record, a TunnelEvent never carries
 	// request/response bodies, so a generous static ceiling (rather than a configurable limit) is enough to
 	// reject a corrupt or truncated line without failing the whole query.
@@ -35,15 +36,17 @@ const (
 	// started, plus one more to cover a tunnel that keeps running past midnight or is simply long-lived. A tunnel
 	// whose events span more than that still has its earlier events found (they are in the first partition
 	// scanned); only events reported more than a day after the tunnel opened would be missed. That is preferred
-	// over scanning the full tunnelEventRetentionDays window on every query; widen this constant if it proves too
-	// tight in practice.
+	// over scanning the full retention window on every query; widen this constant if it proves too tight in
+	// practice. This is a query performance constant, not an operator-facing knob (D31): misconfiguring it would
+	// silently drop events from a query with no error, unlike the size- and age-based limits above.
 	tunnelQueryWindowDays = 2
-	// tunnelEventStoreDefaultMaxBytes bounds the total size of every day partition the store keeps on disk,
-	// independent of tunnelEventRetentionDays' age-based limit (stage 5 security review item 5): a burst of
-	// tunnel activity within the retention window could otherwise still grow the store without bound. 10GiB is
-	// generous for a diagnostic store, not an audit trail (see the doc comment below on why this is a bespoke
-	// store at all), while still being a real ceiling instead of none.
-	tunnelEventStoreDefaultMaxBytes int64 = 10 << 30
+	// DefaultTunnelEventStoreMaxBytes bounds the total size of every day partition the store keeps on disk,
+	// independent of the age-based retention limit (stage 5 security review item 5): a burst of tunnel activity
+	// within the retention window could otherwise still grow the store without bound. 10GiB is generous for a
+	// diagnostic store, not an audit trail (see the doc comment below on why this is a bespoke store at all),
+	// while still being a real ceiling instead of none. Configurable since D31 (-tunnel-event-store-max-bytes;
+	// see Control.SetTunnelEventStoreCapacity).
+	DefaultTunnelEventStoreMaxBytes int64 = 10 << 30
 	// maxOpenTunnelEventFiles bounds how many day partitions' file handles the store keeps open at once (stage 5
 	// low-priority finding item 6): out-of-order or delayed events crossing a day boundary can make consecutive
 	// writes alternate between a couple of days, and a store that only ever kept the single most recent one open
@@ -51,11 +54,11 @@ const (
 	// handles accumulate; 3 covers "today and yesterday" with one more to spare for a third day appearing
 	// briefly, without needing to be configurable for what is purely an implementation detail.
 	maxOpenTunnelEventFiles = 3
-	// tunnelEventPruneInterval controls how often the background loop that enforces tunnelEventRetentionDays and
-	// tunnelEventStoreDefaultMaxBytes runs (item 6). Pruning used to run inline, every time Write opened a new
-	// day's partition; decoupling it from the write path means a node cannot force a directory Glob plus a Stat
-	// of every partition on every write just by alternating which day its reported event timestamps fall on. An
-	// hour is frequent enough that neither limit is ever meaningfully exceeded in practice.
+	// tunnelEventPruneInterval controls how often the background loop that enforces retentionDays and maxBytes
+	// runs (item 6). Pruning used to run inline, every time Write opened a new day's partition; decoupling it
+	// from the write path means a node cannot force a directory Glob plus a Stat of every partition on every
+	// write just by alternating which day its reported event timestamps fall on. An hour is frequent enough that
+	// neither limit is ever meaningfully exceeded in practice.
 	tunnelEventPruneInterval = time.Hour
 )
 
@@ -86,6 +89,9 @@ type tunnelEventStore struct {
 	// maxBytes bounds the total size of every day partition on disk (item 5); pruneLocked evicts the oldest ones
 	// once it is exceeded, on top of the age-based cutoff it already applies.
 	maxBytes int64
+	// retentionDays bounds how long tunnel events stay queryable (D31, see DefaultTunnelEventRetentionDays and
+	// Control.SetTunnelEventRetention); pruneLocked removes partitions older than this.
+	retentionDays int
 	// pruneInterval is tunnelEventPruneInterval in production; tests inject a short one (see
 	// newTunnelEventStoreWithPruneInterval) to observe pruneLoop without waiting for it.
 	pruneInterval time.Duration
@@ -109,7 +115,8 @@ func newTunnelEventStoreWithPruneInterval(logDir string, log *zap.Logger, pruneI
 		dir:           dir,
 		log:           log,
 		handles:       make(map[string]*os.File),
-		maxBytes:      tunnelEventStoreDefaultMaxBytes,
+		maxBytes:      DefaultTunnelEventStoreMaxBytes,
+		retentionDays: DefaultTunnelEventRetentionDays,
 		pruneInterval: pruneInterval,
 		stop:          make(chan struct{}),
 		stopped:       make(chan struct{}),
@@ -237,7 +244,7 @@ func (s *tunnelEventStore) pruneLocked() {
 	if len(s.lru) > 0 {
 		mostRecentDay = s.lru[len(s.lru)-1]
 	}
-	cutoff := time.Now().UTC().AddDate(0, 0, -tunnelEventRetentionDays).Format("20060102")
+	cutoff := time.Now().UTC().AddDate(0, 0, -s.retentionDays).Format("20060102")
 	paths, err := filepath.Glob(filepath.Join(s.dir, "events-*.jsonl"))
 	if err != nil {
 		return
@@ -373,6 +380,19 @@ func (s *tunnelEventStore) Close() error {
 	}
 	s.lru = nil
 	return firstErr
+}
+
+// SetTunnelEventRetention overrides the default age-based retention window for the tunnel event store (D31, see
+// DefaultTunnelEventRetentionDays). Call before serving southbound traffic; days <= 0 leaves the default in
+// place. A no-op if the controller was not built with NewWithLogDir (c.tunnelEvents is nil, as it is for the
+// plain New() constructor tests commonly use), mirroring SetTunnelEventStoreCapacity.
+func (c *Control) SetTunnelEventRetention(days int) {
+	if c.tunnelEvents == nil || days <= 0 {
+		return
+	}
+	c.tunnelEvents.mu.Lock()
+	defer c.tunnelEvents.mu.Unlock()
+	c.tunnelEvents.retentionDays = days
 }
 
 // localTunnelEventWriter adapts a tunnelEventStore to overlay.TunnelEventSink for the embedded "local" node

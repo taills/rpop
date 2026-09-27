@@ -60,6 +60,11 @@ type Config struct {
 	// LogUploadRateBytesPerSecond throttles how fast spooled segments are uploaded; 0 uses
 	// spool.DefaultUploadRateBytesPerSecond (D25).
 	LogUploadRateBytesPerSecond int64
+	// OverlayConfig tunes the HTTP/2 window and per-connection stream limits every link and the relay port this
+	// node opens are built with (D31); the zero value is not itself valid (see overlay.ValidateConfig) — New
+	// falls back to overlay.DefaultConfig() only when every field is zero, so a caller that does not care about
+	// this at all may simply leave it unset.
+	OverlayConfig overlay.Config
 }
 
 // session is the identity the node authenticates with and the client that presents it.
@@ -114,6 +119,11 @@ func New(cfg Config, log *zap.Logger) (*Agent, error) {
 	}
 	if cfg.DataDir == "" {
 		return nil, errors.New("node data directory is required")
+	}
+	if cfg.OverlayConfig == (overlay.Config{}) {
+		cfg.OverlayConfig = overlay.DefaultConfig()
+	} else if err := overlay.ValidateConfig(cfg.OverlayConfig); err != nil {
+		return nil, err
 	}
 	a := &Agent{cfg: cfg, base: base, log: log, engine: dataplane.New(log), started: time.Now(), kick: make(chan struct{}, 1)}
 	a.engine.SetPathDialer(agentPaths{a})
@@ -215,7 +225,7 @@ func (a *Agent) use(identity *pki.Identity) {
 	if previous != nil {
 		previous.client.CloseIdleConnections()
 	}
-	next := overlay.New(identity, a.log.Named("overlay"))
+	next := overlay.New(identity, a.log.Named("overlay"), a.cfg.OverlayConfig)
 	if a.spool != nil {
 		next.SetTunnelEventSink(a.spool)
 	}

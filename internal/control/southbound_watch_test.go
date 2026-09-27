@@ -21,7 +21,7 @@ func TestSouthboundWatchSurvivesShortIdleAndHeaderTimeouts(t *testing.T) {
 	h := newIngestHarnessWithSouthboundConfig(t, func(server *http.Server) {
 		server.ReadHeaderTimeout = shortTimeout
 		server.IdleTimeout = shortTimeout
-		server.HTTP2 = SouthboundHTTP2Config()
+		server.HTTP2 = SouthboundHTTP2Config(DefaultMaxConcurrentSouthboundStreamsPerConn)
 	})
 	token := h.createNode("watch-node")
 	identity := h.register(token)

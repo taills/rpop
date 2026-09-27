@@ -25,13 +25,17 @@ const (
 	maxStatusBody         = 4 << 20
 	// frameWriteTimeout bounds one watch frame write, so a node that stopped reading cannot pin the stream.
 	frameWriteTimeout = 30 * time.Second
-	// MaxConcurrentSouthboundStreamsPerConn bounds how many concurrent HTTP/2 streams the southbound listener
-	// accepts on one connection (stage 5 security review item 5), the same protection the relay port already
-	// applies to node-to-node links (see internal/overlay's maxStreamsPerConn). A node normally needs only a
-	// handful at once — one long-lived watch stream plus, occasionally, a register/renew/status/logs request —
-	// so this is far looser than that per-connection reality requires, while still refusing an unbounded number
-	// of streams from a single connection.
-	MaxConcurrentSouthboundStreamsPerConn = 100
+	// DefaultMaxConcurrentSouthboundStreamsPerConn bounds how many concurrent HTTP/2 streams the southbound
+	// listener accepts on one connection (stage 5 security review item 5), the same protection the relay port
+	// already applies to node-to-node links (see internal/overlay's MaxStreamsPerConn). A node normally needs
+	// only a handful at once — one long-lived watch stream plus, occasionally, a register/renew/status/logs
+	// request — so this is far looser than that per-connection reality requires, while still refusing an
+	// unbounded number of streams from a single connection. Configurable since D31 (-southbound-max-streams).
+	DefaultMaxConcurrentSouthboundStreamsPerConn = 100
+	// MinSouthboundMaxStreamsPerConn and MaxSouthboundMaxStreamsPerConn bound the value SouthboundHTTP2Config
+	// accepts (D31), mirroring internal/overlay's own MinStreamsPerConn/MaxStreamsPerConnLimit.
+	MinSouthboundMaxStreamsPerConn = 1
+	MaxSouthboundMaxStreamsPerConn = 10000
 )
 
 var errNodeUnauthenticated = errors.New("node certificate is missing, unknown, or revoked")
@@ -106,9 +110,20 @@ func (c *Control) SouthboundHandler() http.Handler {
 // outside this package (cmd/rpop's startSouthbound). Only concurrency is bounded here — no per-stream or
 // per-connection flow-control window, and no ping timeouts — so the long-lived watch stream (southboundWatch)
 // is never affected by anything this returns; that stream's own frameWriteTimeout is what bounds a stalled
-// reader.
-func SouthboundHTTP2Config() *http.HTTP2Config {
-	return &http.HTTP2Config{MaxConcurrentStreams: MaxConcurrentSouthboundStreamsPerConn}
+// reader. maxStreamsPerConn is a process startup parameter (D31; see DefaultMaxConcurrentSouthboundStreamsPerConn
+// and ValidateSouthboundMaxStreamsPerConn), not part of the configuration snapshot the controller renders.
+func SouthboundHTTP2Config(maxStreamsPerConn int) *http.HTTP2Config {
+	return &http.HTTP2Config{MaxConcurrentStreams: maxStreamsPerConn}
+}
+
+// ValidateSouthboundMaxStreamsPerConn rejects a value outside [MinSouthboundMaxStreamsPerConn,
+// MaxSouthboundMaxStreamsPerConn] (D31), so a bad CLI flag or environment variable fails at startup with a clear
+// message instead of silently misconfiguring the southbound listener.
+func ValidateSouthboundMaxStreamsPerConn(n int) error {
+	if n < MinSouthboundMaxStreamsPerConn || n > MaxSouthboundMaxStreamsPerConn {
+		return fmt.Errorf("southbound max streams per connection must be between %d and %d, got %d", MinSouthboundMaxStreamsPerConn, MaxSouthboundMaxStreamsPerConn, n)
+	}
+	return nil
 }
 
 // authenticateNode identifies the node behind a request by its client certificate. The TLS handshake already
