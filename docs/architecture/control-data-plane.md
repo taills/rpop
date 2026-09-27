@@ -252,6 +252,13 @@
 - 文件/S3:去重下沉到两者共用的 `paginate()`(`internal/accesslog/manager.go`),在分页切片前按 `dedup_key` 保留首条,`Total` 已是去重后的数量。
 - 隧道事件:`tunnelEventStore.Write` 用有界(4096)、插入顺序淘汰的内存缓存短路重传事件,`Query` 再做一遍兜底去重;重启后缓存归零是已接受的残留风险,由 Query 的兜底覆盖。
 
+**阶段 7 第 5 步(D28:时钟偏差估计)实施记录**:
+
+- `southbound.Status` 新增 `SentAt`(节点发送时间 t0)与 `ClockOffsetMillis`/`ClockRTTMillis`(上一轮心跳算出的偏差/RTT,首次心跳省略);`southboundStatus` 从 `204` 改为 `200` + 新类型 `southbound.StatusResponse{ReceivedAt, RespondedAt}`(t1/t2)。节点侧 `agent.sendStatus` 记录本轮 t0/t3,把上一轮的四个时间点代入 NTP 公式 `offset=((t1-t0)+(t2-t3))/2`、`rtt=(t3-t0)-(t2-t1)`,写进下一次心跳。
+- 兼容性:`postJSON` 把 `204`(无论 `out` 是否非空)当作"本轮无数据"处理而非解码错误,覆盖新节点连旧控制器的场景;旧节点不发 `SentAt`/偏差字段,控制器照常返回 `200` + JSON,旧节点因 `out=nil` 直接丢弃响应体。
+- 控制器 `nodeRegistry.report` 只在内存存最近一次偏差(不落库,同 `Links`/`Paths`);`sanitizeStatus` 新增 `sanitizeClockOffset`,`|offset|` 超过 24h 连同 RTT 一并丢弃并返回 `report` 的第二个值供上层记一条 Warn。`nodeView`/`GET /api/topology` 新增 `clockSkewMillis`/`clockSkewStatus`(超过可配置的 `clockSkewWarnThresholdMillis`,默认 2000ms,标 `"warn"`),内嵌节点恒为 `0`/`"ok"`;`GET /api/logging/tunnels/{id}` 的每条事件附上上报节点当前偏差(`tunnelEventView`),不改写已存储的时间戳。
+- 同批次顺带完成两项阶段 6 遗留:`status_sanitize.go` 补上 `overlay.LinkStatus.Status/DownUntil/LastSuccess` 与 `dataplane.PathHealth.Status/Until` 的截断与枚举白名单;`-path-active-probe`/`RPOP_PATH_ACTIVE_PROBE` 接入 `agent.Config`/`Control.SetPathActiveProbe`,补上 7.2 遗漏的 CLI 接线。
+
 ## 6. 非目标
 
 多路径负载均衡/加权分流;请求级透明重试;中继节点完全无入站(NAT 反向建链)。
