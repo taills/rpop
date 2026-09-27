@@ -95,3 +95,29 @@
   color: var(--text-muted);
   text-align: right;
 }
+
+/* Narrow screens: the four columns (label, track, duration, clock-skew badge) no longer fit on one line
+   without squeezing the duration bar itself, or overflowing past 400px. Split into two rows instead — label
+   and badge together (both short, fixed-content width), then the bar and its duration below, each row getting
+   the full row width to work with; see AppTopNav.css for the same narrow-screen row-splitting approach. */
+@media (max-width: 640px) {
+  .trace-gantt__row {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      'label skew'
+      'track duration';
+    row-gap: 6px;
+  }
+  .trace-gantt__label {
+    grid-area: label;
+  }
+  .trace-gantt__row > .ui-tooltip-wrap {
+    grid-area: skew;
+  }
+  .trace-gantt__track {
+    grid-area: track;
+  }
+  .trace-gantt__duration {
+    grid-area: duration;
+  }
+}
