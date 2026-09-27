@@ -97,6 +97,19 @@
 - **配额与限速**(第 2 步实施,默认值先在此定下):spool 配额默认 2GiB(`RPOP_LOG_SPOOL_QUOTA_BYTES` 可配),超过时丢弃最旧的未上传段并计数告警(不是丢新段,新事件更有时效性);回传默认限速 4MiB/s(`RPOP_LOG_UPLOAD_RATE_BYTES` 可配),用令牌桶节流上传的读取,转发路径的带宽永远优先。
 - **全路径时间线查询**(第 3 步实施,接口先在此定形):控制器新增 `GET /api/logging/trace/{trackId}` 返回该请求的 access log 记录(唯一一条)及其 `tunnelId`;再用 `GET /api/logging/tunnels/{tunnelId}` 返回该隧道 ID 在所有节点上报的全部 `TunnelEvent`,按 `timestamp` 排序即为入口→中继…→出口的完整时间线。查询直接扫已入库的隧道事件存储(第 2 步选型,复用 access log 适配器的按时间分区能力);控制台 UI 是阶段 6 的事。
 
+**阶段 5(日志与追踪)第 2 步(spool/回传)** 的落地要点,补充或收窄第 1 步定下的契约:
+
+- **协议里 `LogEnvelope` 多了一个字段**:`internal/southbound.LogEnvelope` 在 `kind`/`record` 之外加了 `adapterId`(`kind:"access"` 时才有值)。原因:`dataplane.AccessLogWriter.WriteAccessLog(ctx, adapterID, record)` 本身就带 adapterID(站点选择的适配器,控制器渲染快照时下发,节点不解析含义),spool 落盘时把它随记录一起保存,控制器 ingest(第 3 步)就能直接 `registry.Write(ctx, envelope.AdapterID, record)`,与内嵌节点 `local` 现有的 `registryWriter`(`internal/control/runtime.go`)写法一致;也避免控制器按 `record.SiteID` 反查"站点当前选择的适配器"与节点观测记录时的选择不一致(回传有延迟、期间适配器配置可能变更)。`kind:"tunnel"` 不带这个字段。
+- **段大小按未压缩 NDJSON 字节计,写完一行才检查**:`internal/spool.Spool.append` 每写一行 gzip 数据就检查累计的未压缩字节是否达到 `MaxSegmentBytes`(默认 8MiB),达到才封段——先写后查,所以一条超大记录(例如某站点把 body 采集上限配到 8MiB,访问日志请求体+响应体都命中上限,base64 后单条记录可到 ~22MiB)仍会完整地独占一段,不会被从中间截断。`southbound.MaxLogSegmentBytes`(32MiB)据此定值,同时覆盖控制器要读取的压缩后字节数——gzip 对这类已经偏随机的 base64 内容基本不会显著膨胀。
+- **每行落盘即 `gzip.Writer.Flush()` + `file.Sync()`**:不是"先攒未压缩内容、封段时再统一 gzip"的做法,是从 `os.OpenFile` 开始就直接把 gzip 流写到磁盘,崩溃恢复因此要处理的是"gzip 尾部被截断",不是"NDJSON 被截断"。每行都 fsync 是有意为之的取舍:换来的是崩溃最多丢一行(spool 自己的队列已经在事件产生和落盘之间解耦,不影响 P8),代价是持续高吞吐下 fsync 可能成为瓶颈——真到瓶颈时,表现是 spool 自身入队队列(256 长)被写满并丢弃计数(`LogStats.AccessLogQueueDropped`/`TunnelEventQueueDropped`),这也是设计上允许的降级路径,而不是转发被拖慢。
+- **段号与状态持久化的顺序**:`state.json` 的 `nextSegment` 在"决定要用这个号"时立刻落盘,永远早于对应的段文件被创建;因此重启后只有唯一一个"存疑"的段号(`nextSegment-1`),其他号码或者已经完整封段、或者已经被确认可以删除。崩溃恢复只需要检查这一个号码:能完整解出 gzip 尾部就原样保留;尾部截断则保留能完整解出的整行,重新封装成一个有效 gzip 文件(丢弃最后半条不可信的行);一行都解不出来就整段删除。三种情况都不会让这个号码被复用给不同内容——即使文件本身被丢弃,下一次开新段也从更大的号码开始,用 warn 日志计数这次损失(没有在 `LogStats` 里单独计数,只在节点本地日志可见,因为协议已经提交锁定,不再加字段)。
+- **配额按"段已经关闭、落在磁盘上的字节数"算**,在每次封段后检查:超出 `QuotaBytes`(默认 2GiB)就按段号从小到大(最旧的未确认段)依次删除,直到回到配额以内(极端情况下,单个新段本身就超过配额,也会被自己删掉);告警日志按 10s 节流,避免持续超额刷屏。当前正在写的段不计入配额判断(还没关闭,不在候选范围)。
+- **段号与控制器 HWM 对齐**:`Spool.Ack(ack)` 是唯一改 `ackedUpTo`/`nextSegment` 的地方,规则很简单——`ackedUpTo`只增不减(取 `max`),`nextSegment` 只在 `ack+1` 更大时才跳到 `ack+1`(不会把号码往回调)。上传器(`internal/spool.Uploader`)每次成功拿到 2xx 响应后,不是直接用响应里的 `ack` 字段,而是 `max(本次发送的段号, 响应的 ack)` 去调用 `Ack`——因为"控制器对这次上传返回 2xx"这件事本身就确认了这个段号,不需要依赖控制器回显的数值是否≥这个段号(正常实现下应该总是满足,但没必要依赖这一点)。`nextSegment` 跳到 `ack+1` 之后,下一个新建的段自然不会再落在 HWM 之下,不会重复触发"节点重装、spool 从 1 起号,但控制器记得旧节点更高 HWM"这个场景——但那一刻"卡在旧号码里的内容"本身还是没写进控制器(协议只有数值 HWM,没有内容级去重,控制器按契约把 ≤HWM 的段当重传直接 ACK、不重复写入),这是数值型 HWM 方案本身的已知代价,只保证不会一直重复丢,不保证这一次不丢。
+- **上传器**(`internal/spool.Uploader`):严格按段号升序停等,一段成功(或识别为"已经在 `AckedUpTo` 之下,本地直接跳过、不发网络请求")才发下一段;失败按 1s→30s 指数退避重试同一段(不跳段);限速用标准库时间自实现的令牌桶(`internal/spool/ratelimit.go`),没有引入 `golang.org/x/time`;`ctx` 取消后无论是在空闲等待、退避睡眠还是进行中的 HTTP 请求,都会很快返回。复用节点现有的南向 mTLS `*http.Client`(`agent.Config` 传入一个返回当前 client 的函数,因为证书续期/重新注册会换 client)。
+- **新增节点配置**:`-log-spool-quota-bytes`(`RPOP_LOG_SPOOL_QUOTA_BYTES`,默认 `spool.DefaultQuotaBytes`=2GiB)、`-log-upload-rate-bytes`(`RPOP_LOG_UPLOAD_RATE_BYTES`,默认 `spool.DefaultUploadRateBytesPerSecond`=4MiB/s);`-log-dir`(已有)复用为 spool 的父目录,实际落盘在 `<log-dir>/spool/`。`agent.Config.LogDir` 为空时退化为 `<DataDir>/logs`,只是为了不要求既有测试/调用方都显式设置。
+- **接线范围**:仅 `node` 模式的 `agent.Agent` 接入 `internal/spool`(`Engine.SetAccessLogWriter`、每次 `use()` 换新 `overlay` 时都重新 `SetTunnelEventSink`,覆盖重新注册场景);内嵌节点 `local`(all-in-one/controller 进程内)继续走第 1 步之前就有的 `registryWriter` 直接落盘,不经过 spool。
+- **尚未实现,留给控制器侧(第 3 步)**:`POST /southbound/v1/logs` 的服务端处理、`nodes.log_hwm` 迁移与持久化、按 `envelope.AdapterID`/`kind` 分流写入、`LogStats` 在状态 API/控制台的展示。
+
 ## 6. 非目标
 
 多路径负载均衡/加权分流;请求级透明重试;中继节点完全无入站(NAT 反向建链)。
