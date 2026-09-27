@@ -24,14 +24,13 @@ import { useToast } from '@/stores/toast'
 import './NodeDetailPage.css'
 
 // NodeDetailPage shows one node's full health: basic info, overlay link table, upstream path-failover table and
-// log spool health. There is no GET /api/nodes/{id} (the API only offers the list, see nodesAPI/nodeAPI in
-// internal/control/nodes.go), so this fetches the same GET /api/nodes the list page uses and picks the node out
-// by id; that list already carries every field this page needs.
+// log spool health, fetched straight from GET /api/nodes/{id} (its shape matches the list page's rows).
 export default function NodeDetailPage() {
   const { id } = useParams()
   const navigate = useNavigate()
   const { toast } = useToast()
-  const [nodes, setNodes] = useState(null)
+  const [node, setNode] = useState(null)
+  const [notFound, setNotFound] = useState(false)
   const [error, setError] = useState('')
   const [tab, setTab] = useState('links')
   const [editing, setEditing] = useState(false)
@@ -40,20 +39,24 @@ export default function NodeDetailPage() {
 
   const refresh = useCallback(async () => {
     try {
-      const list = await api('/nodes')
-      setNodes(list)
+      const current = await api(`/nodes/${encodeURIComponent(id)}`)
+      setNode(current)
+      setNotFound(false)
       setError('')
     } catch (e) {
+      if (e.status === 404) {
+        setNode(null)
+        setNotFound(true)
+        return
+      }
       setError(e.message)
     }
-  }, [])
+  }, [id])
   useEffect(() => {
     refresh()
     const timer = setInterval(refresh, 5000)
     return () => clearInterval(timer)
   }, [refresh])
-
-  const node = nodes?.find((n) => n.id === id)
 
   async function saveEdit(values) {
     await api(`/nodes/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(values) })
@@ -89,7 +92,7 @@ export default function NodeDetailPage() {
     }
   }
 
-  if (nodes && !node) {
+  if (notFound) {
     return (
       <div className="node-detail-page">
         <UiBreadcrumb items={[{ label: '节点管理', to: '/nodes' }, { label: id }]} onNavigate={(item) => item.to && navigate(item.to)} />
@@ -106,7 +109,7 @@ export default function NodeDetailPage() {
     { label: '版本', value: node.version, mono: true },
     { label: 'Revision', render: () => <span className="ui-mono">{node.appliedRevision} / {node.publishedRevision}</span> },
     { label: '同步状态', render: () => <UiTag tone={node.inSync ? 'success' : 'warn'}>{node.inSync ? '已同步' : '待同步'}</UiTag> },
-    { label: '注册状态', render: () => node.embedded ? <span className="ui-cell-dim">内嵌节点</span> : <UiTag tone={node.registered ? 'success' : 'muted'}>{node.registered ? '已注册' : '未注册'}</UiTag> },
+    { label: '证书代数', render: () => node.embedded ? <span className="ui-cell-dim">内嵌节点</span> : <UiTag tone={node.certGeneration > 0 ? 'success' : 'muted'}>{node.certGeneration > 0 ? `第 ${node.certGeneration} 代` : '未注册'}</UiTag> },
     { label: '证书有效期至', render: () => <TimeCell value={node.certNotAfter} /> },
     { label: 'join token 有效期至', render: () => <TimeCell value={node.tokenExpiresAt} /> },
     { label: '中继地址', value: node.relayAddress || '（不作为中继）' },

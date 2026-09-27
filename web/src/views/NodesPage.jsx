@@ -139,7 +139,7 @@ export default function NodesPage() {
         ? <span className="ui-cell-dim">内嵌节点</span>
         : (
           <div className="stacked-cell">
-            <UiTag tone={row.registered ? 'success' : 'muted'}>{row.registered ? '已注册' : '未注册'}</UiTag>
+            <UiTag tone={row.certGeneration > 0 ? 'success' : 'muted'}>{row.certGeneration > 0 ? `第 ${row.certGeneration} 代` : '未注册'}</UiTag>
             <TimeCell value={row.certNotAfter} />
           </div>
         ),
