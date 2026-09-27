@@ -222,6 +222,53 @@ func TestClickHouseWriteFillsDedupKeyFromTheRecordDirectly(t *testing.T) {
 	}
 }
 
+// TestClickHouseWriteGivesARecordWithNoTrackIDAUniqueDedupKey covers the fix for a ReplacingMergeTree footgun:
+// two records with no trackId (see Record.DedupKey) sharing the same (timestamp, site_id) would otherwise both
+// get dedup_key="" and collapse into one row under ORDER BY (timestamp, site_id, dedup_key), even though
+// DedupKey()'s own contract says an empty key must never be treated as a dedup match. Write must give each of
+// them a non-empty, distinct dedup_key instead.
+func TestClickHouseWriteGivesARecordWithNoTrackIDAUniqueDedupKey(t *testing.T) {
+	var insertedDedupKeys []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query().Get("query")
+		if strings.HasPrefix(query, "INSERT") {
+			var row struct {
+				DedupKey string `json:"dedup_key"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&row); err != nil {
+				t.Error(err)
+				return
+			}
+			insertedDedupKeys = append(insertedDedupKeys, row.DedupKey)
+			return
+		}
+		if strings.HasPrefix(query, "SELECT engine FROM system.tables") {
+			_, _ = io.WriteString(w, "ReplacingMergeTree\n")
+		}
+	}))
+	defer server.Close()
+	sink, err := newClickHouseSink(ClickHouseConfig{URL: server.URL, Database: "default", Table: "access_logs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	same := time.Now().UTC()
+	for range 2 {
+		record := Record{Timestamp: same, SiteID: "site-a", Status: 200} // no TrackID
+		if err := sink.Write(context.Background(), record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(insertedDedupKeys) != 2 {
+		t.Fatalf("expected 2 inserted rows, got %d", len(insertedDedupKeys))
+	}
+	if insertedDedupKeys[0] == "" || insertedDedupKeys[1] == "" {
+		t.Fatalf("inserted dedup_key(s) = %#v, want both non-empty", insertedDedupKeys)
+	}
+	if insertedDedupKeys[0] == insertedDedupKeys[1] {
+		t.Fatalf("both trackId-less records got the same dedup_key %q; ReplacingMergeTree would collapse them", insertedDedupKeys[0])
+	}
+}
+
 // TestClickHouseSearchAddsFinalToEveryPartitionSubquery covers Search's read-side fallback: FINAL forces
 // ClickHouse to apply ReplacingMergeTree's deduplication at query time rather than only whenever a background
 // merge happens to have already run.

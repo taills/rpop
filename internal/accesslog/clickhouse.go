@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -90,10 +92,22 @@ func (s *clickHouseSink) ensureTable(ctx context.Context, table string) error {
 // warnIfLegacyEngineLocked logs a Warn once per table (tablesReady, set by ensureTable right after this returns,
 // keeps it from running again for the same table) if table already existed under the pre-D29 schema: ensureTable's
 // CREATE TABLE IF NOT EXISTS is a no-op against an existing table, so a table created before this change keeps
-// producing duplicate rows on every retransmit until an operator migrates it by hand (see the migration SQL in
-// docs/architecture/control-data-plane.md §5). Best-effort: a failed check (e.g. the querying user lacks
-// system.tables access) is silently skipped rather than failing the write path over a diagnostic. Called with
-// s.mu held, from ensureTable.
+// producing duplicate rows on every retransmit until an operator migrates it by hand. Best-effort: a failed check
+// (e.g. the querying user lacks system.tables access) is silently skipped rather than failing the write path over
+// a diagnostic. Called with s.mu held, from ensureTable.
+//
+// Manual migration, run once per legacy table (rename, recreate under the new schema, backfill, then verify and
+// drop the old copy); if(...) falls back to a fresh random ID for any pre-D22 row with no trackId at all, since an
+// empty dedup_key would collapse unrelated rows the same way Write's own randomDedupKey avoids on the write path:
+//
+//	RENAME TABLE `db`.`table` TO `db`.`table_legacy`;
+//	CREATE TABLE `db`.`table` (timestamp DateTime64(3,'UTC'), site_id String, record String, dedup_key String)
+//	  ENGINE=ReplacingMergeTree ORDER BY (timestamp, site_id, dedup_key);
+//	INSERT INTO `db`.`table` SELECT timestamp, site_id, record,
+//	  if(JSONExtractString(record,'trackId')='', generateUUIDv4(), JSONExtractString(record,'trackId'))
+//	  FROM `db`.`table_legacy`;
+//	-- verify row counts match, then:
+//	DROP TABLE `db`.`table_legacy`;
 func (s *clickHouseSink) warnIfLegacyEngineLocked(ctx context.Context, table string) {
 	data, err := s.request(ctx, fmt.Sprintf("SELECT engine FROM system.tables WHERE database='%s' AND name='%s' FORMAT TabSeparated", sqlQuote(s.config.Database), sqlQuote(table)), nil)
 	if err != nil {
@@ -219,13 +233,24 @@ func (s *clickHouseSink) Write(ctx context.Context, record Record) error {
 		return err
 	}
 	// dedup_key comes straight from the record already in hand (D29), never by parsing raw back out of the JSON
-	// just marshaled from it.
+	// just marshaled from it. A record with no trackId (see Record.DedupKey) must never dedup against any other
+	// record, but ClickHouse's ReplacingMergeTree does not know that: it collapses any two rows sharing the same
+	// (timestamp, site_id, dedup_key), so two such records landing in the same millisecond for the same site
+	// would otherwise silently lose one. randomDedupKey gives each of them its own, never-repeating dedup_key
+	// instead, so the engine can never mistake them for duplicates of each other.
+	dedupKey := record.DedupKey()
+	if dedupKey == "" {
+		dedupKey, err = randomDedupKey()
+		if err != nil {
+			return err
+		}
+	}
 	row, err := json.Marshal(struct {
 		Timestamp string `json:"timestamp"`
 		SiteID    string `json:"site_id"`
 		Record    string `json:"record"`
 		DedupKey  string `json:"dedup_key"`
-	}{record.Timestamp.Format("2006-01-02 15:04:05.000"), record.SiteID, string(raw), record.DedupKey()})
+	}{record.Timestamp.Format("2006-01-02 15:04:05.000"), record.SiteID, string(raw), dedupKey})
 	if err != nil {
 		return err
 	}
@@ -314,3 +339,14 @@ func sqlQuote(value string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(value, "\\", "\\\\"), "'", "\\'")
 }
 func (s *clickHouseSink) Close() error { return nil }
+
+// randomDedupKey returns a fresh, never-repeating dedup_key for a record with no trackId (see Write): it is
+// only ever written, never read back (dedup_key is not part of any Search projection), so it never needs to be
+// reproducible, just unique.
+func randomDedupKey() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate dedup key: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
+}

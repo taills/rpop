@@ -248,7 +248,7 @@
 **阶段 7 第 4 步(D29:access log 与隧道事件去重)** 的落地要点:
 
 - 去重键:`accesslog.Record.DedupKey()` 返回 `trackId`,`overlay.TunnelEvent.DedupKey()` 返回 `tunnelId+"|"+nodeId+"|"+stage`;两者为空时都不去重,避免把互不相关的记录合并到一起。
-- ClickHouse:`ensureTable` 新建分表已改用 `dedup_key String` 列 + `ReplacingMergeTree` + `ORDER BY (timestamp, site_id, dedup_key)`;探测到某表仍是旧 `MergeTree` 结构时记一条 Warn、不阻塞写入,手工迁移 SQL(rename 旧表→按新 DDL 建表→`INSERT ... SELECT timestamp, site_id, record, JSONExtractString(record,'trackId') FROM 旧表`→核对行数后 `DROP` 旧表)写在 `internal/accesslog/clickhouse.go` 的 `warnIfLegacyEngineLocked` 注释里;`Search` 对每个分表子查询加 `FINAL` 兜底。
+- ClickHouse:`ensureTable` 新建分表已改用 `dedup_key String` 列 + `ReplacingMergeTree` + `ORDER BY (timestamp, site_id, dedup_key)`;探测到某表仍是旧 `MergeTree` 结构时记一条 Warn、不阻塞写入,手工迁移 SQL(rename 旧表→按新 DDL 建表→`INSERT ... SELECT timestamp, site_id, record, if(JSONExtractString(record,'trackId')='',generateUUIDv4(),JSONExtractString(record,'trackId')) FROM 旧表`→核对行数后 `DROP` 旧表)写在 `internal/accesslog/clickhouse.go` 的 `warnIfLegacyEngineLocked` 注释里;`Search` 对每个分表子查询加 `FINAL` 兜底。`Write` 写入时若 `DedupKey()` 为空(无 `trackId`)则用 `crypto/rand` 生成一个 16 字节随机十六进制串顶替 `dedup_key`(`randomDedupKey`),否则同毫秒、同 `site_id` 的两条空键记录会被 `ReplacingMergeTree` 误判为同一行合并掉;该列只写不读,不出现在任何 `Search` 投影里。
 - Elasticsearch:`_bulk` 的 `index` 动作补上 `"_id": dedupKey`,同 `_id` 写入天然幂等覆盖,零额外代码。
 - 文件/S3:去重下沉到两者共用的 `paginate()`(`internal/accesslog/manager.go`),在分页切片前按 `dedup_key` 保留首条,`Total` 已是去重后的数量。
 - 隧道事件:`tunnelEventStore.Write` 用有界(4096)、插入顺序淘汰的内存缓存短路重传事件,`Query` 再做一遍兜底去重;重启后缓存归零是已接受的残留风险,由 Query 的兜底覆盖。
