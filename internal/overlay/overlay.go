@@ -108,7 +108,13 @@ func (o *Overlay) Apply(s snapshot.Snapshot) error {
 
 func (o *Overlay) applyRelayLocked(s snapshot.Snapshot) error {
 	if len(s.Relay) == 0 || s.RelayListen == "" {
-		// Tunnels already open keep flowing; new ones are refused because no route allows them.
+		// The node no longer relays: drain and forget any port it used to hold open. New tunnels are already
+		// refused because no route allows them; draining lets tunnels already open keep flowing to completion
+		// instead of cutting them off.
+		if o.relay != nil {
+			o.relay.drain()
+			o.relay = nil
+		}
 		return nil
 	}
 	if o.relay != nil && o.relay.address == s.RelayListen {

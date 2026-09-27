@@ -390,3 +390,52 @@ func TestLinkComesUpSoonAfterItsPeerStartsListening(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// TestApplyClosesTheRelayPortWhenTheNodeStopsRelaying covers a node that stops being a relay: its mTLS listener
+// must close, even though a tunnel already open on it keeps flowing to completion.
+func TestApplyClosesTheRelayPortWhenTheNodeStopsRelaying(t *testing.T) {
+	ca, err := pki.NewCA("overlay test CA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := startLineEcho(t)
+	relayAddr := freeAddress(t)
+	const key = "route-1"
+	relay := newOverlay(t, identityFor(t, ca, "node2", 1))
+	apply(t, relay, snapshot.Snapshot{NodeID: "node2", Peers: []snapshot.Peer{{ID: "node1", Generation: 1}}, RelayListen: relayAddr,
+		Relay: []snapshot.RelayRoute{{Key: key, From: []string{"node1"}, Target: target}}})
+
+	ingress := newOverlay(t, identityFor(t, ca, "node1", 1))
+	path := snapshot.Path{Key: key, Label: "node2", FirstNode: "node2", Target: target}
+	apply(t, ingress, snapshot.Snapshot{NodeID: "node1", Peers: []snapshot.Peer{{ID: "node2", Address: relayAddr, Generation: 1}},
+		Sites: []snapshot.Site{{ID: "s", Upstreams: []snapshot.Upstream{{URL: "http://" + target, Paths: []snapshot.Path{path}}}}}})
+	conn, err := dial(t, ingress, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	// The controller no longer has this node relay: applying that snapshot must close the port.
+	apply(t, relay, snapshot.Snapshot{NodeID: "node2", Peers: []snapshot.Peer{{ID: "node1", Generation: 1}}})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		c, err := net.DialTimeout("tcp", relayAddr, 200*time.Millisecond)
+		if err != nil {
+			break
+		}
+		c.Close()
+		if time.Now().After(deadline) {
+			t.Fatal("the relay port still accepted connections after the node stopped relaying")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// The tunnel that was already open keeps carrying traffic to completion.
+	reader := bufio.NewReader(conn)
+	io.WriteString(conn, "still open\n")
+	if got := readLine(t, reader); got != "echo: still open" {
+		t.Fatalf("in-flight tunnel after the relay port closed: got %q", got)
+	}
+}
+
