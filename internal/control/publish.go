@@ -28,15 +28,42 @@ type publication struct {
 	mu        sync.RWMutex
 	revision  int64
 	snapshots map[string]snapshot.Snapshot
-	// lastGood is the most recent spec of each running site that resolved successfully. A site whose current
-	// configuration cannot be resolved keeps being published with it.
-	lastGood map[string]snapshot.Site
+	// lastGood is the most recent spec and placement of each desired site that resolved successfully. Sites a
+	// publication does not resolve again, and sites whose configuration no longer resolves, are published with it.
+	lastGood map[string]publishedSite
 	// changed is closed and replaced whenever something watch streams must look at again was published.
 	changed chan struct{}
 }
 
 func newPublication() *publication {
-	return &publication{snapshots: make(map[string]snapshot.Snapshot), lastGood: make(map[string]snapshot.Site), changed: make(chan struct{})}
+	return &publication{snapshots: make(map[string]snapshot.Snapshot), lastGood: make(map[string]publishedSite), changed: make(chan struct{})}
+}
+
+// publishedSite is a resolved site and the nodes it is placed on.
+type publishedSite struct {
+	spec  snapshot.Site
+	nodes []string
+}
+
+// publishScope says which desired sites a publication resolves from the store again; the others keep the spec
+// they were last published with, so starting or stopping one site resolves one site, not every running one.
+type publishScope struct {
+	// all re-resolves every desired site, for shared settings that any site may reference.
+	all bool
+	// sites are re-resolved and get fresh runtimes on the embedded node.
+	sites []string
+}
+
+func (s publishScope) includes(id string) bool {
+	return s.all || slices.Contains(s.sites, id)
+}
+
+// published reports whether a site is part of the latest publication.
+func (p *publication) published(id string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	_, ok := p.lastGood[id]
+	return ok
 }
 
 // watch returns the latest snapshot of a node and a channel that is closed when there may be a newer one.
@@ -115,39 +142,33 @@ func (c *Control) loadRevision(ctx context.Context) error {
 }
 
 // publishLocked renders a new revision for every node and applies the local node's snapshot. It returns the
-// local per-site errors; resolution errors are reported for every site that could not be rendered.
-func (c *Control) publishLocked(ctx context.Context, rebuild ...string) map[string]error {
+// resolution errors of the sites in scope and the embedded node's per-site apply errors.
+func (c *Control) publishLocked(ctx context.Context, scope publishScope) map[string]error {
 	errs := make(map[string]error)
-	bySite := make(map[string]snapshot.Site, len(c.desired))
-	placement := make(map[string][]string, len(c.desired))
 	c.published.mu.RLock()
 	lastGood := c.published.lastGood
 	c.published.mu.RUnlock()
-	nextGood := make(map[string]snapshot.Site, len(c.desired))
+	entries := make(map[string]publishedSite, len(c.desired))
 	for id := range c.desired {
-		site, err := c.store.Get(ctx, id)
-		if errors.Is(err, store.ErrNotFound) {
+		previous, hasPrevious := lastGood[id]
+		if !scope.includes(id) {
+			if hasPrevious {
+				entries[id] = previous
+			}
+			continue
+		}
+		entry, err := c.resolvePublished(ctx, id)
+		switch {
+		case errors.Is(err, errSiteDeleted):
 			delete(c.desired, id)
-			continue
-		}
-		if err != nil {
+		case err != nil:
 			errs[id] = err
-			if previous, ok := lastGood[id]; ok {
-				bySite[id], nextGood[id] = previous, previous
+			if hasPrevious {
+				entries[id] = previous
 			}
-			continue
+		default:
+			entries[id] = entry
 		}
-		placement[id] = siteNodes(site.Config)
-		spec, err := c.resolveSite(ctx, site)
-		if err != nil {
-			errs[id] = err
-			previous, ok := lastGood[id]
-			if !ok {
-				continue
-			}
-			spec = previous
-		}
-		bySite[id], nextGood[id] = spec, spec
 	}
 
 	nodes := c.knownNodesLocked(ctx)
@@ -158,21 +179,21 @@ func (c *Control) publishLocked(ctx context.Context, rebuild ...string) map[stri
 	for _, nodeID := range nodes {
 		snapshots[nodeID] = snapshot.Snapshot{Revision: revision, NodeID: nodeID, Sites: []snapshot.Site{}}
 	}
-	ids := make([]string, 0, len(bySite))
-	for id := range bySite {
+	ids := make([]string, 0, len(entries))
+	for id := range entries {
 		ids = append(ids, id)
 	}
 	slices.Sort(ids)
 	for _, id := range ids {
-		for _, nodeID := range placement[id] {
+		for _, nodeID := range entries[id].nodes {
 			if s, ok := snapshots[nodeID]; ok {
-				s.Sites = append(s.Sites, bySite[id])
+				s.Sites = append(s.Sites, entries[id].spec)
 				snapshots[nodeID] = s
 			}
 		}
 	}
 	c.published.snapshots = snapshots
-	c.published.lastGood = nextGood
+	c.published.lastGood = entries
 	c.published.wakeLocked()
 	c.published.mu.Unlock()
 
@@ -180,10 +201,28 @@ func (c *Control) publishLocked(ctx context.Context, rebuild ...string) map[stri
 		c.log.Error("persist config revision", zap.Int64("revision", revision), zap.Error(err))
 	}
 	localErrors := make(map[string]string)
-	for id, err := range c.engine.Apply(snapshots[LocalNodeID].Sites, rebuild...) {
+	for id, err := range c.engine.Apply(snapshots[LocalNodeID].Sites, scope.sites...) {
 		errs[id] = err
 		localErrors[id] = err.Error()
 	}
 	c.localRevision, c.localErrors = revision, localErrors
 	return errs
+}
+
+// errSiteDeleted distinguishes a deleted site from a missing secret, which also reports store.ErrNotFound.
+var errSiteDeleted = errors.New("site was deleted")
+
+func (c *Control) resolvePublished(ctx context.Context, id string) (publishedSite, error) {
+	site, err := c.store.Get(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return publishedSite{}, errSiteDeleted
+	}
+	if err != nil {
+		return publishedSite{}, err
+	}
+	spec, err := c.resolveSite(ctx, site)
+	if err != nil {
+		return publishedSite{}, err
+	}
+	return publishedSite{spec: spec, nodes: siteNodes(site.Config)}, nil
 }

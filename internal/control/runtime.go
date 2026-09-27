@@ -119,10 +119,10 @@ func (c *Control) startLocked(ctx context.Context, id string) error {
 	}
 	wasDesired := c.desired[id]
 	c.desired[id] = true
-	if err := c.publishLocked(ctx, id)[id]; err != nil {
+	if err := c.publishLocked(ctx, publishScope{sites: []string{id}})[id]; err != nil {
 		if !wasDesired && !c.engine.Running(id) {
 			delete(c.desired, id)
-			c.publishLocked(ctx)
+			c.publishLocked(ctx, publishScope{})
 		}
 		return err
 	}
@@ -137,7 +137,7 @@ func (c *Control) start(ctx context.Context, id string) error {
 
 func (c *Control) stopLocked(ctx context.Context, id string) {
 	delete(c.desired, id)
-	for siteID, err := range c.publishLocked(ctx) {
+	for siteID, err := range c.publishLocked(ctx, publishScope{}) {
 		c.log.Warn("site did not apply while stopping another", zap.String("site_id", siteID), zap.Error(err))
 	}
 }
@@ -151,7 +151,7 @@ func (c *Control) stop(ctx context.Context, id string) error {
 
 // reapplyLocked pushes changed shared settings, such as renewed certificates, to the running sites.
 func (c *Control) reapplyLocked(ctx context.Context) {
-	for id, err := range c.publishLocked(ctx) {
+	for id, err := range c.publishLocked(ctx, publishScope{all: true}) {
 		c.log.Warn("could not apply updated settings to site", zap.String("site_id", id), zap.Error(err))
 	}
 }
@@ -168,15 +168,15 @@ func (c *Control) StartAutoSites(ctx context.Context) error {
 		c.desired[site.ID] = true
 	}
 	failed := false
-	for id, err := range c.publishLocked(ctx) {
+	for id, err := range c.publishLocked(ctx, publishScope{all: true}) {
 		c.log.Error("auto-start site failed", zap.String("site", id), zap.Error(err))
-		if !c.engine.Running(id) && c.placedOnLocal(ctx, id) {
+		if !c.engine.Running(id) && (!c.published.published(id) || c.placedOnLocal(ctx, id)) {
 			delete(c.desired, id)
 			failed = true
 		}
 	}
 	if failed {
-		c.publishLocked(ctx)
+		c.publishLocked(ctx, publishScope{})
 	}
 	return nil
 }
@@ -186,7 +186,7 @@ func (c *Control) StopAll() {
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
 	clear(c.desired)
-	c.publishLocked(context.Background())
+	c.publishLocked(context.Background(), publishScope{})
 	c.engine.StopAll()
 }
 
@@ -205,7 +205,7 @@ func (c *Control) siteRunning(site store.Site) bool {
 	if slices.Contains(siteNodes(site.Config), LocalNodeID) {
 		return c.engine.Running(site.ID)
 	}
-	return true
+	return c.published.published(site.ID)
 }
 
 // DrainAccessLogs waits until every access log produced so far has been written.

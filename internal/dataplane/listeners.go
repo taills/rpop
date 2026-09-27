@@ -3,6 +3,7 @@ package dataplane
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -64,8 +65,15 @@ func (e *Engine) bindGroup(address string, tlsEnabled bool) (*listenerGroup, err
 	return group, nil
 }
 
+// siteCount reports how many sites the listener routes to.
+func (g *listenerGroup) siteCount() int {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return len(g.routes)
+}
+
 func (e *Engine) serveGroup(group *listenerGroup) {
-	if err := group.server.Serve(group.listener); err != nil && err != http.ErrServerClosed {
+	if err := group.server.Serve(group.listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		e.log.Error("shared listener stopped", zap.String("address", group.address), zap.Error(err))
 	}
 }

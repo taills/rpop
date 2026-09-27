@@ -250,7 +250,7 @@ func (e *Engine) install(site snapshot.Site, route *siteRuntime, runtimeKey, cer
 	group := e.listeners[address]
 	if group != nil && group.tlsEnabled != site.TLS {
 		// A bound listener cannot switch between HTTP and TLS; release it first when this site is its only user.
-		if previous == nil || previous.groupKey != address || len(group.routes) != 1 {
+		if previous == nil || previous.groupKey != address || group.siteCount() != 1 {
 			e.mu.Unlock()
 			return fmt.Errorf("listener %s is already serving the other HTTP/TLS mode", address)
 		}

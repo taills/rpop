@@ -336,7 +336,7 @@ func (c *Control) nodesAPI(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
-		c.publishLocked(r.Context())
+		c.publishLocked(r.Context(), publishScope{})
 		writeJSON(w, http.StatusCreated, joinTokenResponse{Node: c.nodeView(node), JoinToken: token, ExpiresAt: node.TokenExpiresAt})
 	default:
 		w.Header().Set("Allow", "GET, POST")
@@ -381,7 +381,7 @@ func (c *Control) nodeAPI(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
-		c.publishLocked(r.Context())
+		c.publishLocked(r.Context(), publishScope{})
 		writeJSON(w, http.StatusOK, c.nodeView(node))
 	case len(parts) == 1 && r.Method == http.MethodDelete:
 		if users, err := c.sitesUsingNode(r.Context(), id); err != nil {
@@ -396,7 +396,7 @@ func (c *Control) nodeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		c.nodes.forget(id)
-		c.publishLocked(r.Context())
+		c.publishLocked(r.Context(), publishScope{})
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, apiError{"method not allowed"})

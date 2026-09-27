@@ -164,7 +164,7 @@ func TestPublishKeepsLastGoodSpecWhenResolutionFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.opMu.Lock()
-	errs := c.publishLocked(context.Background())
+	errs := c.publishLocked(context.Background(), publishScope{all: true})
 	c.opMu.Unlock()
 	if errs["edge"] == nil {
 		t.Fatal("unresolvable site reported no error")
@@ -189,4 +189,44 @@ func textServer(t *testing.T, body string) string {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, body) }))
 	t.Cleanup(server.Close)
 	return server.URL
+}
+
+func TestStartingOneSiteResolvesOnlyThatSite(t *testing.T) {
+	c, s, _ := newPublishingControl(t)
+	saveNodes(t, s, "edge-1")
+	material := makeTestTLSMaterial(t)
+	for _, id := range []string{"a", "b"} {
+		site := store.Site{ID: id, Name: id, Config: store.Config{Nodes: []string{"edge-1"}, ListenAddress: "0.0.0.0", ListenPort: 8443, TLS: true,
+			Hostnames: []string{id + ".example.test"}, CertificateSecret: "cert", PrivateKeySecret: "key", Upstreams: []store.Upstream{{URL: "http://origin.test"}}}}
+		if err := s.Save(context.Background(), site); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SaveSecret(context.Background(), id, "cert", material.serverPEM); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SaveSecret(context.Background(), id, "key", material.serverKeyPEM); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.start(context.Background(), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.DeleteSecret(context.Background(), "b", "key"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.start(context.Background(), "a"); err != nil {
+		t.Fatalf("reloading a failed because of b: %v", err)
+	}
+	if got := strings.Join(siteIDs(c, "edge-1"), ","); got != "a,b" {
+		t.Fatalf("edge-1 sites after reloading a = %q", got)
+	}
+	c.opMu.Lock()
+	errs := c.publishLocked(context.Background(), publishScope{all: true})
+	c.opMu.Unlock()
+	if errs["b"] == nil || errs["a"] != nil {
+		t.Fatalf("full publication errors = %v", errs)
+	}
+	if got := strings.Join(siteIDs(c, "edge-1"), ","); got != "a,b" {
+		t.Fatalf("edge-1 sites after a failed resolution of b = %q", got)
+	}
 }
