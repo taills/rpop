@@ -141,6 +141,13 @@ type pathTransport struct {
 	until    time.Time
 	// lastErr is the most recent connection failure on this path (D19); cleared once it succeeds again.
 	lastErr string
+	// cooldownEpoch increments every time failed() or succeeded() changes this path's cooldown state
+	// (entering it, extending it, or clearing it). A pathProbe captures it right before dialing and, via
+	// probeResult, only applies its own outcome if the epoch is still the same: a probe dial races with real
+	// requests on the same path (order tries cooling paths too, see failoverTransport.order), and without this
+	// check a probe's stale result — success or failure — could silently undo a fresher real request's own
+	// failed()/succeeded() call.
+	cooldownEpoch uint64
 }
 
 func (p *pathTransport) coolingDown(now time.Time) bool {
@@ -149,14 +156,34 @@ func (p *pathTransport) coolingDown(now time.Time) bool {
 	return now.Before(p.until)
 }
 
-func (p *pathTransport) failed(now time.Time, err error) {
+// epoch returns the current cooldownEpoch, for a pathProbe to capture right before it starts dialing.
+func (p *pathTransport) epoch() uint64 {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cooldownEpoch
+}
+
+// recordFailureLocked applies a connection failure to this path's cooldown state; the caller holds p.mu.
+func (p *pathTransport) recordFailureLocked(now time.Time, err error) time.Time {
 	p.failures++
 	p.until = now.Add(min(p.minCooldown<<min(p.failures-1, 10), p.maxCooldown))
 	if err != nil {
 		p.lastErr = err.Error()
 	}
-	until, probe := p.until, p.probe
+	p.cooldownEpoch++
+	return p.until
+}
+
+// recordSuccessLocked clears this path's cooldown state; the caller holds p.mu.
+func (p *pathTransport) recordSuccessLocked() {
+	p.failures, p.until, p.lastErr = 0, time.Time{}, ""
+	p.cooldownEpoch++
+}
+
+func (p *pathTransport) failed(now time.Time, err error) {
+	p.mu.Lock()
+	until := p.recordFailureLocked(now, err)
+	probe := p.probe
 	p.mu.Unlock()
 	// Scheduling outside the lock lets scheduleAt take pathProbe's own lock without nesting the two.
 	if probe != nil {
@@ -166,10 +193,38 @@ func (p *pathTransport) failed(now time.Time, err error) {
 
 func (p *pathTransport) succeeded() {
 	p.mu.Lock()
-	p.failures, p.until, p.lastErr = 0, time.Time{}, ""
+	p.recordSuccessLocked()
 	probe := p.probe
 	p.mu.Unlock()
 	if probe != nil {
+		probe.cancel()
+	}
+}
+
+// probeResult applies a D19 probe dial's outcome (err nil on success) unless this path's cooldown state has
+// moved on since the probe captured epoch (see cooldownEpoch): a real request's failed()/succeeded() call, or
+// another probe, that raced with this dial is always the fresher, authoritative outcome, so a stale probe
+// result is discarded instead of undoing it.
+func (p *pathTransport) probeResult(epoch uint64, now time.Time, err error) {
+	p.mu.Lock()
+	if p.cooldownEpoch != epoch {
+		p.mu.Unlock()
+		return
+	}
+	var until time.Time
+	if err != nil {
+		until = p.recordFailureLocked(now, err)
+	} else {
+		p.recordSuccessLocked()
+	}
+	probe := p.probe
+	p.mu.Unlock()
+	if probe == nil {
+		return
+	}
+	if err != nil {
+		probe.scheduleAt(until)
+	} else {
 		probe.cancel()
 	}
 }

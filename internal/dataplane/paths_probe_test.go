@@ -248,3 +248,97 @@ func TestActiveProbeStopsWhenTheSnapshotRebuildsTheSite(t *testing.T) {
 		t.Fatalf("dial attempts on the replaced path grew from %d to %d after the site was rebuilt; the D19 probe timer leaked", attempts, got)
 	}
 }
+
+// pauseDialer blocks its pauseAt'th DialPath call on release (closing started right before it blocks), so a
+// test can inject a concurrent event at a precise moment instead of guessing with a sleep. Calls other than
+// pauseAt never block.
+type pauseDialer struct {
+	mu      sync.Mutex
+	fail    bool
+	calls   int
+	pauseAt int
+	started chan struct{}
+	release chan struct{}
+}
+
+func (d *pauseDialer) DialPath(ctx context.Context, path snapshot.Path) (net.Conn, error) {
+	d.mu.Lock()
+	d.calls++
+	pause := d.calls == d.pauseAt
+	d.mu.Unlock()
+	if pause {
+		close(d.started)
+		<-d.release
+	}
+	d.mu.Lock()
+	fail := d.fail
+	d.mu.Unlock()
+	if fail {
+		return nil, errors.New("path is down")
+	}
+	return (&net.Dialer{}).DialContext(ctx, "tcp", path.Target)
+}
+
+func (d *pauseDialer) setFail(fail bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.fail = fail
+}
+
+// pathTransportFor reaches into the engine's internal state to find the exact *pathTransport a concurrent real
+// request would call failed()/succeeded() on, for a white-box race test.
+func pathTransportFor(t *testing.T, engine *Engine, siteID, label string) *pathTransport {
+	t.Helper()
+	engine.mu.Lock()
+	run := engine.runs[siteID]
+	engine.mu.Unlock()
+	if run == nil {
+		t.Fatalf("no running site %q", siteID)
+	}
+	for _, group := range run.route.pathGroups {
+		for _, p := range group.failover.paths {
+			if p.label == label {
+				return p
+			}
+		}
+	}
+	t.Fatalf("no path %q on site %q", label, siteID)
+	return nil
+}
+
+// TestActiveProbeRaceDoesNotUndoAConcurrentFailure covers the fix for the cooldownEpoch race: a probe dial
+// that races with a real request's own failed() call must never let its own (by then stale) result overwrite
+// the real request's more recent outcome, nor cancel the retry that outcome scheduled.
+func TestActiveProbeRaceDoesNotUndoAConcurrentFailure(t *testing.T) {
+	engine := newTestEngine(t)
+	dialer := &pauseDialer{fail: true, pauseAt: 2, started: make(chan struct{}), release: make(chan struct{})}
+	engine.SetPathDialer(dialer)
+	upstream := textUpstream(t, "ok")
+	target := strings.TrimPrefix(upstream.URL, "http://")
+	// A long, fixed cooldown gives a wide window to observe the race's outcome before the concurrent failure's
+	// own, legitimate probe would restore the path on its own.
+	port := probeSite(t, engine, upstream.URL, target, "flaky", &snapshot.UpstreamFailover{MinCooldownMs: 200, MaxCooldownMs: 200})
+	get(t, port, "") // real request #1 (dial call #1) fails, starting the cooldown and scheduling a probe
+
+	select {
+	case <-dialer.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the probe's dial (call #2) never started")
+	}
+	// The probe's dial is now blocked mid-flight, captured at the pre-failure epoch. Inject a concurrent real
+	// request's failure directly on the path, the way a second, parallel real request would.
+	pt := pathTransportFor(t, engine, "probe", "flaky")
+	pt.failed(time.Now(), errors.New("a concurrent real request failed"))
+
+	dialer.setFail(false) // once released, the paused probe dial succeeds - a stale result by now
+	close(dialer.release)
+
+	// Give the stale success a moment to (incorrectly, without the epoch guard) apply.
+	time.Sleep(150 * time.Millisecond)
+	if health := engine.PathHealth()[0].Paths[0]; health.Status != "cooling" {
+		t.Fatalf("a stale probe success undid a concurrent real request's failure: %#v", health)
+	}
+
+	// The concurrent failure's own probe must still be queued and eventually restore the path.
+	awaitPathHealth(t, engine, 2*time.Second, func(h PathHealth) bool { return h.Status == "healthy" })
+}

@@ -13,9 +13,10 @@ import (
 // dial attempt at the instant the cooldown would otherwise expire, so a path that has recovered goes back into
 // service immediately instead of waiting for the next real request to discover that. It reuses the exact dial
 // code a real request would use (dialer.DialPath, the same call newPathTransports' DialContext makes, D1) but
-// closes the connection the moment it is established, without sending any request bytes. Success calls the
-// pathTransport's own succeeded(); failure calls its own failed(), which reschedules the cooldown (and, through
-// it, this probe) exactly as a failed real request would.
+// closes the connection the moment it is established, without sending any request bytes. Its result — success
+// or failure — goes through the pathTransport's probeResult, which reschedules the cooldown (and, through it,
+// this probe) exactly as a failed real request would, unless a real request raced with this dial and already
+// moved the path's cooldown state on; see pathTransport.cooldownEpoch.
 //
 // A pathProbe only ever has a pending timer while its path is cooling down, so the cost of D19 is proportional
 // to the number of currently-cooling paths — a healthy path carries no timer and no goroutine.
@@ -92,6 +93,11 @@ func (pr *pathProbe) fire() {
 	pr.mu.Unlock()
 	defer cancel()
 
+	// Captured right before dialing (outside pr.mu, to keep pr.mu and pt.mu from nesting): if a real request's
+	// failed()/succeeded() call changes the path's cooldown state while this dial is in flight, probeResult
+	// below notices the epoch moved on and discards this dial's result instead of undoing that fresher call.
+	epoch := pr.target.epoch()
+
 	// Same dial path a real request takes (see newPathTransports' DialContext): the site's own access-log
 	// setting travels through the context, and overlay reads it back on the other side of a tunnel.
 	conn, err := pr.dialer.DialPath(overlay.WithTunnelLogging(ctx, pr.logTunnelEvents), pr.path)
@@ -108,9 +114,9 @@ func (pr *pathProbe) fire() {
 		return
 	}
 	if err != nil {
-		pr.target.failed(time.Now(), err)
+		pr.target.probeResult(epoch, time.Now(), err)
 		return
 	}
 	_ = conn.Close()
-	pr.target.succeeded()
+	pr.target.probeResult(epoch, time.Now(), nil)
 }
