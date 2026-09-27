@@ -20,6 +20,7 @@ import (
 
 	"github.com/rpop-project/rpop/internal/agent"
 	"github.com/rpop-project/rpop/internal/control"
+	"github.com/rpop-project/rpop/internal/spool"
 	"github.com/rpop-project/rpop/internal/store"
 	"github.com/rpop-project/rpop/web"
 )
@@ -30,6 +31,7 @@ var Version = "dev"
 type options struct {
 	mode, serverAddr, southboundAddr, webDir, dbPath, logDir string
 	controllerURL, joinToken, dataDir, relayListen           string
+	logSpoolQuotaBytes, logUploadRateBytes                   int64
 }
 
 func main() {
@@ -44,6 +46,8 @@ func main() {
 	flag.StringVar(&o.joinToken, "join-token", envDefault("RPOP_JOIN_TOKEN", ""), "node mode: join token for the first registration (env RPOP_JOIN_TOKEN)")
 	flag.StringVar(&o.dataDir, "data-dir", envDefault("RPOP_DATA_DIR", "data/node"), "node mode: directory for the node identity and snapshot cache (env RPOP_DATA_DIR)")
 	flag.StringVar(&o.relayListen, "relay-listen", envDefault("RPOP_RELAY_LISTEN", ""), "node mode: bind the relay port here instead of on the port of the node's relay address (env RPOP_RELAY_LISTEN)")
+	flag.Int64Var(&o.logSpoolQuotaBytes, "log-spool-quota-bytes", envDefaultInt64("RPOP_LOG_SPOOL_QUOTA_BYTES", spool.DefaultQuotaBytes), "node mode: disk quota for the log spool awaiting upload (env RPOP_LOG_SPOOL_QUOTA_BYTES)")
+	flag.Int64Var(&o.logUploadRateBytes, "log-upload-rate-bytes", envDefaultInt64("RPOP_LOG_UPLOAD_RATE_BYTES", spool.DefaultUploadRateBytesPerSecond), "node mode: max bytes/second spent uploading spooled logs to the controller (env RPOP_LOG_UPLOAD_RATE_BYTES)")
 	healthCheck := flag.Bool("health-check", false, "probe the control API at -addr and exit 0 when healthy (for container health checks)")
 	flag.Parse()
 
@@ -84,7 +88,10 @@ func main() {
 }
 
 func runNode(ctx context.Context, logger *zap.Logger, o options) {
-	node, err := agent.New(agent.Config{ControllerURL: o.controllerURL, JoinToken: o.joinToken, DataDir: o.dataDir, RelayListen: o.relayListen, Version: Version}, logger)
+	node, err := agent.New(agent.Config{
+		ControllerURL: o.controllerURL, JoinToken: o.joinToken, DataDir: o.dataDir, RelayListen: o.relayListen, Version: Version,
+		LogDir: o.logDir, LogSpoolQuotaBytes: o.logSpoolQuotaBytes, LogUploadRateBytesPerSecond: o.logUploadRateBytes,
+	}, logger)
 	if err != nil {
 		logger.Fatal("configure node", zap.Error(err))
 	}

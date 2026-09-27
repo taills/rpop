@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -17,6 +18,20 @@ func envDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// envDefaultInt64 is envDefault for an integer setting (log spool quota, upload rate); an unset, empty, or
+// unparsable value falls back the same way.
+func envDefaultInt64(key string, fallback int64) int64 {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 // healthCheckURL maps the control API listen address to a URL reachable from the same host:
