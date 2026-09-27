@@ -11,6 +11,7 @@ import (
 
 var ErrNotFound = errors.New("site not found")
 var ErrSettingNotFound = errors.New("setting not found")
+var ErrNodeNotFound = errors.New("node not found")
 
 type Store struct{ db *sql.DB }
 
@@ -28,6 +29,12 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	);
 	CREATE TABLE IF NOT EXISTS app_settings (
 		key TEXT PRIMARY KEY, value BLOB NOT NULL, updated_at TEXT NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS nodes (
+		id TEXT PRIMARY KEY, name TEXT NOT NULL, relay_address TEXT NOT NULL DEFAULT '',
+		token_hash TEXT NOT NULL DEFAULT '', token_expires_at TEXT NOT NULL DEFAULT '',
+		cert_generation INTEGER NOT NULL DEFAULT 0, cert_not_after TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL, registered_at TEXT NOT NULL DEFAULT ''
 	);`)
 	if err != nil {
 		return err

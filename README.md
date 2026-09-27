@@ -31,6 +31,16 @@ Publish the admin port only on loopback or behind a trusted HTTPS reverse proxy.
 
 `.gitlab-ci.yml` builds natively on the runner's architecture and pushes to the private registry on `main`, `dev`, and tags (tags get only the version tag; branches also get `latest`); it does not deploy. Required CI/CD variables: `DOCKER_REGISTRY_HOST`, `DOCKER_REGISTRY_USERNAME`, `DOCKER_REGISTRY_PASSWORD` (masked), and `DOCKER_REGISTRY_MIRROR` (base-image mirror prefix, which must provide `library/node:22-alpine`, `library/golang:1.26-alpine`, and `library/alpine:latest`).
 
+## Deployment modes
+
+One binary runs in three modes, selected with `-mode` (env `RPOP_MODE`):
+
+- `all-in-one` (default): the controller (console, API, SQLite) plus an embedded data-plane node named `local`. Sites without `config.nodes` run here, exactly as in a single-process install.
+- `controller`: the console and API only. Nodes connect to its southbound listener, `-southbound-addr` (env `RPOP_SOUTHBOUND_ADDR`, default `:7443`). An all-in-one process also accepts remote nodes when `-southbound-addr` is set.
+- `node`: a data-plane node without a console. It needs `-controller https://controller:7443` (env `RPOP_CONTROLLER`), `-data-dir` (env `RPOP_DATA_DIR`, default `data/node`), and on its first start `-join-token` (env `RPOP_JOIN_TOKEN`).
+
+Create a node with `POST /api/nodes` (`{"id":"edge-1","name":"Edge 1"}`); the response contains a single-use join token valid for 24 hours. The token pins the controller's internal CA, so the node authenticates the controller on first contact; the node then generates its key locally and receives a certificate through a CSR. All southbound traffic is HTTP/2 with mutual TLS. Place a site on nodes with `config.nodes: [edge-1, edge-2]`; the controller streams each node a full snapshot of its sites whenever a new revision is published, and the node reports the revision it applied, per-site errors, running sites, and metrics. A site that fails to apply on a node (for example, a port in use) keeps its previous configuration there. The node caches the last applied snapshot (mode `0600`, including the TLS keys it serves) and serves it after a restart even while the controller is unreachable. Certificates renew automatically 30 days before expiry. Reissuing a token (`POST /api/nodes/{id}/token`) and registering again revokes the node's earlier certificates; a node started with a join token re-registers by itself when the controller rejects its certificate. Failed registrations are rate-limited per client address.
+
 ## Capabilities in this baseline
 
 - Site HTTPS can use a centrally managed server certificate from System Settings (`config.certificateId`), so several sites can share one wildcard certificate, or site-scoped `certificateSecret`/`privateKeySecret` uploads; the two are mutually exclusive.
@@ -101,7 +111,8 @@ sites:
 - `GET /api/sites`, `POST /api/sites`
 - `GET /api/sites/{id}`, `PUT /api/sites/{id}`, `DELETE /api/sites/{id}`
 - `POST /api/sites/{id}/start|stop|restart|reload`
-- `GET /api/sites/{id}/metrics` returns current process metrics (reset when the process restarts).
+- `GET /api/sites/{id}/metrics` returns current process metrics (reset when the process restarts), summed over the nodes the site runs on, with per-node values in `byNode`. Averages are weighted by request count; P95 is the highest node P95.
+- `GET /api/nodes`, `POST /api/nodes` (returns a join token), `PUT/DELETE /api/nodes/{id}`, `POST /api/nodes/{id}/token` (reissue). A node used by a site cannot be deleted. Node entries report `registered`, `online`, `appliedRevision`, `publishedRevision`, `inSync`, per-site `errors`, and `running` sites.
 - `PUT/DELETE /api/sites/{id}/secrets/{name}`
 - `GET /api/config.yaml` (download), `PUT /api/config.yaml` (transactional upsert import)
 

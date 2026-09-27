@@ -40,8 +40,18 @@ func siteIDs(c *Control, nodeID string) []string {
 	return ids
 }
 
+func saveNodes(t *testing.T, s *store.Store, ids ...string) {
+	t.Helper()
+	for _, id := range ids {
+		if err := s.SaveNode(context.Background(), store.Node{ID: id, Name: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestPublishPlacesSitesOnTheirNodes(t *testing.T) {
 	c, s, _ := newPublishingControl(t)
+	saveNodes(t, s, "edge-1", "edge-2")
 	upstream := textServer(t, "ok")
 	sites := []store.Site{
 		{ID: "embedded", Name: "embedded", Config: store.Config{ListenAddress: "127.0.0.1", ListenPort: freeLoopbackPort(t), Upstreams: []store.Upstream{{URL: upstream}}}},
@@ -75,6 +85,37 @@ func TestPublishPlacesSitesOnTheirNodes(t *testing.T) {
 	}
 }
 
+func TestPublishSkipsUnknownAndEmbeddedNodesItDoesNotRun(t *testing.T) {
+	c, s, _ := newPublishingControl(t)
+	saveNodes(t, s, "edge-1")
+	c.SetEmbeddedNode(false)
+	upstream := textServer(t, "ok")
+	site := store.Site{ID: "legacy", Name: "legacy", Config: store.Config{ListenAddress: "127.0.0.1", ListenPort: freeLoopbackPort(t), Upstreams: []store.Upstream{{URL: upstream}}}}
+	if err := s.Save(context.Background(), site); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.start(context.Background(), "legacy"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.published.Snapshot(LocalNodeID); ok || c.engine.Running("legacy") {
+		t.Fatal("a controller without an embedded node published or ran a local snapshot")
+	}
+	if edge, ok := c.published.Snapshot("edge-1"); !ok || len(edge.Sites) != 0 {
+		t.Fatalf("registered node snapshot = %#v, %v", edge, ok)
+	}
+	if err := c.validateNodeReferences(context.Background(), site); err == nil {
+		t.Fatal("placement on the missing embedded node was accepted")
+	}
+	site.Config.Nodes = []string{"edge-9"}
+	if err := c.validateNodeReferences(context.Background(), site); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("placement on an unknown node error = %v", err)
+	}
+	site.Config.Nodes = []string{"edge-1"}
+	if err := c.validateNodeReferences(context.Background(), site); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPublishRevisionIsMonotonicAcrossRestarts(t *testing.T) {
 	c, s, logDir := newPublishingControl(t)
 	site := store.Site{ID: "a", Name: "a", Config: store.Config{ListenAddress: "127.0.0.1", ListenPort: freeLoopbackPort(t), Upstreams: []store.Upstream{{URL: textServer(t, "ok")}}}}
@@ -104,6 +145,7 @@ func TestPublishRevisionIsMonotonicAcrossRestarts(t *testing.T) {
 
 func TestPublishKeepsLastGoodSpecWhenResolutionFails(t *testing.T) {
 	c, s, _ := newPublishingControl(t)
+	saveNodes(t, s, "edge-1")
 	site := store.Site{ID: "edge", Name: "edge", Config: store.Config{Nodes: []string{"edge-1"}, ListenAddress: "0.0.0.0", ListenPort: 8443, TLS: true, CertificateSecret: "cert", PrivateKeySecret: "key", Upstreams: []store.Upstream{{URL: "http://origin.test"}}}}
 	if err := s.Save(context.Background(), site); err != nil {
 		t.Fatal(err)

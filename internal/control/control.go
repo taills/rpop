@@ -18,6 +18,7 @@ import (
 
 	"github.com/rpop-project/rpop/internal/accesslog"
 	"github.com/rpop-project/rpop/internal/dataplane"
+	"github.com/rpop-project/rpop/internal/pki"
 	"github.com/rpop-project/rpop/internal/routing"
 	"github.com/rpop-project/rpop/internal/store"
 )
@@ -27,9 +28,19 @@ type Control struct {
 	log    *zap.Logger
 	engine *dataplane.Engine
 	// opMu serializes configuration changes; desired is the set of sites that should run and is guarded by it.
-	opMu             sync.Mutex
-	desired          map[string]bool
-	published        *publication
+	opMu      sync.Mutex
+	desired   map[string]bool
+	published *publication
+	// embedded reports whether this process also runs the "local" data-plane node; guarded by opMu, like the
+	// revision and per-site errors of the last snapshot that node applied.
+	embedded      bool
+	localRevision int64
+	localErrors   map[string]string
+	nodes         *nodeRegistry
+	caMu          sync.Mutex
+	ca            *pki.CA
+	registrations *failureLimiter
+
 	accessLogs       *accesslog.Registry
 	systemSettingsMu sync.RWMutex
 	systemSettings   systemSettings
@@ -43,7 +54,8 @@ type apiError struct {
 }
 
 func New(s *store.Store, l *zap.Logger) *Control {
-	return &Control{store: s, log: l, engine: dataplane.New(l), desired: make(map[string]bool), published: newPublication(), systemSettings: defaultSystemSettings(), sessions: make(map[string]time.Time), loginAttempts: make(map[string]loginAttempt)}
+	return &Control{store: s, log: l, engine: dataplane.New(l), desired: make(map[string]bool), published: newPublication(),
+		embedded: true, nodes: newNodeRegistry(), registrations: newFailureLimiter(maxRegisterFailures, registerFailureWindow), systemSettings: defaultSystemSettings(), sessions: make(map[string]time.Time), loginAttempts: make(map[string]loginAttempt)}
 }
 func (c *Control) Handler() http.Handler {
 	m := http.NewServeMux()
@@ -62,6 +74,8 @@ func (c *Control) Handler() http.Handler {
 	m.HandleFunc("/api/sites", c.sites)
 	m.HandleFunc("/api/sites/", c.site)
 	m.HandleFunc("/api/routes/simulate", c.simulateRoute)
+	m.HandleFunc("/api/nodes", c.nodesAPI)
+	m.HandleFunc("/api/nodes/", c.nodeAPI)
 	return c.authMiddleware(m)
 }
 
@@ -116,6 +130,10 @@ func (c *Control) yamlConfig(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if err := c.validateAccessLogAdapter(site); err != nil {
+				writeError(w, fmt.Errorf("site %q: %w", site.ID, err))
+				return
+			}
+			if err := c.validateNodeReferences(r.Context(), site); err != nil {
 				writeError(w, fmt.Errorf("site %q: %w", site.ID, err))
 				return
 			}
@@ -174,6 +192,10 @@ func (c *Control) sites(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
+		if err := c.validateNodeReferences(r.Context(), x); err != nil {
+			writeError(w, err)
+			return
+		}
 		if err := c.store.Save(r.Context(), x); err != nil {
 			writeError(w, err)
 			return
@@ -192,11 +214,12 @@ func (c *Control) site(w http.ResponseWriter, r *http.Request) {
 	}
 	id := parts[2]
 	if len(parts) == 4 && parts[3] == "metrics" && r.Method == http.MethodGet {
-		if _, err := c.store.Get(r.Context(), id); err != nil {
+		site, err := c.store.Get(r.Context(), id)
+		if err != nil {
 			writeError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, c.engine.Metrics(id))
+		writeJSON(w, http.StatusOK, c.siteMetrics(site))
 		return
 	}
 	if len(parts) == 5 && parts[3] == "secrets" {
@@ -224,6 +247,10 @@ func (c *Control) site(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := c.validateAccessLogAdapter(x); err != nil {
+			writeError(w, err)
+			return
+		}
+		if err := c.validateNodeReferences(r.Context(), x); err != nil {
 			writeError(w, err)
 			return
 		}
@@ -434,7 +461,7 @@ func (c *Control) secret(w http.ResponseWriter, r *http.Request, siteID, name st
 }
 func writeError(w http.ResponseWriter, e error) {
 	status := 400
-	if errors.Is(e, store.ErrNotFound) {
+	if errors.Is(e, store.ErrNotFound) || errors.Is(e, store.ErrNodeNotFound) {
 		status = 404
 	}
 	writeJSON(w, status, apiError{e.Error()})

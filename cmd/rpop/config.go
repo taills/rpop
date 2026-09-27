@@ -55,3 +55,30 @@ func runHealthCheck(addr string) error {
 	}
 	return nil
 }
+
+// Process modes. All-in-one runs the controller and an embedded data-plane node; the other two split them.
+const (
+	modeAllInOne   = "all-in-one"
+	modeController = "controller"
+	modeNode       = "node"
+
+	defaultSouthboundAddr = ":7443"
+)
+
+// southboundAddress is where the controller serves nodes. A dedicated controller always serves them; an
+// all-in-one process only when an address is configured.
+func southboundAddress(mode, configured string) (string, error) {
+	switch mode {
+	case modeAllInOne:
+		return configured, nil
+	case modeController:
+		if configured == "" {
+			return defaultSouthboundAddr, nil
+		}
+		return configured, nil
+	case modeNode:
+		return "", nil
+	default:
+		return "", fmt.Errorf("unknown mode %q; use %s, %s, or %s", mode, modeAllInOne, modeController, modeNode)
+	}
+}

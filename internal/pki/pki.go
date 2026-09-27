@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -121,14 +122,25 @@ func (ca *CA) Pool() *x509.CertPool {
 }
 
 // SignNode issues a certificate for a node from its CSR. The certificate serves the node's relay port and
-// authenticates it as a client to the controller and to other nodes.
-func (ca *CA) SignNode(csrPEM, nodeID string) (*x509.Certificate, string, error) {
+// authenticates it as a client to the controller and to other nodes. generation is the node's registration
+// count: registering again bumps it, which revokes every certificate of earlier generations.
+func (ca *CA) SignNode(csrPEM, nodeID string, generation int64) (*x509.Certificate, string, error) {
+	if generation < 1 {
+		return nil, "", errors.New("node certificate generation must be positive")
+	}
 	csr, err := parseCSR(csrPEM)
 	if err != nil {
 		return nil, "", err
 	}
-	return ca.sign(csr.PublicKey, pkix.Name{CommonName: nodeID}, []string{NodeName(nodeID)}, NodeValidity,
+	subject := pkix.Name{CommonName: nodeID, SerialNumber: strconv.FormatInt(generation, 10)}
+	return ca.sign(csr.PublicKey, subject, []string{NodeName(nodeID)}, NodeValidity,
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth})
+}
+
+// NodeGeneration reads the registration generation SignNode recorded in a node certificate.
+func NodeGeneration(certificate *x509.Certificate) (int64, bool) {
+	generation, err := strconv.ParseInt(certificate.Subject.SerialNumber, 10, 64)
+	return generation, err == nil && generation > 0
 }
 
 // IssueController creates the controller's southbound key pair.

@@ -113,6 +113,32 @@ func (m *siteMetrics) snapshot() MetricsSnapshot {
 	return s
 }
 
+// MergeMetrics combines the counters of one site from several nodes. Averages are weighted by request count;
+// P95 takes the largest node P95, an upper bound, because the per-node histograms are not reported.
+func MergeMetrics(a, b MetricsSnapshot) MetricsSnapshot {
+	merged := MetricsSnapshot{
+		RequestCount: a.RequestCount + b.RequestCount, ErrorCount: a.ErrorCount + b.ErrorCount,
+		DroppedAccessLogCount: a.DroppedAccessLogCount + b.DroppedAccessLogCount, InFlight: a.InFlight + b.InFlight,
+		BytesReceived: a.BytesReceived + b.BytesReceived, BytesSent: a.BytesSent + b.BytesSent,
+		StatusCodes:       make(map[int]uint64, len(a.StatusCodes)+len(b.StatusCodes)),
+		P95ResponseMillis: max(a.P95ResponseMillis, b.P95ResponseMillis),
+		MaxResponseMillis: max(a.MaxResponseMillis, b.MaxResponseMillis),
+	}
+	for _, codes := range []map[int]uint64{a.StatusCodes, b.StatusCodes} {
+		for code, count := range codes {
+			merged.StatusCodes[code] += count
+		}
+	}
+	if merged.RequestCount > 0 {
+		weight := func(x, y float64) float64 {
+			return (x*float64(a.RequestCount) + y*float64(b.RequestCount)) / float64(merged.RequestCount)
+		}
+		merged.AverageTTFBMillis = weight(a.AverageTTFBMillis, b.AverageTTFBMillis)
+		merged.AverageResponseMillis = weight(a.AverageResponseMillis, b.AverageResponseMillis)
+	}
+	return merged
+}
+
 type bodyCapture struct {
 	mu    sync.Mutex
 	data  []byte

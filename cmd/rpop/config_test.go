@@ -72,3 +72,22 @@ func TestRunHealthCheck(t *testing.T) {
 		t.Fatal("expected an error when nothing is listening")
 	}
 }
+
+func TestSouthboundAddress(t *testing.T) {
+	tests := []struct{ mode, configured, want string }{
+		{modeAllInOne, "", ""},
+		{modeAllInOne, ":9443", ":9443"},
+		{modeController, "", defaultSouthboundAddr},
+		{modeController, "10.0.0.1:9443", "10.0.0.1:9443"},
+		{modeNode, ":9443", ""},
+	}
+	for _, tt := range tests {
+		got, err := southboundAddress(tt.mode, tt.configured)
+		if err != nil || got != tt.want {
+			t.Errorf("southboundAddress(%q, %q) = %q, %v; want %q", tt.mode, tt.configured, got, err, tt.want)
+		}
+	}
+	if _, err := southboundAddress("edge", ""); err == nil {
+		t.Error("unknown mode was accepted")
+	}
+}

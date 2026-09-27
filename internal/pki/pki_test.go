@@ -13,7 +13,7 @@ func newNode(t *testing.T, ca *CA, nodeID string) *Identity {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, certPEM, err := ca.SignNode(csrPEM, nodeID)
+	_, certPEM, err := ca.SignNode(csrPEM, nodeID, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,12 +67,19 @@ func TestCARoundTripAndNodeCertificates(t *testing.T) {
 	if id, ok := NodeIDFromCertificate(node.Certificate().Leaf); !ok || id != "edge-1" {
 		t.Fatalf("certificate names node %q", id)
 	}
+	if generation, ok := NodeGeneration(node.Certificate().Leaf); !ok || generation != 1 {
+		t.Fatalf("certificate generation = %d, %v", generation, ok)
+	}
+	_, unsigned, _ := NewKeyAndCSR("edge-1")
+	if _, _, err := ca.SignNode(unsigned, "edge-1", 0); err == nil {
+		t.Fatal("a certificate without a generation was issued")
+	}
 	other, err := NewCA("other CA")
 	if err != nil {
 		t.Fatal(err)
 	}
 	keyPEM, csrPEM, _ := NewKeyAndCSR("edge-1")
-	_, foreignPEM, _ := other.SignNode(csrPEM, "edge-1")
+	_, foreignPEM, _ := other.SignNode(csrPEM, "edge-1", 1)
 	if _, err := LoadIdentity(foreignPEM, keyPEM, ca.CertPEM); err == nil {
 		t.Fatal("a certificate from another CA was accepted")
 	}
