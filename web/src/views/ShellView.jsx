@@ -1,13 +1,20 @@
 import { useLocation, useNavigate, Outlet } from 'react-router-dom'
-import { AppShell, UiThemeSwitcher, UiNavLayoutSwitcher, UiTypeSwitcher } from '@/components/ui'
+import { AppShell, UiButton, UiThemeSwitcher, UiNavLayoutSwitcher, UiTypeSwitcher } from '@/components/ui'
 import { useToast } from '@/stores/toast'
+import { api } from '@/api'
+import { useAuthStore } from '@/stores/auth'
 
 export default function ShellView() {
   const location = useLocation()
   const navigate = useNavigate()
   const { toast } = useToast()
+  const markUnauthenticated = useAuthStore((state) => state.markUnauthenticated)
 
   const menus = [
+    { key: 'sites', label: '站点管理', icon: 'dashboard', to: '/sites' },
+    { key: 'logs', label: '访问日志', icon: 'table', to: '/logs' },
+    { key: 'log-settings', label: '日志适配器', icon: 'database', to: '/log-settings' },
+    { key: 'system-settings', label: '系统设置', icon: 'settings', to: '/system-settings' },
     {
       key: 'catalog',
       label: '组件目录',
@@ -46,7 +53,7 @@ export default function ShellView() {
     },
   ]
 
-  const active = String(location.pathname.split('/').filter(Boolean)[0] || 'catalog')
+  const active = String(location.pathname.split('/').filter(Boolean)[0] || 'sites')
   const currentPrimary = menus.find((m) => m.key === active)
   const secondaryMenus = currentPrimary?.children || []
   const sectionTitle = currentPrimary?.label || ''
@@ -83,10 +90,16 @@ export default function ShellView() {
     toast.info('已切换分区：' + key)
   }
 
+  async function logout() {
+    try { await api('/auth/logout', { method: 'POST' }) } catch {}
+    markUnauthenticated()
+    navigate('/sites')
+  }
+
   return (
     <AppShell
-      title="Towere UI Kit"
-      sub="通用管理后台组件库"
+      title="rpop"
+      sub="Reverse Proxy over Proxy 控制台"
       menus={menus}
       active={active}
       secondaryMenus={secondaryMenus}
@@ -99,6 +112,7 @@ export default function ShellView() {
           <UiTypeSwitcher />
           <UiNavLayoutSwitcher />
           <UiThemeSwitcher />
+          <UiButton variant="ghost" size="sm" icon="external" onClick={logout}>退出登录</UiButton>
         </>
       }
     >
