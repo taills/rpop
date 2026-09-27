@@ -30,6 +30,8 @@ type Engine struct {
 	leaving map[string]bool
 	metrics sync.Map
 	logs    *logQueue
+	// paths dials upstream paths; guarded by mu.
+	paths PathDialer
 }
 
 type running struct {

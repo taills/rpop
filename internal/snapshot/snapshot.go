@@ -15,6 +15,52 @@ type Snapshot struct {
 	Revision int64  `json:"revision"`
 	NodeID   string `json:"nodeId"`
 	Sites    []Site `json:"sites"`
+	// Peers are the nodes this node dials or accepts tunnels from.
+	Peers []Peer `json:"peers,omitempty"`
+	// RelayListen is the address the node's relay port binds; it is set when Relay has routes.
+	RelayListen string `json:"relayListen,omitempty"`
+	// Relay is the route table of the relay port: the only tunnels it forwards.
+	Relay []RelayRoute `json:"relay,omitempty"`
+}
+
+// Peer is another node. Address is where its relay port is reached; Generation is the registration generation
+// its certificate must carry, which revokes certificates of earlier registrations.
+type Peer struct {
+	ID         string `json:"id"`
+	Address    string `json:"address,omitempty"`
+	Generation int64  `json:"generation"`
+}
+
+// Proxy is an external SOCKS5 or HTTP CONNECT proxy, with its credentials.
+type Proxy struct {
+	// Type is socks5 (the node resolves names), socks5h (the proxy resolves names), http, or https.
+	Type     string `json:"type"`
+	Address  string `json:"address"`
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+}
+
+// Path is one candidate route from the ingress node to an upstream. With FirstNode set, the ingress opens a
+// tunnel to it (through LinkProxies) and the relays forward it by Key; otherwise the ingress dials Target
+// itself through Egress.
+type Path struct {
+	Key         string  `json:"key,omitempty"`
+	Label       string  `json:"label"`
+	FirstNode   string  `json:"firstNode,omitempty"`
+	LinkProxies []Proxy `json:"linkProxies,omitempty"`
+	Egress      []Proxy `json:"egress,omitempty"`
+	Target      string  `json:"target"`
+}
+
+// RelayRoute is one tunnel a relay forwards: from one of From to Next (through LinkProxies), or, on the exit
+// node, to Target through Egress.
+type RelayRoute struct {
+	Key         string   `json:"key"`
+	From        []string `json:"from"`
+	Next        string   `json:"next,omitempty"`
+	LinkProxies []Proxy  `json:"linkProxies,omitempty"`
+	Egress      []Proxy  `json:"egress,omitempty"`
+	Target      string   `json:"target"`
 }
 
 // Site is one listener-bound reverse-proxy site.
@@ -52,6 +98,8 @@ type Upstream struct {
 	ClientCertificate *KeyPair `json:"clientCertificate,omitempty"`
 	DialAddress       string   `json:"dialAddress,omitempty"`
 	ServerName        string   `json:"serverName,omitempty"`
+	// Paths are the candidate routes in priority order; empty means a direct connection (or ProxyURL).
+	Paths []Path `json:"paths,omitempty"`
 }
 
 // AccessLog controls per-site access logging; an empty AdapterID disables it.
