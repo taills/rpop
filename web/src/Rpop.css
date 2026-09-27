@@ -1,7 +1,7 @@
 :root {
   font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
-  color: #17251f;
-  background: #f6f8f7;
+  color: var(--text-primary);
+  background: var(--bg-canvas);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
@@ -12,13 +12,13 @@ body {
   margin: 0;
 }
 /* .brand-mark is the "r/p" logo mark; it also appears standalone on the login screen (AuthGate),
-   which is why it stays even though the old rail nav around it is gone. */
+   so it stays theme-aware like the AppTopNav logo instead of a fixed brand color. */
 .brand-mark {
   width: 38px;
   height: 38px;
   border-radius: 12px;
-  background: #c7f36b;
-  color: #183021;
+  background: var(--grad-primary);
+  color: #fff;
   font-size: 22px;
   font-weight: 900;
   display: flex;
@@ -27,7 +27,7 @@ body {
   line-height: 1;
 }
 .brand-mark span {
-  color: #355b2f;
+  opacity: 0.78;
 }
 /* Width/margin below absorb the AppSideNav-era override that used to live in the now-deleted
    Sidebar.css (the old .rail layout is gone, but .main is still the root wrapper every legacy
@@ -42,25 +42,22 @@ body {
   font-size: 10px;
   letter-spacing: 1.4px;
   font-weight: 800;
-  color: #83948a;
+  color: var(--text-accent);
 }
 .live-dot,
 .badge i {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #43bc7e;
+  background: var(--accent-green);
   display: inline-block;
-  box-shadow: 0 0 0 3px #43bc7e20;
+  box-shadow: 0 0 0 3px var(--soft-green);
 }
 .hero {
   display: flex;
   justify-content: space-between;
   align-items: flex-end;
   padding: 36px 0 28px;
-}
-.eyebrow {
-  color: #789065;
 }
 .hero h1 {
   font-size: 30px;
@@ -70,7 +67,7 @@ body {
 .hero p,
 .list-head p {
   font-size: 13px;
-  color: #829087;
+  color: var(--text-secondary);
   margin: 0;
 }
 .primary,
@@ -78,17 +75,19 @@ body {
   border: 0;
   border-radius: 9px;
   padding: 11px 17px;
-  background: #bbee62;
-  color: #1d3020;
   font-weight: 750;
   cursor: pointer;
   font-size: 13px;
 }
+.primary {
+  background: var(--grad-primary);
+  color: #fff;
+}
 .primary:hover {
-  background: #a9dc52;
+  filter: brightness(1.05);
 }
 .primary:disabled {
-  opacity: .6;
+  opacity: 0.6;
 }
 .stats {
   display: grid;
@@ -96,8 +95,8 @@ body {
   gap: 14px;
 }
 .stats article {
-  background: white;
-  border: 1px solid #e9efeb;
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
   border-radius: 12px;
   padding: 18px 20px;
   display: flex;
@@ -107,23 +106,23 @@ body {
 }
 .stats small {
   font-size: 11px;
-  color: #84928a;
+  color: var(--text-secondary);
 }
 .stats strong {
   font-size: 25px;
-  letter-spacing: -.8px;
+  letter-spacing: -0.8px;
 }
 .stats span {
   font-size: 11px;
-  color: #97a39d;
+  color: var(--text-muted);
 }
 .stats .green {
-  color: #27945e;
+  color: var(--accent-green);
 }
 .stats .health strong {
   font-size: 15px;
-  letter-spacing: .8px;
-  color: #318b5a;
+  letter-spacing: 0.8px;
+  color: var(--accent-green);
   display: flex;
   gap: 10px;
   align-items: center;
@@ -142,15 +141,15 @@ body {
   max-width: 100%;
   height: 38px;
   padding: 0 10px;
-  border: 1px solid #dce6df;
+  border: 1px solid var(--border-primary);
   border-radius: 8px;
-  background: #fff;
-  color: #87968d;
+  background: var(--bg-input);
+  color: var(--text-secondary);
   font-size: 16px;
 }
 .search:focus-within {
-  border-color: #a6ce69;
-  box-shadow: 0 0 0 3px #a6ce6926;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
 }
 .search input {
   flex: 1;
@@ -161,12 +160,12 @@ body {
   border: 0;
   outline: 0;
   background: transparent;
-  color: #26372e;
+  color: var(--text-primary);
   font: inherit;
   font-size: 12px;
 }
 .search input::placeholder {
-  color: #a4afa8;
+  color: var(--text-muted);
   opacity: 1;
 }
 .list-head h2 {
@@ -180,10 +179,10 @@ body {
   justify-content: center;
   height: 38px;
   padding: 0 12px;
-  border: 1px solid #dce6df;
+  border: 1px solid var(--border-primary);
   border-radius: 8px;
-  background: #fff;
-  color: #56705f;
+  background: var(--bg-card);
+  color: var(--text-secondary);
   text-decoration: none;
   font-size: 11px;
   font-weight: 650;
@@ -195,8 +194,8 @@ body {
 }
 .yaml-link:hover,
 .yaml-upload:hover {
-  background: #f0f6ed;
-  color: #355a39;
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
 }
 .yaml-upload {
   margin: 0;
@@ -227,19 +226,19 @@ body {
   align-items: center;
   gap: 15px;
   padding: 17px 18px;
-  background: white;
-  border: 1px solid #e8efea;
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
   border-radius: 12px;
   min-height: 95px;
 }
 .site-icon {
   width: 42px;
   height: 42px;
-  background: #eff5eb;
+  background: var(--soft-green);
   border-radius: 11px;
   display: grid;
   place-items: center;
-  color: #4f7741;
+  color: var(--accent-green);
   font-size: 21px;
   flex-shrink: 0;
 }
@@ -256,7 +255,7 @@ body {
 }
 .site-id {
   font-size: 10px;
-  color: #96a39c;
+  color: var(--text-muted);
   margin: 4px 0 8px;
   font-family: monospace;
 }
@@ -264,7 +263,7 @@ body {
   display: flex;
   gap: 18px;
   font-size: 11px;
-  color: #697a70;
+  color: var(--text-secondary);
 }
 .site-meta span {
   overflow: hidden;
@@ -281,15 +280,15 @@ body {
   gap: 6px;
 }
 .badge.on {
-  background: #eaf8ef;
-  color: #26864f;
+  background: var(--soft-green);
+  color: var(--accent-green);
 }
 .badge.off {
-  background: #f2f4f3;
-  color: #7d8982;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
 }
 .badge.off i {
-  background: #9aa69f;
+  background: var(--border-strong);
   box-shadow: none;
 }
 .tags {
@@ -300,11 +299,11 @@ body {
 .tags span {
   padding: 5px 8px;
   border-radius: 6px;
-  background: #f3f6f4;
-  color: #6f8076;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
   font-size: 9px;
   font-weight: 700;
-  letter-spacing: .3px;
+  letter-spacing: 0.3px;
 }
 .tags .log-adapter-tag {
   max-width: 150px;
@@ -313,12 +312,12 @@ body {
   text-overflow: ellipsis;
 }
 .tags .warn-tag {
-  background: #fff2dd;
-  color: #b77a20;
+  background: var(--soft-yellow);
+  color: var(--accent-yellow);
 }
 .tags .auto-tag {
-  background: #edf4df;
-  color: #587b3d;
+  background: var(--soft-green);
+  color: var(--accent-green);
 }
 .actions {
   display: flex;
@@ -328,41 +327,41 @@ body {
 .icon-btn {
   border: 0;
   background: transparent;
-  color: #819087;
+  color: var(--text-secondary);
   width: 31px;
   height: 31px;
   border-radius: 7px;
   cursor: pointer;
 }
 .icon-btn:hover {
-  background: #f0f5f1;
-  color: #294a36;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
 }
 .icon-btn.start {
-  color: #35965e;
+  color: var(--accent-green);
 }
 .icon-btn.danger:hover {
-  background: #fff0ed;
-  color: #bf5b4a;
+  background: var(--soft-red);
+  color: var(--accent-red);
 }
 .icon-btn:disabled {
-  opacity: .5;
+  opacity: 0.5;
 }
 .empty {
-  background: white;
-  border: 1px dashed #dce6df;
+  background: var(--bg-card);
+  border: 1px dashed var(--border-primary);
   border-radius: 14px;
   text-align: center;
   padding: 54px 20px;
-  color: #839087;
+  color: var(--text-secondary);
 }
 .empty > div {
   font-size: 30px;
-  color: #abc09b;
+  color: var(--text-muted);
 }
 .empty b {
   display: block;
-  color: #34473c;
+  color: var(--text-primary);
   margin: 12px;
 }
 .empty p {
@@ -372,22 +371,22 @@ body {
 footer {
   margin-top: 36px;
   padding-top: 16px;
-  border-top: 1px solid #e6ede8;
-  color: #849289;
+  border-top: 1px solid var(--border-primary);
+  color: var(--text-muted);
   font-size: 10px;
-  letter-spacing: .6px;
+  letter-spacing: 0.6px;
 }
 footer span {
-  color: #b4beb8;
+  color: var(--text-muted);
   padding: 0 5px;
 }
 .foot-right {
   float: right;
 }
 .error {
-  border: 1px solid #f1c6be;
-  background: #fff2ef;
-  color: #9e4339;
+  border: 1px solid color-mix(in srgb, var(--accent-red) 30%, var(--border-primary));
+  background: var(--soft-red);
+  color: var(--accent-red);
   border-radius: 8px;
   padding: 10px 14px;
   font-size: 12px;
@@ -403,20 +402,20 @@ footer span {
 .overlay {
   position: fixed;
   inset: 0;
-  background: #14241dcc;
+  background: var(--bg-mask);
   display: grid;
   place-items: center;
   padding: 20px;
   z-index: 10;
 }
 .modal {
-  background: white;
+  background: var(--bg-card);
   border-radius: 16px;
   width: min(680px, 100%);
   max-height: 92vh;
   overflow: auto;
   padding: 24px;
-  box-shadow: 0 20px 70px #0a201755;
+  box-shadow: var(--shadow-lg);
 }
 .modal-head {
   display: flex;
@@ -430,12 +429,12 @@ footer span {
 }
 .close {
   border: 0;
-  background: #f1f4f2;
+  background: var(--bg-tertiary);
   border-radius: 50%;
   width: 30px;
   height: 30px;
   font-size: 20px;
-  color: #6b7a70;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 .form-grid {
@@ -448,21 +447,21 @@ footer span {
   flex-direction: column;
   gap: 7px;
   font-size: 11px;
-  color: #617168;
+  color: var(--text-secondary);
   font-weight: 650;
 }
 .form-grid input:not([type=checkbox]),
 .form-grid select {
   height: 39px;
   min-width: 0;
-  border: 1px solid #dce6df;
+  border: 1px solid var(--border-primary);
   border-radius: 7px;
   padding: 0 10px;
-  background: #fff;
+  background: var(--bg-input);
   font: inherit;
   font-size: 12px;
-  color: #26372e;
-  outline-color: #a6ce69;
+  color: var(--text-primary);
+  outline-color: var(--accent);
 }
 .form-grid select[multiple] {
   height: auto;
@@ -477,16 +476,16 @@ footer span {
   flex-direction: row;
   align-items: center;
   font-size: 12px;
-  color: #405247;
+  color: var(--text-primary);
 }
 .form-grid .check span {
   font-size: 10px;
-  color: #98a39d;
+  color: var(--text-muted);
   font-weight: 400;
   margin-left: auto;
 }
 .form-grid .check input {
-  accent-color: #6ca142;
+  accent-color: var(--accent);
 }
 .modal-foot {
   display: flex;
@@ -495,8 +494,8 @@ footer span {
   margin-top: 24px;
 }
 .secondary {
-  background: #f0f4f1;
-  color: #52645a;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
 }
 @media(max-width:900px) {
   .main {

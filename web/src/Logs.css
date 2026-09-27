@@ -1,7 +1,7 @@
 .logs-page {
   margin: 30px 0 20px;
-  background: #fff;
-  border: 1px solid #e7ede9;
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
   border-radius: 14px;
   padding: 22px;
 }
@@ -21,7 +21,7 @@
 }
 .logs-heading p {
   font-size: 12px;
-  color: #7d8a82;
+  color: var(--text-secondary);
   margin: 0 0 20px;
 }
 .log-filters {
@@ -36,7 +36,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  color: #5c6e63;
+  color: var(--text-secondary);
   font-size: 11px;
   font-weight: 650;
 }
@@ -46,14 +46,14 @@
 .log-settings select {
   height: 38px;
   min-width: 0;
-  border: 1px solid #dce6df;
+  border: 1px solid var(--border-primary);
   border-radius: 7px;
   padding: 0 9px;
-  color: #26372e;
-  background: #fff;
+  color: var(--text-primary);
+  background: var(--bg-input);
   font: inherit;
   font-size: 12px;
-  outline-color: #a6ce69;
+  outline-color: var(--accent);
 }
 .log-filters select,
 .log-settings select {
@@ -64,13 +64,13 @@
   white-space: nowrap;
 }
 .logs-summary {
-  color: #839087;
+  color: var(--text-secondary);
   font-size: 11px;
   margin: 13px 0;
 }
 .logs-table-wrap {
   overflow: auto;
-  border: 1px solid #edf1ee;
+  border: 1px solid var(--border-primary);
   border-radius: 9px;
 }
 .logs-table {
@@ -81,22 +81,24 @@
 }
 .logs-table th {
   text-align: left;
-  background: #f7f9f7;
-  color: #75847a;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
   font-weight: 700;
   padding: 11px 12px;
 }
 .logs-table td {
   padding: 11px 12px;
-  border-top: 1px solid #eef2ef;
-  color: #53635a;
+  border-top: 1px solid var(--border-primary);
+  color: var(--text-secondary);
 }
 .logs-table tbody tr {
   cursor: pointer;
 }
-.logs-table tbody tr:hover,
+.logs-table tbody tr:hover {
+  background: var(--table-row-hover);
+}
 .logs-table tbody tr.selected {
-  background: #f2f8ed;
+  background: var(--soft-blue);
 }
 .logs-table td:nth-child(4) {
   max-width: 500px;
@@ -107,7 +109,7 @@
   vertical-align: bottom;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: #829087;
+  color: var(--text-secondary);
 }
 .log-path {
   display: inline-block;
@@ -115,7 +117,7 @@
   vertical-align: bottom;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: #829087;
+  color: var(--text-secondary);
 }
 .log-status {
   padding: 3px 7px;
@@ -123,21 +125,21 @@
   font-weight: 750;
 }
 .log-status.good {
-  background: #eaf8ef;
-  color: #27844e;
+  background: var(--soft-green);
+  color: var(--accent-green);
 }
 .log-status.warn {
-  background: #fff5df;
-  color: #aa7921;
+  background: var(--soft-yellow);
+  color: var(--accent-yellow);
 }
 .log-status.bad {
-  background: #fff0ed;
-  color: #b64e42;
+  background: var(--soft-red);
+  color: var(--accent-red);
 }
 .logs-empty {
   text-align: center;
-  padding: 38px!important;
-  color: #96a29b!important;
+  padding: 38px !important;
+  color: var(--text-muted) !important;
 }
 .logs-pagination {
   display: flex;
@@ -148,7 +150,7 @@
 .log-detail {
   margin-top: 24px;
   padding-top: 20px;
-  border-top: 1px solid #e8eeea;
+  border-top: 1px solid var(--border-primary);
 }
 .log-detail-grid {
   display: grid;
@@ -160,7 +162,7 @@
 }
 .log-detail h3 {
   font-size: 12px;
-  color: #586b5f;
+  color: var(--text-secondary);
   margin: 15px 0 8px;
 }
 .log-detail pre {
@@ -169,15 +171,15 @@
   white-space: pre-wrap;
   word-break: break-word;
   padding: 12px;
-  background: #f5f7f5;
-  border: 1px solid #e8eeea;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
   border-radius: 8px;
   font: 11px/1.5 ui-monospace, SFMono-Regular, monospace;
-  color: #35483c;
+  color: var(--text-primary);
 }
 .log-detail small {
   display: block;
-  color: #839087;
+  color: var(--text-secondary);
   margin-top: 12px;
 }
 .log-settings {
@@ -193,7 +195,7 @@
 }
 .log-settings-section {
   padding: 14px;
-  background: #f7f9f7;
+  background: var(--bg-tertiary);
   border-radius: 9px;
 }
 .log-settings-section h2 {
@@ -203,13 +205,13 @@
 .log-settings-section p,
 .log-settings label span {
   font-size: 11px;
-  color: #839087;
+  color: var(--text-secondary);
   margin: 0;
 }
 .log-check {
-  flex-direction: row!important;
+  flex-direction: row !important;
   align-items: center;
-  gap: 9px!important;
+  gap: 9px !important;
 }
 .log-check input {
   height: auto;
@@ -217,8 +219,8 @@
 .log-settings-warning {
   padding: 12px;
   border-radius: 8px;
-  background: #fff8e8;
-  color: #8e6a28;
+  background: var(--soft-yellow);
+  color: var(--accent-yellow);
   font-size: 11px;
   line-height: 1.6;
 }
@@ -226,8 +228,8 @@
   margin: 10px 0;
   padding: 10px 12px;
   border-radius: 8px;
-  background: #eaf8ef;
-  color: #27844e;
+  background: var(--soft-green);
+  color: var(--accent-green);
   font-size: 12px;
 }
 .adapter-list {
@@ -240,8 +242,8 @@
   align-items: center;
   gap: 12px;
   padding: 13px 15px;
-  background: #fff;
-  border: 1px solid #e7ede9;
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
   border-radius: 10px;
   min-width: 0;
 }
@@ -251,9 +253,9 @@
   flex: 0 0 38px;
   display: grid;
   place-items: center;
-  background: #eef5e9;
+  background: var(--soft-green);
   border-radius: 9px;
-  color: #568343;
+  color: var(--accent-green);
   font-size: 18px;
 }
 .adapter-card-info {
@@ -265,21 +267,21 @@
 }
 .adapter-card-info strong {
   font-size: 13px;
-  color: #2d4034;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .adapter-card-info span {
   font-size: 10px;
-  color: #819087;
+  color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .adapter-type {
   padding: 5px 8px;
   border-radius: 6px;
-  background: #f2f5f3;
-  color: #67796f;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
   font-size: 10px;
 }
 .adapter-actions {
@@ -291,20 +293,20 @@
   font-size: 11px;
 }
 .danger-action {
-  color: #a64c41;
-  background: #fff1ef;
+  color: var(--accent-red);
+  background: var(--soft-red);
 }
 .adapter-empty {
   padding: 18px;
-  border: 1px dashed #dce6df;
+  border: 1px dashed var(--border-primary);
   border-radius: 9px;
-  color: #79877f;
+  color: var(--text-secondary);
   font-size: 12px;
 }
 .log-editor {
   margin-top: 22px;
   padding-top: 20px;
-  border-top: 1px solid #e8eeea;
+  border-top: 1px solid var(--border-primary);
 }
 .log-editor .log-settings-section h2 {
   margin: 0 0 5px;
@@ -385,8 +387,8 @@
 .log-drawer-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(24, 36, 29, .28);
-  animation: log-drawer-fade .16s ease-out;
+  background: var(--bg-mask);
+  animation: log-drawer-fade 0.16s ease-out;
 }
 .log-drawer {
   position: relative;
@@ -394,10 +396,10 @@
   flex-direction: column;
   width: min(760px, 100vw);
   height: 100%;
-  background: #fff;
-  box-shadow: -18px 0 40px rgba(24, 36, 29, .16);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-lg);
   outline: none;
-  animation: log-drawer-in .2s ease-out;
+  animation: log-drawer-in 0.2s ease-out;
 }
 .log-drawer-header {
   display: flex;
@@ -405,7 +407,7 @@
   align-items: flex-start;
   gap: 14px;
   padding: 18px 20px 14px;
-  border-bottom: 1px solid #edf1ee;
+  border-bottom: 1px solid var(--border-primary);
 }
 .log-drawer-title {
   min-width: 0;
@@ -416,7 +418,7 @@
   gap: 8px;
   margin: 6px 0 0;
   font-size: 15px;
-  color: #26372e;
+  color: var(--text-primary);
   min-width: 0;
 }
 .log-drawer-path {
@@ -424,7 +426,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
-  color: #53635a;
+  color: var(--text-secondary);
 }
 .log-drawer-nav {
   display: flex;
@@ -441,23 +443,23 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1px;
   margin: 0;
-  background: #edf1ee;
-  border-bottom: 1px solid #edf1ee;
+  background: var(--border-primary);
+  border-bottom: 1px solid var(--border-primary);
 }
 .log-drawer-meta div {
   padding: 10px 20px;
-  background: #fafcfa;
+  background: var(--bg-card);
   min-width: 0;
 }
 .log-drawer-meta dt {
   font-size: 10px;
-  color: #8a978f;
+  color: var(--text-muted);
   font-weight: 700;
 }
 .log-drawer-meta dd {
   margin: 3px 0 0;
   font-size: 12px;
-  color: #35483c;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -473,7 +475,7 @@
   display: flex;
   gap: 4px;
   padding: 10px 20px 0;
-  border-bottom: 1px solid #edf1ee;
+  border-bottom: 1px solid var(--border-primary);
 }
 .log-drawer-tabs button {
   padding: 8px 14px;
@@ -481,15 +483,15 @@
   border-bottom: 2px solid transparent;
   border-radius: 0;
   background: none;
-  color: #75847a;
+  color: var(--text-secondary);
   font: inherit;
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
 }
 .log-drawer-tabs button[aria-selected=true] {
-  color: #3f6f2c;
-  border-bottom-color: #8fbf55;
+  color: var(--text-accent);
+  border-bottom-color: var(--accent);
 }
 .log-drawer-body {
   flex: 1;
@@ -502,7 +504,7 @@
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: #586b5f;
+  color: var(--text-secondary);
   margin: 14px 0 8px;
 }
 .log-drawer-panel pre {
@@ -511,21 +513,21 @@
   white-space: pre-wrap;
   word-break: break-word;
   padding: 12px;
-  background: #f5f7f5;
-  border: 1px solid #e8eeea;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
   border-radius: 8px;
   font: 11px/1.5 ui-monospace, SFMono-Regular, monospace;
-  color: #35483c;
+  color: var(--text-primary);
 }
 .log-drawer-flag {
   padding: 2px 6px;
   border-radius: 5px;
-  background: #fff5df;
-  color: #aa7921;
+  background: var(--soft-yellow);
+  color: var(--accent-yellow);
   font-size: 10px;
 }
 .log-drawer-muted {
-  color: #94a099;
+  color: var(--text-muted);
   font-size: 10px;
   font-weight: 500;
 }
@@ -546,14 +548,14 @@
 }
 .log-drawer-footer {
   padding: 9px 20px;
-  border-top: 1px solid #edf1ee;
-  color: #94a099;
+  border-top: 1px solid var(--border-primary);
+  color: var(--text-muted);
   font-size: 10px;
 }
 @keyframes log-drawer-in {
   from {
     transform: translateX(24px);
-    opacity: .4;
+    opacity: 0.4;
   }
   to {
     transform: none;
