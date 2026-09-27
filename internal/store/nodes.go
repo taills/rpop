@@ -86,7 +86,12 @@ func (s *Store) SaveNode(ctx context.Context, n Node) error {
 // (D24): the log ingest handler calls this only after every record in the segment has been written to its
 // destination, so a controller restart between the write and this call simply replays that segment (the node
 // resends anything at or below its own idea of the acked segment, which is harmless to write again), never
-// skips one. It is the sole writer of this column, so it cannot race with SaveNode (see its doc comment).
+// skips one. The registration handler also calls this, with hwm 0, when it issues a node a fresh certificate
+// generation: the node's own spool restarts numbering from segment 1 once it loses its identity, so an old,
+// higher mark left over from the retired generation would make its first segment look like an already-acked
+// replay (see southboundRegister's doc comment). It is the sole function that writes this column, so it cannot
+// race with SaveNode (see SaveNode's doc comment); its two call sites still serialize with each other through
+// the per-node lock in internal/control (logIngestLocks), since this function alone does not.
 func (s *Store) UpdateNodeLogHWM(ctx context.Context, id string, hwm uint64) error {
 	result, err := s.db.ExecContext(ctx, `UPDATE nodes SET log_hwm=? WHERE id=?`, hwm, id)
 	if err != nil {

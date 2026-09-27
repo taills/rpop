@@ -191,6 +191,23 @@ func (c *Control) southboundRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, apiError{"could not record the registration"})
 		return
 	}
+	// A fresh registration invalidates the previous generation's certificate, so its spool can never upload
+	// again under it; the node's own spool always starts a new one from segment 1 after losing its identity
+	// (reinstall, lost data directory, ...), so replaying against the old high-water mark would silently drop
+	// its first segment as an already-acked duplicate. Resetting it here is safe: nothing can still upload under
+	// the retired generation, and a spool that keeps running under the new one only ever grows its segment
+	// numbers, so this can at worst cause a rare double write (a segment already durably ingested, whose ack the
+	// node never saw before re-registering), never data loss. Renewal (southboundRenew) keeps the generation and
+	// must leave this alone. Taking the node's own southboundLogs lock first serializes the reset against an
+	// upload already in flight for this node, the same way two uploads serialize against each other, so the two
+	// can never interleave into a torn read-modify-write of the mark. See docs/architecture/control-data-plane.md
+	// §5.
+	unlockLogs := c.logIngestLocks.lock(node.ID)
+	hwmErr := c.store.UpdateNodeLogHWM(r.Context(), node.ID, 0)
+	unlockLogs()
+	if hwmErr != nil {
+		c.log.Warn("reset log high-water mark after registration", zap.String("node", node.ID), zap.Error(hwmErr))
+	}
 	// Peers must accept the new certificate and refuse older ones, so every node gets a snapshot naming the
 	// current generation; streams opened with certificates from an earlier registration re-authenticate and end.
 	c.publishLocked(r.Context(), publishScope{})

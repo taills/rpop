@@ -212,6 +212,54 @@ func nodeClient(identity *pki.Identity) *http.Client {
 	return &http.Client{Transport: &http.Transport{TLSClientConfig: identity.ControllerClientConfig()}}
 }
 
+// reissueToken asks the console API for a fresh single-use join token on an already-registered node, so a test
+// can simulate re-registration (a lost/reinstalled node coming back) by calling register again with it.
+func (h *ingestHarness) reissueToken(nodeID string) string {
+	h.t.Helper()
+	response := h.call(http.MethodPost, "/api/nodes/"+nodeID+"/token", "", http.StatusOK)
+	var created joinTokenResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil || created.JoinToken == "" {
+		h.t.Fatalf("reissue token response %s: %v", response.Body.String(), err)
+	}
+	return created.JoinToken
+}
+
+// renew performs the same CSR/renew exchange internal/agent's node client does, mirroring register above: it
+// authenticates with identity's current certificate and swaps in the renewed one, keeping the same node ID and
+// certificate generation (see southboundRenew).
+func (h *ingestHarness) renew(identity *pki.Identity) {
+	h.t.Helper()
+	keyPEM, csrPEM, err := pki.NewKeyAndCSR(identity.NodeID)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	client := nodeClient(identity)
+	defer client.CloseIdleConnections()
+	requestBody, err := json.Marshal(southbound.RenewRequest{CSRPEM: csrPEM})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	response, err := client.Post(h.southbound.URL+southbound.RenewPath, "application/json", bytes.NewReader(requestBody))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		h.t.Fatalf("renew: %d %s", response.StatusCode, data)
+	}
+	var renewResponse southbound.RenewResponse
+	if err := json.Unmarshal(data, &renewResponse); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := identity.SetCertificate(renewResponse.CertificatePEM, keyPEM); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
 // uploadSegment gzips lines as NDJSON and POSTs them as one log segment (D23's southbound protocol).
 func (h *ingestHarness) uploadSegment(client *http.Client, segment uint64, lines []string) *http.Response {
 	h.t.Helper()
