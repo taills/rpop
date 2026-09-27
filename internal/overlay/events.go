@@ -2,6 +2,7 @@ package overlay
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -75,12 +76,16 @@ type eventQueue struct {
 	dropped atomic.Uint64
 	sink    atomic.Pointer[sinkHolder]
 	log     *zap.Logger
-	// closed marks record's fast path once close has been called, so a post-close emit is counted as dropped
-	// instead of sitting in the buffer for as long as it takes to fill (see record). stop, not events, is what
-	// tells loop to exit: events is never closed, so a record racing close can never send on a closed channel.
-	closed atomic.Bool
-	stop   chan struct{}
-	done   chan struct{}
+	// closeMu serializes record's closed-check-and-send against close's shutdown sequence (mark closed, stop
+	// loop, wait for it to drain and exit). Without it, record can observe closed==false and reach its send just
+	// as loop finishes draining the channel and returns: the event lands in a buffer nobody will ever read again,
+	// neither delivered nor counted as dropped. record only ever takes the read lock, so concurrent record calls
+	// (the hot path) never contend each other over it — the only holder of the write lock is the one close call
+	// a queue ever gets.
+	closeMu sync.RWMutex
+	closed  bool
+	stop    chan struct{}
+	done    chan struct{}
 }
 
 func newEventQueue(log *zap.Logger) *eventQueue {
@@ -94,11 +99,23 @@ func newEventQueue(log *zap.Logger) *eventQueue {
 
 func (q *eventQueue) setSink(sink TunnelEventSink) { q.sink.Store(&sinkHolder{sink: sink}) }
 
+// recordSyncHook, when set (tests only), runs once record has confirmed the queue is not yet closed and is about
+// to attempt its send, holding record inside its read-locked critical section until the hook returns. Tests use
+// it to prove close cannot complete its shutdown sequence (and so loop cannot drain-and-exit) while a record call
+// is still in flight — the exact interleaving that used to let an event be silently neither delivered nor counted
+// as dropped.
+var recordSyncHook func()
+
 // record enqueues an event without blocking; a full queue, or one already closed, drops it and counts the drop.
 func (q *eventQueue) record(event TunnelEvent) {
-	if q.closed.Load() {
+	q.closeMu.RLock()
+	defer q.closeMu.RUnlock()
+	if q.closed {
 		q.dropped.Add(1)
 		return
+	}
+	if recordSyncHook != nil {
+		recordSyncHook()
 	}
 	select {
 	case q.events <- event:
@@ -136,9 +153,14 @@ func (q *eventQueue) deliver(event TunnelEvent) {
 }
 
 // close stops loop and waits for it to exit, so nothing keeps a reference to a discarded overlay's event queue
-// alive (a node re-registering builds a whole new Overlay; see Overlay.Close).
+// alive (a node re-registering builds a whole new Overlay; see Overlay.Close). Holding closeMu's write lock for
+// the whole sequence — not just the closed flag flip — is what closes the TOCTOU window with record: any record
+// call already past its own read-locked check is guaranteed to finish its send (and so be visible to loop's
+// drain) before this proceeds, and none can start until this returns, closed, and unlocks.
 func (q *eventQueue) close() {
-	q.closed.Store(true)
+	q.closeMu.Lock()
+	defer q.closeMu.Unlock()
+	q.closed = true
 	close(q.stop)
 	<-q.done
 }
