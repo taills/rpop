@@ -80,7 +80,10 @@ func New(s *store.Store, l *zap.Logger) *Control {
 // SetLogIngestLimits overrides the default global concurrency cap and per-node upload rate cap for log segment
 // ingest (stage 5 security review item 5, see DefaultMaxConcurrentLogIngests and
 // DefaultLogIngestRateBytesPerSecond). Call before serving southbound traffic; maxConcurrent <= 0 or
-// rateBytesPerSecond <= 0 leaves the corresponding default in place.
+// rateBytesPerSecond <= 0 leaves the corresponding default in place. rateBytesPerSecond only ever lowers or
+// raises the steady-state rate: newNodeRateLimiter clamps the bucket's burst up to at least
+// southbound.MaxLogSegmentBytes regardless of what rate is requested here, so an operator cannot reintroduce
+// nodeRateLimiter's documented deadlock just by configuring a small rate.
 func (c *Control) SetLogIngestLimits(maxConcurrent int, rateBytesPerSecond int64) {
 	if maxConcurrent > 0 {
 		c.logIngestSemaphore = make(chan struct{}, maxConcurrent)

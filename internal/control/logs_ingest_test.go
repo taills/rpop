@@ -656,13 +656,19 @@ func TestSouthboundLogsBoundsIngestConcurrencyAcrossNodes(t *testing.T) {
 // any of the segment's records are written, and its high-water mark must not move.
 func TestSouthboundLogsThrottlesPerNodeUploadRateWithoutAdvancingHWM(t *testing.T) {
 	h := newIngestHarness(t)
-	// 64 bytes/second is far below the compressed size of any real segment, so even the very first upload
-	// (which would otherwise spend a fresh, full bucket) exceeds its budget deterministically.
+	// 64 bytes/second, but a fresh bucket still starts full at its burst (see newNodeRateLimiter), which is
+	// clamped to at least southbound.MaxLogSegmentBytes independently of this rate — so the very first upload no
+	// longer exceeds its budget on its own. Drain the bucket directly below to make the upload deterministically
+	// exceed its remaining budget instead of relying on a tiny rate to do it.
 	h.control.SetLogIngestLimits(DefaultMaxConcurrentLogIngests, 64)
 	token := h.createNode("edge-1")
 	identity := h.register(token)
 	client := nodeClient(identity)
 	line := accessEnvelope(t, "default", accesslog.Record{SiteID: "site-a", Method: "GET", Path: "/x", Status: 200})
+
+	if !h.control.logIngestRate.allow("edge-1", int64(h.control.logIngestRate.burst)) {
+		t.Fatal("expected the initial burst to be drained in one call")
+	}
 
 	response := h.uploadSegment(client, 1, []string{line})
 	defer response.Body.Close()
