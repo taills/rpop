@@ -248,6 +248,22 @@ test('applyClockSkew can change ordering: a large enough correction moves a late
   assert.deepEqual(sortTunnelEvents(corrected).map((e) => e.nodeId), ['exit', 'entry'])
 })
 
+// End-to-end regression test for the stage 7 review's clock-skew sign fix
+// (docs/architecture/control-data-plane.md §5): the controller's clockSkewMillis is positive when the *reporting
+// node's own clock* is ahead of the controller's (internal/agent/clock_skew.go's offsetAndRTT, nodeView's doc
+// comment). A node whose clock is fast by X ms timestamps its own events X ms later than the controller's
+// reference clock would have, so applyClockSkew's "timestamp − clockSkewMillis" correction must land exactly
+// back on the controller's reference instant.
+test('backend +skew (node fast) round-trips through applyClockSkew back to controller reference time', () => {
+  const controllerReferenceInstant = '2026-01-02T03:00:01.000Z' // an arbitrary "true" instant, on the controller's clock
+  const nodeSkewMillis = 200 // this node's clock is 200ms ahead of the controller's (D28 sign convention)
+  // The node's own clock reads controllerReferenceInstant + nodeSkewMillis at that same true instant, so that is
+  // what it stamps the event with.
+  const nodeReportedTimestamp = new Date(Date.parse(controllerReferenceInstant) + nodeSkewMillis).toISOString()
+  const corrected = applyClockSkew([{ timestamp: nodeReportedTimestamp, clockSkewMillis: nodeSkewMillis }], true)
+  assert.equal(corrected[0].timestamp, controllerReferenceInstant)
+})
+
 test('hopDurationBars attaches each hop\'s reporting node clockSkewMillis, defaulting to null when unknown', () => {
   const hops = groupHops(
     withRelativeTiming(

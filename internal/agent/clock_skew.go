@@ -22,11 +22,18 @@ func (t clockRoundTimestamps) complete() bool {
 // the controller's (positive means this node is ahead), assuming the request and response legs of the round trip
 // took equal time; rtt is the round-trip time that assumption is made over. ok is false for an incomplete round,
 // in which case the other two returns are zero and must not be reported.
+//
+// The classic NTP offset formula θ = ((T2−T1)+(T3−T4))/2 (T1=sentAt, T2=receivedAt, T3=respondedAt, T4=
+// gotResponseAt) computes "T2/T3's clock minus T1/T4's clock" — here, the controller's clock minus this node's.
+// D28 defines ClockOffsetMillis the other way around (positive: *this node's* clock is ahead, matching this
+// method's own doc comment above, southbound.Status.ClockOffsetMillis's, and the console's — see
+// docs/architecture/control-data-plane.md §5's stage 7 review fix note), so this negates θ by swapping each
+// subtraction's operands: ((T1−T2)+(T4−T3))/2 = ((sentAt−receivedAt)+(gotResponseAt−respondedAt))/2.
 func (t clockRoundTimestamps) offsetAndRTT() (offset, rtt time.Duration, ok bool) {
 	if !t.complete() {
 		return 0, 0, false
 	}
-	offset = (t.receivedAt.Sub(t.sentAt) + t.respondedAt.Sub(t.gotResponseAt)) / 2
+	offset = (t.sentAt.Sub(t.receivedAt) + t.gotResponseAt.Sub(t.respondedAt)) / 2
 	rtt = t.gotResponseAt.Sub(t.sentAt) - t.respondedAt.Sub(t.receivedAt)
 	return offset, rtt, true
 }

@@ -16,9 +16,12 @@ import (
 	"github.com/rpop-project/rpop/internal/southbound"
 )
 
-// TestClockRoundTimestampsOffsetAndRTT covers D28's NTP formulas directly: symmetric delay (offset alone reveals
-// the skew), asymmetric delay (RTT still comes out right even though neither leg alone would), and a negative
-// offset (this node's clock behind the controller's).
+// TestClockRoundTimestampsOffsetAndRTT covers D28's NTP formulas directly: symmetric delay with the node's clock
+// running fast (offset alone reveals the skew, with the correct sign), symmetric delay with the node's clock
+// running slow, and asymmetric delay (RTT still comes out right even though neither leg alone would). Every case's
+// timestamps are derived from an explicit physical scenario (one-way delays plus a real clock error ε) so the
+// expected offset is checked against ε directly, not against whatever offsetAndRTT happens to compute — see the
+// stage 7 review's clock-skew sign fix (docs/architecture/control-data-plane.md §5).
 func TestClockRoundTimestampsOffsetAndRTT(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 0, 0, 0, time.UTC)
 	tests := []struct {
@@ -28,36 +31,42 @@ func TestClockRoundTimestampsOffsetAndRTT(t *testing.T) {
 		wantRTT    time.Duration
 	}{
 		{
-			// Symmetric 50ms each way, node's clock exactly 200ms ahead: t0=0, t1=250 (0+50+200), t2=250 (answered
-			// instantly), t3=300 (0+50+200-200+50... ) — easier to just pick clean numbers directly.
-			name: "symmetric delay reveals the offset exactly",
+			// Node's clock runs ε=+200ms fast; symmetric one-way delay d=50ms each way; controller processes
+			// instantly. Modeling the controller's clock as the reference (error 0) and the node's as reading
+			// true_time+ε: t0=sentAt=true_send+ε=0+200=200ms; t1=receivedAt=true_send+d=0+50=50ms (controller's
+			// clock, no error); t2=respondedAt=true_send+d=50ms (instant processing); t3=gotResponseAt=
+			// true_send+2d+ε=0+100+200=300ms. offset=((t0−t1)+(t3−t2))/2=((200−50)+(300−50))/2=200ms=ε; rtt=2d=100ms.
+			name: "symmetric delay reveals a positive offset when the node's clock runs fast",
 			round: clockRoundTimestamps{
-				sentAt: base, gotResponseAt: base.Add(100 * time.Millisecond),
-				receivedAt: base.Add(250 * time.Millisecond), respondedAt: base.Add(250 * time.Millisecond),
+				sentAt: base.Add(200 * time.Millisecond), gotResponseAt: base.Add(300 * time.Millisecond),
+				receivedAt: base.Add(50 * time.Millisecond), respondedAt: base.Add(50 * time.Millisecond),
 			},
 			wantOffset: 200 * time.Millisecond,
 			wantRTT:    100 * time.Millisecond,
 		},
 		{
-			// Asymmetric delay (request leg 80ms, response leg 20ms) with zero real clock offset: NTP's own
+			// Node's clock runs ε=−150ms slow; symmetric one-way delay d=30ms each way. t0=true_send+ε=0−150=
+			// −150ms; t1=true_send+d=30ms; t2=true_send+d=30ms; t3=true_send+2d+ε=0+60−150=−90ms.
+			// offset=((−150−30)+(−90−30))/2=−150ms=ε; rtt=2d=60ms.
+			name: "symmetric delay reveals a negative offset when the node's clock runs slow",
+			round: clockRoundTimestamps{
+				sentAt: base.Add(-150 * time.Millisecond), gotResponseAt: base.Add(-90 * time.Millisecond),
+				receivedAt: base.Add(30 * time.Millisecond), respondedAt: base.Add(30 * time.Millisecond),
+			},
+			wantOffset: -150 * time.Millisecond,
+			wantRTT:    60 * time.Millisecond,
+		},
+		{
+			// Asymmetric delay (request leg 80ms, response leg 20ms) with zero real clock offset (ε=0): NTP's own
 			// well-known limitation is that the offset formula assumes a symmetric round trip, so an asymmetric one
-			// biases the estimate away from the true value (here: (80 + (80-100))/2 = 30ms) even though RTT itself
-			// comes out exactly right regardless of the asymmetry.
+			// biases the estimate away from the true value (here: ((0−80)+(100−80))/2 = −30ms) even though RTT
+			// itself comes out exactly right regardless of the asymmetry.
 			name: "asymmetric delay biases the offset but not the RTT",
 			round: clockRoundTimestamps{
 				sentAt: base, gotResponseAt: base.Add(100 * time.Millisecond),
 				receivedAt: base.Add(80 * time.Millisecond), respondedAt: base.Add(80 * time.Millisecond),
 			},
-			wantOffset: 30 * time.Millisecond,
-			wantRTT:    100 * time.Millisecond,
-		},
-		{
-			name: "a negative offset (this node's clock behind) comes out negative",
-			round: clockRoundTimestamps{
-				sentAt: base, gotResponseAt: base.Add(100 * time.Millisecond),
-				receivedAt: base.Add(-50 * time.Millisecond), respondedAt: base.Add(-50 * time.Millisecond),
-			},
-			wantOffset: -100 * time.Millisecond,
+			wantOffset: -30 * time.Millisecond,
 			wantRTT:    100 * time.Millisecond,
 		},
 	}
