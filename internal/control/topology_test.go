@@ -180,6 +180,38 @@ func TestTopologyAPIIncludesEmbeddedNodeAndOnlineStatus(t *testing.T) {
 	}
 }
 
+// TestTopologyNodeExposesProtocolVersionAndStatus covers D27's copy of the fields nodeView already exposes: the
+// topology node tooltip (web/src/views/TopologyPage.jsx) needs protocolVersion/protocolStatus without a second
+// /api/nodes round trip, for a reporting node, the always-current embedded node, and a node that never reported.
+func TestTopologyNodeExposesProtocolVersionAndStatus(t *testing.T) {
+	c := newTestControl(t)
+	c.SetEmbeddedNode(true)
+	c.nodes.reportProtocolVersion("edge-1", southbound.MinSupportedProtocolVersion, false)
+	if err := c.store.SaveNode(t.Context(), store.Node{ID: "edge-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.store.SaveNode(t.Context(), store.Node{ID: "edge-2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := c.buildTopology(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reporting := findTopologyNode(t, view.Nodes, "edge-1")
+	if reporting.ProtocolVersion != southbound.MinSupportedProtocolVersion || reporting.ProtocolStatus != "current" {
+		t.Fatalf("edge-1 topology node = %#v", reporting)
+	}
+	unreported := findTopologyNode(t, view.Nodes, "edge-2")
+	if unreported.ProtocolVersion != 0 || unreported.ProtocolStatus != "" {
+		t.Fatalf("edge-2 (never reported) topology node = %#v, want zero/empty", unreported)
+	}
+	embedded := findTopologyNode(t, view.Nodes, LocalNodeID)
+	if embedded.ProtocolVersion != southbound.ProtocolVersion || embedded.ProtocolStatus != "current" {
+		t.Fatalf("embedded node topology entry = %#v, want the controller's own version/current", embedded)
+	}
+}
+
 func TestTopologyAPIRequiresAuthentication(t *testing.T) {
 	handler := newTestControl(t).Handler()
 	setupAdminForTest(t, handler)

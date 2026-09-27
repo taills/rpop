@@ -8,6 +8,7 @@ import (
 
 	"github.com/rpop-project/rpop/internal/overlay"
 	"github.com/rpop-project/rpop/internal/snapshot"
+	"github.com/rpop-project/rpop/internal/southbound"
 	"github.com/rpop-project/rpop/internal/store"
 )
 
@@ -33,6 +34,10 @@ type topologyNode struct {
 	// clockSkewWarnThresholdMillis. See nodeView's doc comment for the shared nil/"" convention.
 	ClockSkewMillis *int64 `json:"clockSkewMillis,omitempty"`
 	ClockSkewStatus string `json:"clockSkewStatus,omitempty"`
+	// ProtocolVersion/ProtocolStatus mirror nodeView's own fields of the same name (D27), so the topology page's
+	// node tooltip (web/src/views/TopologyPage.jsx) can flag an outdated node without a second /api/nodes fetch.
+	ProtocolVersion int    `json:"protocolVersion,omitempty"`
+	ProtocolStatus  string `json:"protocolStatus,omitempty"`
 }
 
 // topologyLink is one overlay link a node dials, derived from the paths and relay routes in the published
@@ -111,9 +116,11 @@ func (c *Control) topologyNode(node store.Node, embedded bool, roles map[string]
 	if embedded {
 		view.Online = true
 		view.ClockSkewMillis, view.ClockSkewStatus = clockSkewZero(), "ok"
+		view.ProtocolVersion, view.ProtocolStatus = southbound.ProtocolVersion, "current"
 	} else if runtime, ok := c.nodes.snapshot(node.ID); ok {
 		view.Online = runtime.streams > 0
 		view.ClockSkewMillis, view.ClockSkewStatus = c.clockSkewView(runtime.status.ClockOffsetMillis)
+		view.ProtocolVersion, view.ProtocolStatus = runtime.protocolVersion, runtime.protocolStatus
 	}
 	return view
 }
