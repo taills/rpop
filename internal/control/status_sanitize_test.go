@@ -116,6 +116,57 @@ func TestNodeRegistryReportSanitizesBeforeStoring(t *testing.T) {
 	}
 }
 
+// TestSanitizeLinksReplacesOutOfEnumStatusAndTruncatesTimestamps covers the two fields sanitizeLinks used to miss
+// (stage 6 Go review): Status is replaced with "unknown" when it is not one of overlay.LinkStatus's own three
+// values, and DownUntil/LastSuccess are truncated the same as every other diagnostic string.
+func TestSanitizeLinksReplacesOutOfEnumStatusAndTruncatesTimestamps(t *testing.T) {
+	longString := strings.Repeat("t", maxHealthStringBytes+50)
+	sanitized := sanitizeStatus(southbound.Status{Links: []overlay.LinkStatus{
+		{Peer: "a", Status: "up", DownUntil: longString, LastSuccess: longString},
+		{Peer: "b", Status: "dialing"},
+		{Peer: "c", Status: "down"},
+		{Peer: "d", Status: "boot-up-please-trust-me"},
+	}}).Links
+	if len(sanitized) != 4 {
+		t.Fatalf("links = %d, want 4", len(sanitized))
+	}
+	if len(sanitized[0].DownUntil) != maxHealthStringBytes || len(sanitized[0].LastSuccess) != maxHealthStringBytes {
+		t.Fatalf("link 0 = %#v, want DownUntil/LastSuccess truncated to %d", sanitized[0], maxHealthStringBytes)
+	}
+	wantStatuses := []string{"up", "dialing", "down", "unknown"}
+	for i, want := range wantStatuses {
+		if sanitized[i].Status != want {
+			t.Fatalf("link %d status = %q, want %q", i, sanitized[i].Status, want)
+		}
+	}
+}
+
+// TestSanitizePathsReplacesOutOfEnumStatusAndTruncatesUntil covers dataplane.PathHealth's own equivalent gap:
+// Status must be "healthy" or "cooling", and Until is bounded the same as Label/LastError.
+func TestSanitizePathsReplacesOutOfEnumStatusAndTruncatesUntil(t *testing.T) {
+	longString := strings.Repeat("t", maxHealthStringBytes+50)
+	sanitized := sanitizeStatus(southbound.Status{Paths: []dataplane.UpstreamPathHealth{{
+		SiteID: "web", Upstream: "https://example.com", Paths: []dataplane.PathHealth{
+			{Label: "a", Status: "healthy"},
+			{Label: "b", Status: "cooling", Until: longString},
+			{Label: "c", Status: "definitely-fine-trust-me"},
+		},
+	}}}).Paths
+	if len(sanitized) != 1 || len(sanitized[0].Paths) != 3 {
+		t.Fatalf("paths = %#v", sanitized)
+	}
+	got := sanitized[0].Paths
+	if len(got[1].Until) != maxHealthStringBytes {
+		t.Fatalf("path 1 Until length = %d, want %d", len(got[1].Until), maxHealthStringBytes)
+	}
+	wantStatuses := []string{"healthy", "cooling", "unknown"}
+	for i, want := range wantStatuses {
+		if got[i].Status != want {
+			t.Fatalf("path %d status = %q, want %q", i, got[i].Status, want)
+		}
+	}
+}
+
 // TestSanitizeClockOffsetClampsOutOfRangeValues covers D28's range check: a plausible offset (and the RTT
 // reported alongside it) survives untouched, but one beyond maxClockOffsetMillis is dropped together with its
 // RTT, since the two only mean anything together.

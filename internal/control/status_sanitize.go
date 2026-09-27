@@ -29,11 +29,20 @@ const (
 	maxClockOffsetMillis = int64(24 * time.Hour / time.Millisecond)
 )
 
+// validLinkStatuses and validPathStatuses are overlay.LinkStatus.Status's and dataplane.PathHealth.Status's only
+// legitimate values (see each type's own doc comment); an out-of-enum value from a buggy or hostile node is
+// replaced with "unknown" rather than echoed back verbatim to every consumer of nodeView/topologyAPI.
+var (
+	validLinkStatuses = map[string]bool{"up": true, "dialing": true, "down": true}
+	validPathStatuses = map[string]bool{"healthy": true, "cooling": true}
+)
+
 // sanitizeStatus bounds the entry counts and string lengths of the link/path health data inside status, and
 // clamps its reported clock offset to a plausible range (D28), before nodeRegistry.report keeps any of it or
 // nodeView/topologyAPI serve it back — so a node's own report cannot grow the controller's memory or response
-// sizes without bound, and cannot pollute the console with an implausible clock skew. It leaves every other field
-// of status untouched.
+// sizes without bound, and cannot pollute the console with an implausible clock skew. Every string field of
+// Links/Paths it touches ends up truncated to at most maxHealthStringBytes, and every Status field ends up one of
+// its type's own enum values; sanitizeStatus leaves every other field of status untouched.
 func sanitizeStatus(status southbound.Status) southbound.Status {
 	status.Links = sanitizeLinks(status.Links)
 	status.Paths = sanitizePaths(status.Paths)
@@ -65,6 +74,11 @@ func sanitizeLinks(links []overlay.LinkStatus) []overlay.LinkStatus {
 		link.Peer = truncate(link.Peer, maxHealthStringBytes)
 		link.Address = truncate(link.Address, maxHealthStringBytes)
 		link.LastError = truncate(link.LastError, maxHealthStringBytes)
+		link.DownUntil = truncate(link.DownUntil, maxHealthStringBytes)
+		link.LastSuccess = truncate(link.LastSuccess, maxHealthStringBytes)
+		if !validLinkStatuses[link.Status] {
+			link.Status = "unknown"
+		}
 		if len(link.Proxies) > maxProxyChainEntries {
 			link.Proxies = link.Proxies[:maxProxyChainEntries]
 		}
@@ -105,6 +119,10 @@ func sanitizePaths(groups []dataplane.UpstreamPathHealth) []dataplane.UpstreamPa
 		for i, p := range group.Paths {
 			p.Label = truncate(p.Label, maxHealthStringBytes)
 			p.LastError = truncate(p.LastError, maxHealthStringBytes)
+			p.Until = truncate(p.Until, maxHealthStringBytes)
+			if !validPathStatuses[p.Status] {
+				p.Status = "unknown"
+			}
 			paths[i] = p
 		}
 		group.Paths = paths
