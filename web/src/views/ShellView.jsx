@@ -1,5 +1,6 @@
 import { useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { AppShell, UiButton, UiThemeSwitcher, UiNavLayoutSwitcher, UiTypeSwitcher } from '@/components/ui'
+import ErrorBoundary from '@/components/ErrorBoundary.jsx'
 import { useToast } from '@/stores/toast'
 import { api } from '@/api'
 import { useAuthStore } from '@/stores/auth'
@@ -118,14 +119,22 @@ export default function ShellView() {
       onSecondaryActiveChange={onSide}
       navRight={
         <>
-          <UiTypeSwitcher />
-          <UiNavLayoutSwitcher />
+          {/* The font-scale and nav-layout switchers are demonstrations of the design system itself (see the
+              catalog/demo/tokens dev-only pages above), not settings an operator needs day to day; keeping them
+              out of the production top bar is also what keeps it narrow enough not to overflow on small
+              screens (docs/architecture/control-data-plane.md §5, "阶段 6 审查与冒烟修复"). */}
+          {import.meta.env.DEV && <UiTypeSwitcher />}
+          {import.meta.env.DEV && <UiNavLayoutSwitcher />}
           <UiThemeSwitcher />
           <UiButton variant="ghost" size="sm" icon="external" onClick={logout}>退出登录</UiButton>
         </>
       }
     >
-      <Outlet />
+      {/* Keyed by pathname so navigating away from a page that crashed while rendering remounts a fresh
+          boundary instead of staying stuck on its error card. */}
+      <ErrorBoundary key={location.pathname}>
+        <Outlet />
+      </ErrorBoundary>
     </AppShell>
   )
 }

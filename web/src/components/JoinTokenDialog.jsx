@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { UiAlert, UiButton, UiModal } from '@/components/ui'
 import { describeTime } from '@/nodeHealth'
+import { useToast } from '@/stores/toast'
 import './JoinTokenDialog.css'
 
 // JoinTokenDialog shows a freshly issued join token exactly once (the server only ever stores its hash — see
@@ -8,6 +9,7 @@ import './JoinTokenDialog.css'
 // stays open until the user explicitly dismisses it (no backdrop/escape close) and offers a one-click copy.
 export default function JoinTokenDialog({ value, node, token, expiresAt, onClose }) {
   const [copied, setCopied] = useState(false)
+  const { toast } = useToast()
   const expiry = describeTime(expiresAt)
 
   async function copy() {
@@ -15,8 +17,12 @@ export default function JoinTokenDialog({ value, node, token, expiresAt, onClose
       await navigator.clipboard.writeText(token || '')
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
-    } catch {
+    } catch (e) {
+      // The token can only be read from this dialog once, so a silent clipboard failure here (permission
+      // denied, insecure context, no clipboard API, ...) would otherwise look like the click did nothing and
+      // leave the operator to guess whether they still need to select the text by hand.
       setCopied(false)
+      toast.error(e?.message || '复制失败，请手动选中并复制上方 token')
     }
   }
 

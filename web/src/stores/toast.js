@@ -32,13 +32,24 @@ export const useToastStore = create((set, get) => ({
   },
 }))
 
+// bindToastApi wires a store's push/success/error/warn/info into the shape useToast() hands out. It is a plain
+// function of its arguments (no hook call inside), so toast.test.js can exercise the shape directly with mock
+// functions instead of having to render a component.
+//
+// Every call site in the console destructures `const { toast } = useToast()` and then calls
+// `toast.success(...)`/`toast.error(...)`/etc, not the bare `toast(msg, type, title)` form (that pattern
+// predates most of these call sites and nothing currently relies on the plain-call form, but it is kept working
+// too since it costs nothing to keep). Rather than rewrite every one of those call sites, `toast` itself is a
+// function with success/error/warn/info attached as properties, so both styles resolve to the same store calls.
+export function bindToastApi({ push, success, error, warn, info }) {
+  const toast = (msg, type = 'info', title = '') => push({ type, message: msg, title })
+  toast.success = success
+  toast.error = error
+  toast.warn = warn
+  toast.info = info
+  return { toast, success, error, warn, info }
+}
+
 export function useToast() {
-  const { push, success, error, warn, info } = useToastStore()
-  return {
-    toast: (msg, type = 'info', title = '') => push({ type, message: msg, title }),
-    success,
-    error,
-    warn,
-    info,
-  }
+  return bindToastApi(useToastStore())
 }
