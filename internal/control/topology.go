@@ -94,7 +94,15 @@ func (c *Control) buildTopology(ctx context.Context) (topologyView, error) {
 }
 
 func (c *Control) topologyNode(node store.Node, embedded bool, roles map[string][]string) topologyNode {
-	view := topologyNode{ID: node.ID, Name: node.Name, Embedded: embedded, Roles: roles[node.ID]}
+	// A node that is registered but currently unused by any site or relay route has no entry in roles at all,
+	// so roles[node.ID] is a nil slice; Roles has no `omitempty` (every node should report its role set, even
+	// an empty one), so a nil slice would marshal as `"roles":null` instead of `[]`. The console's topology
+	// layout (web/src/topologyLayout.js) expects an array it can call .includes on, so this always sends one.
+	nodeRoles := roles[node.ID]
+	if nodeRoles == nil {
+		nodeRoles = []string{}
+	}
+	view := topologyNode{ID: node.ID, Name: node.Name, Embedded: embedded, Roles: nodeRoles}
 	if embedded {
 		view.Online = true
 	} else if runtime, ok := c.nodes.snapshot(node.ID); ok {

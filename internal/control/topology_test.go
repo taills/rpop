@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -159,6 +160,20 @@ func TestTopologyAPIIncludesEmbeddedNodeAndOnlineStatus(t *testing.T) {
 	edge := findTopologyNode(t, view.Nodes, "edge-1")
 	if edge.Embedded || !edge.Online || len(edge.Roles) != 0 {
 		t.Fatalf("edge-1 node = %#v", edge)
+	}
+	// edge-1 hosts no site and relays nothing, so it has no derived role, but Roles must still marshal as an
+	// empty array rather than null: the console's topology layout (web/src/topologyLayout.js) calls
+	// roles.includes(...), which throws on null and white-screens the whole page (see the JS-side regression
+	// test added alongside this one).
+	if edge.Roles == nil {
+		t.Fatal("edge-1 roles is a nil slice, will marshal as \"roles\":null")
+	}
+	encoded, err := json.Marshal(view.Nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"roles":null`) {
+		t.Fatalf("topology nodes JSON contains \"roles\":null: %s", encoded)
 	}
 	if len(view.Links) != 0 {
 		t.Fatalf("links = %#v, want none for a site with no paths", view.Links)
