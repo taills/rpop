@@ -210,6 +210,8 @@ func TestUploaderRetriesWithBackoffAfterFailuresThenSucceeds(t *testing.T) {
 	defer server.Close()
 
 	clk := newFakeClock(time.Unix(1_700_000_000, 0))
+	armed := make(chan struct{}, 4)
+	clk.notifyArmed(armed)
 	uploader := newUploader(s, UploaderConfig{Endpoint: server.URL + southbound.LogsPath, Client: server.Client, Log: zap.NewNop()}, clk)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -217,7 +219,20 @@ func TestUploaderRetriesWithBackoffAfterFailuresThenSucceeds(t *testing.T) {
 
 	for expected := 1; expected <= 2; expected++ {
 		waitFor(t, time.Second, func() bool { return controller.requestCount() >= expected })
-		waitFor(t, time.Second, func() bool { return uploader.LastError() != "" })
+		// Wait for the uploader to have actually registered its next backoff wait with clk before advancing it:
+		// polling LastError (or requestCount again) here would race the goroutine, since both can already be
+		// true from the *previous* failure and say nothing about whether this one's retry timer is armed yet.
+		select {
+		case <-armed:
+		case <-time.After(time.Second):
+			t.Fatal("uploader never armed its retry backoff timer")
+		}
+		// Safe to check now, unlike before armed fired: setLastErr happens-before the arming select receives
+		// from clk.After in Run's own goroutine, and the channel send/receive above carries that ordering over
+		// to this goroutine.
+		if uploader.LastError() == "" {
+			t.Fatalf("LastError still empty right after registering retry #%d's backoff wait", expected)
+		}
 		// Whatever backoff was chosen is capped at uploadMaxBackoff; advancing well past it always unblocks it.
 		clk.Advance(2 * uploadMaxBackoff)
 	}
