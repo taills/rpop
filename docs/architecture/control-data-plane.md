@@ -167,6 +167,14 @@
 - `components/PathsEditor.jsx` 接入 `UpstreamFields.jsx` 的新增 `OptionToggle`;`pathsForm.js` 提供路径/跳的增删排序、`via` 单路径简写迁移(`normalizeUpstreamPaths`,在 `siteForm.js` 的 `prepareSiteForEditing` 时机做一次)、hop 下拉的候选节点过滤(排除内嵌节点与站点自身 placement)以及 `parsePathsError`——从 `upstreams[i].paths[j](.via[k])?` 前缀定位服务端 400 错误到具体路径/跳。
 - 遗留:hop 下拉未按节点 `relayAddress` 是否已配置过滤,该校验仍完全靠服务端 400 兜底;控制台目前没有站点 placement(`config.nodes`)编辑 UI,因此"路径不能经过服务该站点的节点"这条排除规则实际只影响内嵌节点。
 
+**阶段 6 第 3 步(追踪时间线)** 的落地要点:
+
+- `views/TracePage.jsx`(路由 `trace/:trackId?`,`:trackId` 用 react-router 的可选段语法,同一个组件覆盖 `/trace` 与 `/trace/:trackId`;另支持 `/trace?tunnel=<id>` 直接按隧道查、`/trace?trackId=` 会被 302 到规范的 `/trace/:trackId`)先查 `GET /api/logging/trace/{trackId}` 拿到那一条 access log 记录做摘要(时间/站点/方法/host+path/状态码/完整耗时/`reportedBy` 作为入口节点),若其 `tunnelId` 非空再查 `GET /api/logging/tunnels/{tunnelId}`;两次请求都做了竞态保护(只应用最后一次发起的请求的结果)。
+- 纯逻辑抽到 `web/src/trace.js`(`isValidTraceId`——与后端 `traceIDPattern` 同形状的 UUID 校验、`sortTunnelEvents`、`withRelativeTiming`、`groupHops`——按 `role` 排 entry→relay→exit,同角色多跳按各自最早事件时间破平、`hopDurationBars`——每跳耗时占比条,零时长/单跳/全部同时间戳都退化为可见的最小宽度或均分、`tunnelSectionState`——把加载/错误/空/无隧道折叠成一个状态机),`trace.test.js` 覆盖乱序、缺 `ended`、单跳、时间戳相同等边界,共 17 个用例。
+- 时间线可视化是手写 CSS(每跳一行 · 按百分比定位的进度条 + `UiTimeline` 纵向列表),未引入图表依赖;页面提示"跨节点时间以各节点本地时钟为准"(时钟偏差标注留给阶段 7)。
+- `LogDetailDrawer.jsx` 新增 Track ID / Tunnel ID 两行,渲染成可点击按钮(`useNavigate` 跳转到 `/trace/:trackId` 或 `/trace?tunnel=`),没有 tunnelId 时提示"直连出口,未经过隧道"。
+- 未发现 API 缺口:`accesslog.Record` 的 `trackId`/`tunnelId`/`reportedBy`/`upstream` 与 `overlay.TunnelEvent` 的字段已经满足摘要与时间线所需的全部展示项。
+
 ## 6. 非目标
 
 多路径负载均衡/加权分流;请求级透明重试;中继节点完全无入站(NAT 反向建链)。
