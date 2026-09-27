@@ -2,12 +2,15 @@ package control
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/rpop-project/rpop/internal/dataplane"
+	"github.com/rpop-project/rpop/internal/overlay"
+	"github.com/rpop-project/rpop/internal/snapshot"
 	"github.com/rpop-project/rpop/internal/southbound"
 	"github.com/rpop-project/rpop/internal/store"
 )
@@ -86,5 +89,54 @@ func TestSiteMetricsAddUpNodes(t *testing.T) {
 	}
 	if len(view.ByNode) != 3 || view.ByNode["edge-1"].RequestCount != 3 || view.ByNode["edge-3"].RequestCount != 0 {
 		t.Fatalf("per-node metrics = %#v", view.ByNode)
+	}
+}
+
+func TestNodeViewExposesReportedLinkAndPathHealth(t *testing.T) {
+	c := newTestControl(t)
+	c.nodes.report("edge-1", southbound.Status{
+		Links: []overlay.LinkStatus{{Peer: "edge-2", Address: "10.0.0.2:7000", Status: "up", Connections: 1}},
+		Paths: []dataplane.UpstreamPathHealth{{SiteID: "web", Upstream: "https://example.com", Paths: []dataplane.PathHealth{
+			{Index: 0, Label: "direct", Status: "healthy"},
+		}}},
+	})
+	view := c.nodeView(store.Node{ID: "edge-1", Name: "Edge 1"})
+	if len(view.Links) != 1 || view.Links[0].Peer != "edge-2" || view.Links[0].Status != "up" {
+		t.Fatalf("links = %#v", view.Links)
+	}
+	if len(view.Paths) != 1 || view.Paths[0].SiteID != "web" || len(view.Paths[0].Paths) != 1 || view.Paths[0].Paths[0].Label != "direct" {
+		t.Fatalf("paths = %#v", view.Paths)
+	}
+
+	// A node that never reported carries no link/path health.
+	unreported := c.nodeView(store.Node{ID: "edge-2", Name: "Edge 2"})
+	if unreported.Links == nil || len(unreported.Links) != 0 || unreported.Paths != nil {
+		t.Fatalf("unreported node view = %#v", unreported)
+	}
+}
+
+// TestLocalNodeViewReportsEnginePathHealth covers the embedded node: its path health comes straight from the
+// controller's own engine (see localNodeView), not from a status report.
+func TestLocalNodeViewReportsEnginePathHealth(t *testing.T) {
+	c := newTestControl(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := probe.Addr().(*net.TCPAddr).Port
+	_ = probe.Close()
+	target := strings.TrimPrefix(upstream.URL, "http://")
+	site := snapshot.Site{ID: "s", ListenAddress: "127.0.0.1", ListenPort: port,
+		Upstreams: []snapshot.Upstream{{URL: upstream.URL, Paths: []snapshot.Path{{Label: "direct", Target: target}}}}}
+	if errs := c.engine.Apply([]snapshot.Site{site}); len(errs) > 0 {
+		t.Fatalf("apply failed: %v", errs)
+	}
+	t.Cleanup(c.engine.StopAll)
+
+	view := c.localNodeView()
+	if len(view.Paths) != 1 || view.Paths[0].SiteID != "s" || len(view.Paths[0].Paths) != 1 || view.Paths[0].Paths[0].Label != "direct" {
+		t.Fatalf("local node paths = %#v", view.Paths)
 	}
 }

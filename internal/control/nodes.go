@@ -72,8 +72,11 @@ func (r *nodeRegistry) connected(id string, delta int) {
 }
 
 // report stores status and returns the LogStats the node reported last time (nil the first time), so a caller
-// can log when the node's drop counters increase (D25) without a separate, racy read-then-write.
+// can log when the node's drop counters increase (D25) without a separate, racy read-then-write. status is
+// sanitized first (see sanitizeStatus): a node is a half-trusted party, and its link/path health arrives as
+// free-form JSON the controller keeps in memory and echoes back over /api/nodes and /api/topology.
 func (r *nodeRegistry) report(id string, status southbound.Status) *southbound.LogStats {
+	status = sanitizeStatus(status)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	runtime := r.get(id)
@@ -209,6 +212,9 @@ type nodeView struct {
 	Running           []string             `json:"running"`
 	RelayError        string               `json:"relayError,omitempty"`
 	Links             []overlay.LinkStatus `json:"links"`
+	// Paths summarizes the node's per-upstream path failover health (D18/D19/D20); empty until the node reports
+	// a status carrying it.
+	Paths []dataplane.UpstreamPathHealth `json:"paths,omitempty"`
 	// Logs summarizes the node's log spool and upload pipeline health (D23/D24/D25); nil until the node reports
 	// a status carrying it, and always nil on the embedded node (see southbound.LogStats's doc comment).
 	Logs *southbound.LogStats `json:"logs,omitempty"`
@@ -232,6 +238,7 @@ func (c *Control) nodeView(node store.Node) nodeView {
 		if runtime.status.Links != nil {
 			view.Links = runtime.status.Links
 		}
+		view.Paths = runtime.status.Paths
 		view.Logs = runtime.status.Logs
 	}
 	view.InSync = view.Online && view.AppliedRevision == view.PublishedRevision
@@ -247,7 +254,7 @@ func (c *Control) localNodeView() nodeView {
 	}
 	c.opMu.Unlock()
 	view := nodeView{Node: store.Node{ID: LocalNodeID, Name: "Embedded node"}, Embedded: true, Registered: true, Online: true,
-		AppliedRevision: revision, Running: c.engine.RunningSites(), Errors: errs, Links: links}
+		AppliedRevision: revision, Running: c.engine.RunningSites(), Errors: errs, Links: links, Paths: c.engine.PathHealth()}
 	if published, ok := c.published.Snapshot(LocalNodeID); ok {
 		view.PublishedRevision = published.Revision
 	}
