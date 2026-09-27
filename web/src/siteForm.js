@@ -153,3 +153,26 @@ export function uncoveredHostnames(hostnames = [], dnsNames = []) {
 export function isExpired(certificate) {
   return Boolean(certificate.notAfter) && Date.parse(certificate.notAfter) < Date.now()
 }
+
+// Site placement (config.nodes, D5) chooses which data-plane nodes serve a site. The server treats an empty list
+// as the node embedded in the controller ("local"), so configs saved before this field existed keep working
+// unchanged (see control.siteNodes); PlacementFields spells out that default in the editor rather than only in
+// this comment. The array's order never matters to the server, so togglePlacementNode just appends/removes.
+export function togglePlacementNode(nodeIds, id) {
+  return nodeIds.includes(id) ? nodeIds.filter(existing => existing !== id) : [...nodeIds, id]
+}
+
+// isPlacementError reports whether a server error names the site's placement (config.nodes) as a whole, rather
+// than a specific upstream or path, so the editor can show it next to the placement field. These are the only
+// messages validatePlacement/validatePlacementReferences ever return (internal/control/publish.go, nodes.go);
+// unlike the upstream/path errors handled by pathsForm.js's parsePathsError, they carry no "upstreams[i]" prefix.
+const PLACEMENT_ERROR_PATTERNS = [
+  /^invalid node id ".*"$/,
+  /^node ".*" is listed more than once$/,
+  /^this controller runs no embedded node/,
+  /^node ".*" does not exist$/,
+]
+
+export function isPlacementError(message) {
+  return PLACEMENT_ERROR_PATTERNS.some(pattern => pattern.test(message || ''))
+}

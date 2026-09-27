@@ -63,11 +63,33 @@ export function hopFromSelection(value) {
   return blankHop()
 }
 
-// availableHopNodes excludes nodes a path cannot legally pass through: the embedded node (which cannot relay)
-// and any node the site itself is placed on (control.validatePaths rejects both).
-export function availableHopNodes(nodes, placementIds) {
+// hopNodeOptions classifies every catalog node for use as a path hop, given the ids of the nodes currently
+// serving the site being edited (its live placement — see PlacementFields/siteForm.js's config.nodes, not
+// necessarily what was last saved). Ineligible nodes stay in the list (with a `reason`) instead of being
+// dropped, so PathsEditor can render them as disabled options instead of making them silently vanish.
+export function hopNodeOptions(nodes, placementIds) {
   const placed = new Set(placementIds)
-  return nodes.filter((node) => !node.embedded && !placed.has(node.id))
+  return nodes.map((node) => ({ node, reason: hopNodeReason(node, placed) }))
+}
+
+// hopNodeReason mirrors, in priority order, the three ways control.validatePaths/validatePathReferences reject a
+// node as a hop: the embedded node can never relay, a node serving the site cannot be passed through, and a node
+// without a configured relayAddress cannot be dialed by other nodes yet. '' means the node is a valid hop.
+function hopNodeReason(node, placed) {
+  if (node.embedded) return '内嵌节点不能作为中继'
+  if (placed.has(node.id)) return '该节点服务此站点，路径不能经过它'
+  if (!node.relayAddress) return '未配置 relayAddress，无法作为中继'
+  return ''
+}
+
+// hopNodeWarning reports why an already-saved hop is no longer usable — placement changed after the path was
+// saved, the node lost its relayAddress, or the node was deleted — so PathsEditor can flag it even though a
+// disabled option, once already selected, stays selectable. '' for a proxy hop or a still-valid node hop.
+export function hopNodeWarning(hop, nodes, placementIds) {
+  if (!hop.node) return ''
+  const node = nodes.find((candidate) => candidate.id === hop.node)
+  if (!node) return '该节点已不存在'
+  return hopNodeReason(node, new Set(placementIds))
 }
 
 // pathLabel renders a path for display; unlike the controller's internal label it uses catalog names for

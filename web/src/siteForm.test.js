@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { addUpstream, applySections, makeDefaultUpstream, prepareSiteForEditing, removeUpstream, sectionsForSite, validateSections } from './siteForm.js'
+import { addUpstream, applySections, isPlacementError, makeDefaultUpstream, prepareSiteForEditing, removeUpstream, sectionsForSite, togglePlacementNode, validateSections } from './siteForm.js'
 
 const site = (upstreams, routes = []) => ({ id: 's', name: 'S', config: { listenAddress: '127.0.0.1', listenPort: 8081, upstreams, routes, accessLog: {} } })
 
@@ -83,4 +83,20 @@ test('addUpstream appends an empty upstream with its own sections and files', ()
   assert.equal(next.site.config.upstreams[1].url, '')
   assert.equal(next.sections.upstreams.length, 2)
   assert.equal(next.files.length, 2)
+})
+
+test('togglePlacementNode adds an unselected node and removes a selected one', () => {
+  assert.deepEqual(togglePlacementNode([], 'node-a'), ['node-a'])
+  assert.deepEqual(togglePlacementNode(['node-a'], 'node-b'), ['node-a', 'node-b'])
+  assert.deepEqual(togglePlacementNode(['node-a', 'node-b'], 'node-a'), ['node-b'])
+})
+
+test('isPlacementError recognizes validatePlacement/validatePlacementReferences messages only', () => {
+  assert.equal(isPlacementError('invalid node id "Bad_ID"'), true)
+  assert.equal(isPlacementError('node "node-a" is listed more than once'), true)
+  assert.equal(isPlacementError('this controller runs no embedded node; place the site on registered nodes'), true)
+  assert.equal(isPlacementError('node "node-a" does not exist'), true)
+  assert.equal(isPlacementError('upstreams[0].paths[0]: node "node-a" does not exist'), false)
+  assert.equal(isPlacementError('upstreams[0].paths[0].via[1] must name exactly one node or proxy'), false)
+  assert.equal(isPlacementError(''), false)
 })

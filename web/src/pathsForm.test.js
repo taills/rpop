@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  addHop, addPath, availableHopNodes, hopFromSelection, hopSelection, moveHop, movePath,
+  addHop, addPath, hopFromSelection, hopNodeOptions, hopNodeWarning, hopSelection, moveHop, movePath,
   normalizeUpstreamPaths, parsePathsError, pathLabel, pathsProblem, removeHop, removePath, setHop,
 } from './pathsForm.js'
 
@@ -68,9 +68,27 @@ test('hopSelection and hopFromSelection round-trip nodes and proxies', () => {
   assert.deepEqual(hopFromSelection(''), { node: '', proxy: '' })
 })
 
-test('availableHopNodes excludes the embedded node and the site’s own placement', () => {
-  const nodes = [{ id: 'local', embedded: true }, { id: 'relay-1' }, { id: 'relay-2' }]
-  assert.deepEqual(availableHopNodes(nodes, ['relay-1']).map((n) => n.id), ['relay-2'])
+test('hopNodeOptions marks the embedded node, the site’s own placement and nodes without a relayAddress', () => {
+  const nodes = [
+    { id: 'local', embedded: true },
+    { id: 'relay-1', relayAddress: '10.0.0.1:9443' },
+    { id: 'relay-2', relayAddress: '10.0.0.2:9443' },
+    { id: 'relay-3' },
+  ]
+  const options = hopNodeOptions(nodes, ['relay-1'])
+  assert.deepEqual(options.map((o) => o.node.id), ['local', 'relay-1', 'relay-2', 'relay-3'])
+  assert.match(options[0].reason, /内嵌节点/)
+  assert.match(options[1].reason, /服务此站点/)
+  assert.equal(options[2].reason, '')
+  assert.match(options[3].reason, /relayAddress/)
+})
+
+test('hopNodeWarning flags a saved hop that is no longer a valid relay, and clears once it is fixed', () => {
+  const nodes = [{ id: 'relay-1', relayAddress: '10.0.0.1:9443' }]
+  assert.equal(hopNodeWarning({ node: '', proxy: 'p' }, nodes, []), '')
+  assert.equal(hopNodeWarning({ node: 'relay-1', proxy: '' }, nodes, []), '')
+  assert.match(hopNodeWarning({ node: 'relay-1', proxy: '' }, nodes, ['relay-1']), /服务此站点/)
+  assert.match(hopNodeWarning({ node: 'gone', proxy: '' }, nodes, []), /不存在/)
 })
 
 test('pathLabel names hops from the node/proxy catalog, or "direct" for an empty path', () => {
