@@ -1,4 +1,4 @@
-package control
+package dataplane
 
 import (
 	"bufio"
@@ -19,77 +19,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/rpop-project/rpop/internal/accesslog"
-	"github.com/rpop-project/rpop/internal/store"
+	"github.com/rpop-project/rpop/internal/snapshot"
 )
-
-const (
-	defaultBodyLogLimit     int64 = 1 << 20
-	maxBodyLogLimit         int64 = 8 << 20
-	maxQueuedAccessLogBytes int64 = 32 << 20
-)
-
-type accessLogEvent struct {
-	record                    accesslog.Record
-	adapterID                 string
-	requestBody, responseBody *bodyCapture
-	includeBodies             bool
-	bytes                     int64
-	barrier                   chan struct{}
-}
-
-func (c *Control) reserveAccessLog(size int64) bool {
-	if size < 0 {
-		return false
-	}
-	for {
-		current := c.queuedLogBytes.Load()
-		if current > 0 && current+size > maxQueuedAccessLogBytes {
-			return false
-		}
-		if c.queuedLogBytes.CompareAndSwap(current, current+size) {
-			return true
-		}
-	}
-}
-
-func (c *Control) accessLogLoop() {
-	for event := range c.accessLogQueue {
-		if event.barrier != nil {
-			close(event.barrier)
-			continue
-		}
-		record := event.record
-		if event.includeBodies {
-			record.RequestBody, record.RequestBodyEncoding, record.RequestBodyTotalBytes, record.RequestBodyTruncated = capturedBody(event.requestBody)
-			record.ResponseBody, record.ResponseBodyEncoding, record.ResponseBodyTotalBytes, record.ResponseBodyTruncated = capturedBody(event.responseBody)
-		}
-		if c.accessLogs != nil {
-			if err := c.accessLogs.Write(context.Background(), event.adapterID, record); err != nil {
-				c.log.Error("write access log", zap.String("site_id", record.SiteID), zap.Error(err))
-				c.metricsForSite(record.SiteID).dropLog()
-			}
-		} else {
-			fields := accessLogFields(record)
-			c.log.Info("site HTTP access", fields...)
-		}
-		c.queuedLogBytes.Add(-event.bytes)
-	}
-}
-
-func (c *Control) DrainAccessLogs(ctx context.Context) error {
-	barrier := make(chan struct{})
-	select {
-	case c.accessLogQueue <- accessLogEvent{barrier: barrier}:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	select {
-	case <-barrier:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
 
 type MetricsSnapshot struct {
 	RequestCount          uint64         `json:"requestCount"`
@@ -272,9 +203,19 @@ func (w *observedResponseWriter) Push(target string, opts *http.PushOptions) err
 	return http.ErrNotSupported
 }
 
-func (c *Control) metricsForSite(siteID string) *siteMetrics {
-	value, _ := c.metrics.LoadOrStore(siteID, &siteMetrics{})
+func (e *Engine) metricsFor(siteID string) *siteMetrics {
+	value, _ := e.metrics.LoadOrStore(siteID, &siteMetrics{})
 	return value.(*siteMetrics)
+}
+
+// Metrics reports the counters of one site; they survive restarts and reloads of the site.
+func (e *Engine) Metrics(siteID string) MetricsSnapshot {
+	return e.metricsFor(siteID).snapshot()
+}
+
+// ForgetMetrics discards the counters of a deleted site.
+func (e *Engine) ForgetMetrics(siteID string) {
+	e.metrics.Delete(siteID)
 }
 
 // routeTrace lets the routing handler report the chosen upstream (redacted URL) and route label back to observeSite.
@@ -285,7 +226,7 @@ type routeTrace struct {
 type routeTraceKey struct{}
 
 // observeSite records metrics and access logs for a site.
-func (c *Control) observeSite(siteID string, settings store.AccessLogConfig, next http.Handler) http.Handler {
+func (e *Engine) observeSite(siteID string, settings snapshot.AccessLog, next http.Handler) http.Handler {
 	loggingEnabled := strings.TrimSpace(settings.AdapterID) != ""
 	includeBodies := loggingEnabled && settings.IncludeBodies
 	limit := settings.MaxBodyBytes
@@ -300,7 +241,7 @@ func (c *Control) observeSite(siteID string, settings store.AccessLogConfig, nex
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
-		m := c.metricsForSite(siteID)
+		m := e.metricsFor(siteID)
 		m.begin()
 		var requestBody *bodyCapture
 		var requestBytes atomic.Uint64
@@ -357,15 +298,12 @@ func (c *Control) observeSite(siteID string, settings store.AccessLogConfig, nex
 		if includeBodies {
 			eventBytes += requestBody.storedBytes() + responseBody.storedBytes()
 		}
-		if !c.reserveAccessLog(eventBytes) {
+		if !e.logs.reserve(eventBytes) {
 			m.dropLog()
 			return
 		}
 		event := accessLogEvent{record: record, adapterID: settings.AdapterID, requestBody: requestBody, responseBody: responseBody, includeBodies: includeBodies, bytes: eventBytes}
-		select {
-		case c.accessLogQueue <- event:
-		default:
-			c.queuedLogBytes.Add(-eventBytes)
+		if !e.logs.enqueue(event) {
 			m.dropLog()
 		}
 	})

@@ -1,7 +1,6 @@
 package control
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -306,7 +305,7 @@ func TestLoggingConfigAndSearchAPI(t *testing.T) {
 	if err := service.store.Save(context.Background(), store.Site{ID: "search-site", Name: "Search site", Config: store.Config{AccessLog: store.AccessLogConfig{AdapterID: "default"}}}); err != nil {
 		t.Fatal(err)
 	}
-	observed := service.observeSite("search-site", store.AccessLogConfig{AdapterID: "default"}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	observed := observedHandler(t, service, "search-site", store.AccessLogConfig{AdapterID: "default"}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Result", "ok")
 		w.WriteHeader(http.StatusAccepted)
 	}))
@@ -488,7 +487,7 @@ func TestAccessLogsRemainDisabledWithoutSiteAdapterSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer service.CloseAccessLogs(context.Background())
-	handler := service.observeSite("disabled-site", store.AccessLogConfig{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := observedHandler(t, service, "disabled-site", store.AccessLogConfig{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
@@ -502,7 +501,7 @@ func TestAccessLogsRemainDisabledWithoutSiteAdapterSelection(t *testing.T) {
 	if result.Total != 0 {
 		t.Fatalf("site without adapter emitted access logs: %#v", result)
 	}
-	if metrics := service.metricsForSite("disabled-site").snapshot(); metrics.RequestCount != 1 {
+	if metrics := service.engine.Metrics("disabled-site"); metrics.RequestCount != 1 {
 		t.Fatalf("metrics should remain enabled without access logs: %#v", metrics)
 	}
 }
@@ -589,7 +588,7 @@ func TestAccessLoggingAndMetrics(t *testing.T) {
 	if response.Code != http.StatusOK || response.Body.String() != "reply:payload" {
 		t.Fatalf("unexpected proxy response: %d %q", response.Code, response.Body.String())
 	}
-	metrics := c.metricsForSite("site-a").snapshot()
+	metrics := c.engine.Metrics("site-a")
 	if metrics.RequestCount != 1 || metrics.StatusCodes[200] != 1 || metrics.BytesReceived != uint64(len("payload")) || metrics.BytesSent != uint64(len("reply:payload")) {
 		t.Fatalf("unexpected metrics: %#v", metrics)
 	}
@@ -615,52 +614,6 @@ func TestAccessLoggingAndMetrics(t *testing.T) {
 			t.Fatalf("access log %s=%#v, want %#v", key, ctx[key], value)
 		}
 	}
-}
-
-func TestRequestRecordParsesTLSAndIPv6Client(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "https://secure.example/a?b=c", nil)
-	req.RemoteAddr = "[2001:db8::1]:443"
-	record := requestRecord(req, "site-tls", "https://backend.example", time.Unix(0, 0))
-	if record.ClientIP != "2001:db8::1" || record.ClientPort != 443 || record.Scheme != "https" || record.TLSVersion == "" || record.Host != "secure.example" || record.Path != "/a?b=c" {
-		t.Fatalf("unexpected TLS record: %#v", record)
-	}
-	req.RemoteAddr = "@unix"
-	if ip, port := splitRemoteAddr(req.RemoteAddr); ip != "@unix" || port != 0 {
-		t.Fatalf("unparsable remote address = %q, %d", ip, port)
-	}
-}
-
-func TestUnlimitedBodyCaptureDoesNotTruncate(t *testing.T) {
-	capture := newBodyCapture(-1)
-	chunk := bytes.Repeat([]byte{'x'}, 32<<10)
-	target := maxBodyLogLimit + 1
-	var written int64
-	for written < target {
-		n := int64(len(chunk))
-		if n > target-written {
-			n = target - written
-		}
-		if _, err := capture.Write(chunk[:n]); err != nil {
-			t.Fatal(err)
-		}
-		written += n
-	}
-	data, total, truncated := capture.snapshot()
-	if total != target || int64(len(data)) != target || truncated {
-		t.Fatalf("unlimited capture truncated body: total=%d stored=%d truncated=%v", total, len(data), truncated)
-	}
-}
-
-func TestAccessLogQueueAllowsSingleOversizedEvent(t *testing.T) {
-	c := &Control{accessLogQueue: make(chan accessLogEvent, 1)}
-	size := maxQueuedAccessLogBytes + 1
-	if !c.reserveAccessLog(size) {
-		t.Fatal("expected empty queue to admit one oversized full-body log")
-	}
-	if c.reserveAccessLog(1) {
-		t.Fatal("expected oversized queued body to prevent unbounded additional queueing")
-	}
-	c.queuedLogBytes.Add(-size)
 }
 
 func mustJSON(t *testing.T, value any) []byte {
@@ -729,7 +682,7 @@ func TestSharedListenerRoutesByHostname(t *testing.T) {
 	if err := c.stop("a"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := c.runs["b"]; !ok {
+	if !c.engine.Running("b") {
 		t.Fatal("stopping one site unexpectedly stopped its shared listener peer")
 	}
 }

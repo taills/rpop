@@ -254,9 +254,9 @@ func TestWebSocketUpgradeRelaysBothDirections(t *testing.T) {
 	exerciseWebSocket(t, conn, "stream.test")
 	_ = conn.Close()
 	deadline := time.Now().Add(streamStepTimeout)
-	for site.control.metricsForSite("stream").snapshot().StatusCodes[http.StatusSwitchingProtocols] != 1 {
+	for site.control.engine.Metrics("stream").StatusCodes[http.StatusSwitchingProtocols] != 1 {
 		if time.Now().After(deadline) {
-			t.Fatalf("upgrade was not recorded: %#v", site.control.metricsForSite("stream").snapshot())
+			t.Fatalf("upgrade was not recorded: %#v", site.control.engine.Metrics("stream"))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -296,4 +296,16 @@ func TestTLSListenerKeepsWebSocketOnHTTP1(t *testing.T) {
 	}
 	defer conn.Close()
 	exerciseWebSocket(t, conn, "stream.test")
+}
+
+// observedHandler proxies to h through a site built from settings, so tests see the data plane's logs and metrics.
+func observedHandler(t *testing.T, c *Control, siteID string, settings store.AccessLogConfig, h http.Handler) http.Handler {
+	t.Helper()
+	upstream := httptest.NewServer(h)
+	t.Cleanup(upstream.Close)
+	handler, err := c.proxyHandler(context.Background(), siteID, store.Config{Upstreams: []store.Upstream{{URL: upstream.URL}}, AccessLog: settings})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler
 }

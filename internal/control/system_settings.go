@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 	"time"
 	_ "time/tzdata"
@@ -253,12 +252,10 @@ func (c *Control) systemSettingsAPI(w http.ResponseWriter, r *http.Request) {
 		if c.accessLogs != nil {
 			c.accessLogs.SetTimeZone(location)
 		}
-		serverCertificatesChanged := !slices.Equal(c.systemSettings.ServerCertificates, settings.ServerCertificates)
 		c.systemSettings = settings
 		c.systemSettingsMu.Unlock()
-		if serverCertificatesChanged {
-			c.refreshSharedServerCertificates()
-		}
+		// Renewed shared certificates take effect for new TLS handshakes without restarting sites.
+		c.reapplyLocked(r.Context())
 		writeJSON(w, http.StatusOK, systemSettingsView(settings))
 	default:
 		w.Header().Set("Allow", "GET, PUT")

@@ -7,35 +7,28 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 
 	"github.com/rpop-project/rpop/internal/accesslog"
+	"github.com/rpop-project/rpop/internal/dataplane"
 	"github.com/rpop-project/rpop/internal/routing"
 	"github.com/rpop-project/rpop/internal/store"
 )
 
-const HeaderTimeout = 8 * time.Second
-
 type Control struct {
-	store            *store.Store
-	log              *zap.Logger
-	mu               sync.Mutex
+	store  *store.Store
+	log    *zap.Logger
+	engine *dataplane.Engine
+	// opMu serializes configuration changes; desired is the set of sites that should run and is guarded by it.
 	opMu             sync.Mutex
-	runs             map[string]*running
-	listeners        map[string]*listenerGroup
-	metrics          sync.Map
-	accessLogQueue   chan accessLogEvent
-	queuedLogBytes   atomic.Int64
+	desired          map[string]bool
 	accessLogs       *accesslog.Registry
 	systemSettingsMu sync.RWMutex
 	systemSettings   systemSettings
@@ -44,35 +37,12 @@ type Control struct {
 	sessions         map[string]time.Time
 	loginAttempts    map[string]loginAttempt
 }
-type running struct {
-	groupKey string
-	route    *siteRuntime
-}
-type siteRuntime struct {
-	id        string
-	handler   http.Handler
-	hostnames []string
-	// certificateID names the system server certificate in use; certificate is swapped when it is renewed.
-	certificateID string
-	certificate   atomic.Pointer[tls.Certificate]
-}
-type listenerGroup struct {
-	mu           sync.RWMutex
-	key, address string
-	tlsEnabled   bool
-	server       *http.Server
-	listener     net.Listener
-	routes       map[string]*siteRuntime
-	byHost       map[string]*siteRuntime
-}
 type apiError struct {
 	Error string `json:"error"`
 }
 
 func New(s *store.Store, l *zap.Logger) *Control {
-	c := &Control{store: s, log: l, runs: map[string]*running{}, listeners: map[string]*listenerGroup{}, accessLogQueue: make(chan accessLogEvent, 256), systemSettings: defaultSystemSettings(), sessions: make(map[string]time.Time), loginAttempts: make(map[string]loginAttempt)}
-	go c.accessLogLoop()
-	return c
+	return &Control{store: s, log: l, engine: dataplane.New(l), desired: make(map[string]bool), systemSettings: defaultSystemSettings(), sessions: make(map[string]time.Time), loginAttempts: make(map[string]loginAttempt)}
 }
 func (c *Control) Handler() http.Handler {
 	m := http.NewServeMux()
@@ -107,9 +77,7 @@ func (c *Control) yamlConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for i := range sites {
-			c.mu.Lock()
-			_, sites[i].Running = c.runs[sites[i].ID]
-			c.mu.Unlock()
+			sites[i].Running = c.engine.Running(sites[i].ID)
 		}
 		data, err := yaml.Marshal(yamlConfig{Sites: sites})
 		if err != nil {
@@ -175,9 +143,7 @@ func (c *Control) sites(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for i := range xs {
-			c.mu.Lock()
-			_, xs[i].Running = c.runs[xs[i].ID]
-			c.mu.Unlock()
+			xs[i].Running = c.engine.Running(xs[i].ID)
 		}
 		writeJSON(w, 200, xs)
 	case http.MethodPost:
@@ -225,7 +191,7 @@ func (c *Control) site(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, c.metricsForSite(id).snapshot())
+		writeJSON(w, http.StatusOK, c.engine.Metrics(id))
 		return
 	}
 	if len(parts) == 5 && parts[3] == "secrets" {
@@ -256,9 +222,7 @@ func (c *Control) site(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
-		c.mu.Lock()
-		active := c.runs[id] != nil
-		c.mu.Unlock()
+		active := c.desired[id]
 		var previous store.Site
 		if active {
 			previousSite, getErr := c.store.Get(r.Context(), id)
@@ -295,7 +259,7 @@ func (c *Control) site(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
-		c.metrics.Delete(id)
+		c.engine.ForgetMetrics(id)
 		w.WriteHeader(204)
 		return
 	}
@@ -319,45 +283,6 @@ func (c *Control) site(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 405, apiError{"method not allowed"})
 }
-func (c *Control) start(ctx context.Context, id string) error {
-	c.opMu.Lock()
-	defer c.opMu.Unlock()
-	return c.startLocked(ctx, id)
-}
-
-func (c *Control) StartAutoSites(ctx context.Context) error {
-	sites, err := c.store.AutoStartSites(ctx)
-	if err != nil {
-		return err
-	}
-	for _, site := range sites {
-		if err := c.start(ctx, site.ID); err != nil {
-			c.log.Error("auto-start site failed", zap.String("site", site.ID), zap.Error(err))
-		}
-	}
-	return nil
-}
-
-func (c *Control) StopAll() {
-	c.opMu.Lock()
-	defer c.opMu.Unlock()
-	c.mu.Lock()
-	ids := make([]string, 0, len(c.runs))
-	for id := range c.runs {
-		ids = append(ids, id)
-	}
-	c.mu.Unlock()
-	for _, id := range ids {
-		_ = c.stopLocked(id)
-	}
-}
-
-func (c *Control) stop(id string) error {
-	c.opMu.Lock()
-	defer c.opMu.Unlock()
-	return c.stopLocked(id)
-}
-
 func (c *Control) validateUpstreamTLSMaterial(ctx context.Context, site store.Site) error {
 	for index, upstream := range site.Config.Upstreams {
 		if upstream.ClientCertSecret == "" && upstream.ClientKeySecret == "" {
@@ -378,71 +303,6 @@ func (c *Control) validateUpstreamTLSMaterial(ctx context.Context, site store.Si
 	return nil
 }
 
-func (c *Control) proxyHandler(ctx context.Context, id string, cfg store.Config) (http.Handler, error) {
-	if len(cfg.Upstreams) == 0 {
-		return nil, fmt.Errorf("at least one upstream is required")
-	}
-	router, err := routing.Compile(cfg.Routes, len(cfg.Upstreams))
-	if err != nil {
-		return nil, err
-	}
-	targets := make([]upstreamTarget, 0, len(cfg.Upstreams))
-	for index, upstream := range cfg.Upstreams {
-		target, err := c.upstreamTarget(ctx, id, upstream)
-		if err != nil {
-			return nil, fmt.Errorf("upstreams[%d]: %w", index, err)
-		}
-		targets = append(targets, target)
-	}
-	return c.observeSite(id, cfg.AccessLog, routedHandler(router, targets)), nil
-}
-
-// upstreamTarget is one upstream with its own transport; the per-request routing.Decision decides the path rewrite.
-type upstreamTarget struct {
-	label string
-	proxy *httputil.ReverseProxy
-}
-
-type routeDecisionKey struct{}
-
-func (c *Control) upstreamTarget(ctx context.Context, id string, upstream store.Upstream) (upstreamTarget, error) {
-	u, e := url.Parse(upstream.URL)
-	if e != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-		return upstreamTarget{}, fmt.Errorf("invalid upstream URL")
-	}
-	systemRoots, e := c.selectedRootCertificates(upstream.RootCertificateIDs)
-	if e != nil {
-		return upstreamTarget{}, e
-	}
-	systemClientCertificate, e := c.selectedClientCertificate(upstream.ClientCertificateID)
-	if e != nil {
-		return upstreamTarget{}, e
-	}
-	transport, e := store.BuildTransport(ctx, c.store, id, upstream, systemRoots, systemClientCertificate)
-	if e != nil {
-		return upstreamTarget{}, e
-	}
-	proxy := &httputil.ReverseProxy{
-		Transport: transport,
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			decision, _ := pr.In.Context().Value(routeDecisionKey{}).(routing.Decision)
-			routing.Apply(pr, u, decision)
-		},
-	}
-	return upstreamTarget{label: u.Redacted(), proxy: proxy}, nil
-}
-
-// routedHandler dispatches each request to the upstream chosen by the site's routes and reports the choice to observeSite.
-func routedHandler(router routing.Router, targets []upstreamTarget) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		decision := router.Resolve(r)
-		target := targets[decision.Upstream]
-		if trace, ok := r.Context().Value(routeTraceKey{}).(*routeTrace); ok {
-			trace.upstream, trace.route = target.label, decision.Label
-		}
-		target.proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), routeDecisionKey{}, decision)))
-	})
-}
 func validate(x store.Site) error {
 	if strings.TrimSpace(x.ID) == "" || strings.TrimSpace(x.Name) == "" {
 		return fmt.Errorf("site id and name are required")
@@ -462,7 +322,7 @@ func validate(x store.Site) error {
 	if x.Config.AccessLog.MaxBodyBytes < -1 {
 		return fmt.Errorf("accessLog.maxBodyBytes must be -1 or a non-negative byte limit")
 	}
-	if _, err := normalizedHostnames(x.Config.Hostnames); err != nil {
+	if _, err := dataplane.NormalizeHostnames(x.Config.Hostnames); err != nil {
 		return err
 	}
 	if _, err := routing.Compile(x.Config.Routes, len(x.Config.Upstreams)); err != nil {

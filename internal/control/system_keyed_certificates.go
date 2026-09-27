@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"go.uber.org/zap"
+	"github.com/rpop-project/rpop/internal/snapshot"
 )
 
 const (
@@ -321,28 +321,13 @@ func (c *Control) selectedServerCertificate(id string) (*tls.Certificate, error)
 	return c.selectedKeyedCertificate(serverCertificateKind, id)
 }
 
-// refreshSharedServerCertificates swaps the certificate of every running site that uses a system server
-// certificate, so renewing a shared certificate takes effect for new TLS handshakes without restarts.
-// Each certificate is parsed once and shared by all sites that reference it.
-func (c *Control) refreshSharedServerCertificates() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	parsed := make(map[string]*tls.Certificate)
-	for id, run := range c.runs {
-		certificateID := run.route.certificateID
-		if certificateID == "" {
-			continue
-		}
-		certificate, ok := parsed[certificateID]
-		if !ok {
-			var err error
-			certificate, err = c.selectedServerCertificate(certificateID)
-			if err != nil {
-				c.log.Warn("could not refresh shared site certificate", zap.String("site_id", id), zap.Error(err))
-				continue
-			}
-			parsed[certificateID] = certificate
-		}
-		run.route.certificate.Store(certificate)
+// selectedKeyPair returns the PEM material of a system certificate after checking that it parses.
+func (c *Control) selectedKeyPair(kind keyedCertificateKind, id string) (*snapshot.KeyPair, error) {
+	if _, err := c.selectedKeyedCertificate(kind, id); err != nil {
+		return nil, err
 	}
+	c.systemSettingsMu.RLock()
+	selected, _ := findKeyedCertificate(kind.list(c.systemSettings), id)
+	c.systemSettingsMu.RUnlock()
+	return &snapshot.KeyPair{CertificatePEM: selected.CertificatePEM, PrivateKeyPEM: selected.PrivateKeyPEM}, nil
 }

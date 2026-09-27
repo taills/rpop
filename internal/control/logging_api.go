@@ -62,6 +62,7 @@ func NewWithLogDir(s *store.Store, logger *zap.Logger, logDir string) (*Control,
 	c := New(s, logger)
 	c.systemSettings = settings
 	c.accessLogs = registry
+	c.engine.SetAccessLogWriter(registryWriter{registry: registry})
 	return c, nil
 }
 
