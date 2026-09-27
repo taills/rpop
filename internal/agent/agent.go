@@ -133,8 +133,6 @@ func (a *Agent) NodeID() string {
 
 // Run brings the node up and follows the controller until ctx ends, then stops every site.
 func (a *Agent) Run(ctx context.Context) error {
-	defer a.closeOverlay()
-	defer a.engine.StopAll()
 	if err := os.MkdirAll(a.cfg.DataDir, 0o700); err != nil {
 		return fmt.Errorf("create node data directory: %w", err)
 	}
@@ -148,7 +146,15 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("open log spool: %w", err)
 	}
+	// Stop serving sites and close every overlay link, in that order, before closing the spool: closing a site's
+	// pooled connections (engine.StopAll, via siteRuntime.release) and tearing down links (closeOverlay) can each
+	// still produce a final access log record or a tunnel "ended" event (D22). A record or event handed to the
+	// spool after its write goroutine has already stopped is only structurally accepted, never drained or
+	// uploaded (see Spool.Close's doc comment) - closing the spool last is what keeps that shutdown-time tail of
+	// records from being silently lost instead of counted as a drop.
 	defer func() {
+		a.engine.StopAll()
+		a.closeOverlay()
 		closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := sp.Close(closeCtx); err != nil {
