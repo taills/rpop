@@ -276,6 +276,13 @@
 - `internal/spool/upload_test.go` 的 `TestUploaderRetriesWithBackoffAfterFailuresThenSucceeds`(约 3/500 次在 `-race` 下失败):第二次迭代等待 `LastError()!=""` 时该条件已被上一次失败置真,未能确认 uploader 已重新调用 `clk.After` 便提前 `Advance`,新定时器因此错过推进而永久阻塞;`fakeClock` 新增 `notifyArmed` 通道,测试改为等它确认定时器已注册后再推进,500/500 次通过。
 - `TracePage.css` 的 `.trace-gantt__row` 新增 `@media (max-width: 640px)`,窄屏下拆成两行(标签+偏差徽标一行,耗时条+数值一行)。
 
+**阶段 7 审查修复(控制器侧)**:
+
+- **CRITICAL/自死锁**:`clockSkewWarnThresholdMillis` 改为 `atomic.Int64`,`clockSkewView` 不再取 `c.opMu`——原实现在其中取锁,而 `nodeAPI` 对 GET/PUT/POST `/api/nodes/{id}` 整个处理函数已持有 `c.opMu` 再调用 `nodeView`,`sync.Mutex` 不可重入,只要节点上报过时钟偏差这三个接口(以及 `opMu` 串行化的其余一切操作)就会永久挂起;顺带消除了列表/拓扑/隧道事件视图逐条加锁的 MEDIUM。
+- **CRITICAL/符号**:`offsetAndRTT` 原样照搬经典 NTP 公式,算出的是"控制器 − 节点",与文档、`ClockOffsetMillis` 注释、`applyClockSkew` 的减法校正一致约定的"节点 − 控制器"(正值=节点快)相反;已取反公式,`rtt` 不变,`clock_skew_test.go` 按显式物理场景重写。
+- **告警阈值**:`tunnelEventView` 新增 `clockSkewStatus`(复用 `clockSkewView`),`trace.js` 的 `isClockSkewWarn`/`anyClockSkewWarn` 优先采信它,只有面对不带该字段的旧控制器时才回退到硬编码的 2000ms。
+- **LOW**:`overlay.Overlay` 新增 `ForgetPeer`,在 `Apply` 发现某对端从快照消失、以及控制器删除节点时(若持有内嵌 overlay)调用,避免 `protocolWarned` 无界增长或被复用的节点 ID 误继承旧告警状态。
+
 ## 6. 非目标
 
 多路径负载均衡/加权分流;请求级透明重试;中继节点完全无入站(NAT 反向建链)。
