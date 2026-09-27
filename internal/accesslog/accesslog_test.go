@@ -31,6 +31,9 @@ func TestFileSizeRotationCompressionAndSearch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Compression and pruning now happen off the write path (see fileSink.launchArchive); wait for the
+	// rotation's background job to finish before asserting on the archive it produces.
+	manager.sink.(*fileSink).sweepWG.Wait()
 	archives, err := filepath.Glob(filepath.Join(dir, "access-*.jsonl.gz"))
 	if err != nil {
 		t.Fatal(err)
