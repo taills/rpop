@@ -75,18 +75,31 @@ type eventQueue struct {
 	dropped atomic.Uint64
 	sink    atomic.Pointer[sinkHolder]
 	log     *zap.Logger
+	// closed marks record's fast path once close has been called, so a post-close emit is counted as dropped
+	// instead of sitting in the buffer for as long as it takes to fill (see record). stop, not events, is what
+	// tells loop to exit: events is never closed, so a record racing close can never send on a closed channel.
+	closed atomic.Bool
+	stop   chan struct{}
+	done   chan struct{}
 }
 
 func newEventQueue(log *zap.Logger) *eventQueue {
-	q := &eventQueue{events: make(chan TunnelEvent, tunnelEventQueueLength), log: log}
+	q := &eventQueue{
+		events: make(chan TunnelEvent, tunnelEventQueueLength), log: log,
+		stop: make(chan struct{}), done: make(chan struct{}),
+	}
 	go q.loop()
 	return q
 }
 
 func (q *eventQueue) setSink(sink TunnelEventSink) { q.sink.Store(&sinkHolder{sink: sink}) }
 
-// record enqueues an event without blocking; a full queue drops it and counts the drop.
+// record enqueues an event without blocking; a full queue, or one already closed, drops it and counts the drop.
 func (q *eventQueue) record(event TunnelEvent) {
+	if q.closed.Load() {
+		q.dropped.Add(1)
+		return
+	}
 	select {
 	case q.events <- event:
 	default:
@@ -95,13 +108,39 @@ func (q *eventQueue) record(event TunnelEvent) {
 }
 
 func (q *eventQueue) loop() {
-	for event := range q.events {
-		if holder := q.sink.Load(); holder != nil && holder.sink != nil {
-			holder.sink.RecordTunnelEvent(event)
-		} else {
-			q.log.Info("tunnel event", tunnelEventFields(event)...)
+	defer close(q.done)
+	for {
+		select {
+		case event := <-q.events:
+			q.deliver(event)
+		case <-q.stop:
+			// Flush whatever was already buffered before close was called rather than discard it.
+			for {
+				select {
+				case event := <-q.events:
+					q.deliver(event)
+				default:
+					return
+				}
+			}
 		}
 	}
+}
+
+func (q *eventQueue) deliver(event TunnelEvent) {
+	if holder := q.sink.Load(); holder != nil && holder.sink != nil {
+		holder.sink.RecordTunnelEvent(event)
+	} else {
+		q.log.Info("tunnel event", tunnelEventFields(event)...)
+	}
+}
+
+// close stops loop and waits for it to exit, so nothing keeps a reference to a discarded overlay's event queue
+// alive (a node re-registering builds a whole new Overlay; see Overlay.Close).
+func (q *eventQueue) close() {
+	q.closed.Store(true)
+	close(q.stop)
+	<-q.done
 }
 
 func tunnelEventFields(e TunnelEvent) []zap.Field {

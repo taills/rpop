@@ -247,9 +247,10 @@ func (o *Overlay) Links() []LinkStatus {
 	return statuses
 }
 
-// Close closes the relay port and every link, ending all tunnels. It waits for each link's maintain goroutine
-// to exit before returning; retire cancels any dial maintain has in flight (see link.retire), so this returns
-// promptly even if a peer is slow or unreachable rather than waiting out a full dial+handshake timeout on it.
+// Close closes the relay port and every link, ending all tunnels, and stops the event queue's delivery
+// goroutine. It waits for each link's maintain goroutine to exit before returning; retire cancels any dial
+// maintain has in flight (see link.retire), so this returns promptly even if a peer is slow or unreachable
+// rather than waiting out a full dial+handshake timeout on it.
 func (o *Overlay) Close() {
 	o.mu.Lock()
 	o.closed = true
@@ -274,4 +275,5 @@ func (o *Overlay) Close() {
 	for _, l := range links {
 		<-l.done
 	}
+	o.events.close()
 }
