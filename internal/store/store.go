@@ -34,14 +34,25 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 		id TEXT PRIMARY KEY, name TEXT NOT NULL, relay_address TEXT NOT NULL DEFAULT '',
 		token_hash TEXT NOT NULL DEFAULT '', token_expires_at TEXT NOT NULL DEFAULT '',
 		cert_generation INTEGER NOT NULL DEFAULT 0, cert_not_after TEXT NOT NULL DEFAULT '',
-		created_at TEXT NOT NULL, registered_at TEXT NOT NULL DEFAULT ''
+		created_at TEXT NOT NULL, registered_at TEXT NOT NULL DEFAULT '', log_hwm INTEGER NOT NULL DEFAULT 0
 	);`)
 	if err != nil {
 		return err
 	}
 
 	// Upgrade databases created before auto_start was introduced.
-	rows, err := db.QueryContext(ctx, `PRAGMA table_info(sites)`)
+	if err := addColumnIfMissing(ctx, db, "sites", "auto_start", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	// Upgrade databases created before log_hwm was introduced (D24): it holds the highest log segment number
+	// the controller has durably ingested and persisted for a node, so restarts never replay or lose records.
+	return addColumnIfMissing(ctx, db, "nodes", "log_hwm", "INTEGER NOT NULL DEFAULT 0")
+}
+
+// addColumnIfMissing adds column to table with the given SQL type/constraints unless it already exists, so
+// older on-disk databases pick up new columns without a separate migration tool.
+func addColumnIfMissing(ctx context.Context, db *sql.DB, table, column, definition string) error {
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
 	if err != nil {
 		return err
 	}
@@ -54,7 +65,7 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 			rows.Close()
 			return err
 		}
-		if name == "auto_start" {
+		if name == column {
 			found = true
 		}
 	}
@@ -63,9 +74,10 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	rows.Close()
-	if !found {
-		_, err = db.ExecContext(ctx, `ALTER TABLE sites ADD COLUMN auto_start INTEGER NOT NULL DEFAULT 0`)
+	if found {
+		return nil
 	}
+	_, err = db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+column+` `+definition)
 	return err
 }
 
