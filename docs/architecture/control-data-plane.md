@@ -165,13 +165,6 @@
 - **测试**(均 `-race`):`internal/overlay/link_status_test.go`(链路状态机三态、代理链渲染与脱敏、失败/成功清空错误与置位时间);`internal/dataplane/paths_test.go` 新增两个用例(冷却/失败/错误正确记录、未配置 paths 的上游不出现在 `PathHealth` 里);`internal/control/status_sanitize_test.go`(小报告原样通过、nil 直通、条数与长度上限、`nodeRegistry.report` 确实先脱敏再存);`internal/control/nodes_test.go` 新增 `nodeView`/`localNodeView` 读取健康数据的用例;`internal/control/topology_test.go`(复用阶段 4 已有的三节点+双代理夹具验证角色/边/代理列表/健康匹配与回退/凭据不泄露,外加简单单节点场景与鉴权)。
 - **未做(留给后续步骤)**:前端页面(6.2-6.4)。
 
-**阶段 6 第 5 步(模拟器全路径)** 的落地要点:
-
-- **后端**(`internal/control/routing_paths.go`):`addPathSimulation` 在既有 `simulateRoute` 之后按匹配到的 upstream 调用,直接复用 `upstreamPaths`/`pathLabel`(`paths.go`)与 `matchLinkStatus`/`linkStatuses`(`topology.go`),不重走 `resolvePaths`——hop 的 `id` 就是配置里的节点/代理 ID,不需要解析出带凭据的 `snapshot.Proxy`,代理凭据自然不会出现在响应里。入口节点取 `siteNodes(input.Config)` 的第一个(`config.nodes` 为空时即 `local`,与既有放置语义一致);多节点放置时只取第一个作为模拟视角,不逐节点展开。选择规则 `selectSimulatedPath` 与 `failoverTransport.order`/`RoundTrip` 完全对齐:第一条非冷却路径胜出,全部冷却则回退到优先级最靠前的一条;没有健康上报(`siteId` 留空,或该站点从未在其入口节点上运行过)时按"健康"处理,与刚启动、从未失败过的 `pathTransport` 行为一致,但 `status` 字段如实标注为 `"unknown"` 而不是编造 `"healthy"`。
-- **安全**:响应里从不序列化 `namedProxy`/`snapshot.Proxy`,只用 `overlay.ProxyChainLabels` 派生的标签做链路匹配;代理跳只输出配置里的 ID。
-- **前端**:`RouteSimulator.jsx` 请求体新增 `siteId`(`site.id`)、`config.nodes` 与每个 upstream 的 `via`/`paths`(之前只发 `url`);现有单跳渲染不变,新增 `<SimulatedPaths result={result}/>`。纯逻辑(响应 → 视图模型、健康色调映射)在 `routeSimulatorPaths.js`(`node --test` 覆盖),渲染在新文件 `components/SimulatedPaths.jsx` + `SimulatedPaths.css`,健康色调复用 `UiStatusDot`/`UiTag`。
-- **测试**:`internal/control/routing_paths_test.go`(表驱动覆盖三种冷却场景选路、多跳含具名代理与链路 down/节点离线的健康渲染、未配置 paths 时字段不出现、无 `siteId` 时健康为 unknown、HTTP 层向后兼容与凭据不泄露的字符串扫描,均 `-race`);`web/src/routeSimulatorPaths.test.js`(`node --test`)。
-
 **阶段 6 第 2 步(具名代理页 + paths 编辑器)实施记录**:
 
 - `main.jsx` 已切换到 `AppRouter`;`ShellView`(`AppShell`)成为整个控制台唯一的外壳,`站点管理/访问日志/日志适配器/具名代理/系统设置`与原有的`组件目录/页面示例/Token`同列在 `ShellView.jsx` 的 `menus` 数组里,默认路由从 `/catalog` 改为 `/sites`。登录态拆到 `stores/auth.js` + `components/AuthGate.jsx`(整个路由树的公共前置),`api.js` 统一处理 401(自动回登录),行为(登录/建密码、5s 轮询、站点增删改查、YAML 导入导出)不变,原先近乎无样式的自定义 rail 侧栏被替换。
@@ -194,8 +187,21 @@
 - **拓扑分层规则**:一个节点可能同时具备多个 `roles`;契约未规定多角色如何选层,本步固定为"取 entry→relay→exit 中最靠前出现的角色"(等价于 `roles[0]`,因为 API 已按此顺序返回),无任何角色的节点单独归入末尾的"未分配角色"列,而不是被丢弃。布局只读节点自身的 `roles`,不遍历边,因此链路环路/自环不会影响分层或造成死循环。
 - **多边区分**:边按 `(from, to, 代理链)` 三元组各自成行(与后端去重键一致);同一对节点(含反向 A↔B)的多条边按车道号 `0,+1,-1,+2,-2…` 沿垂直于连线的方向偏移,自环单独计数、向外画弧,车道计算与坐标布局一样是纯函数并有单测。
 - **具名代理呈现**:`/api/topology` 的 `proxies` 是一份扁平列表,不携带到节点的连接信息,因此代理链只在边的 hover tooltip(SVG `<title>`)中按 `type://address` 展示,并在图下方列出全部具名代理供参照,没有按设计草案建议的"作为图中方形节点"渲染(缺少连接坐标,强行展示无意义)。
-- **API 缺口**:①`store.Node.CertGeneration` 打了 `json:"-"`,`/api/nodes` 从不下发证书代数,节点列表/详情页只能展示 `registered`(是否已完成过注册)与 `certNotAfter`,无法展示任务描述里的"证书代数";②没有 `GET /api/nodes/{id}`,`nodeAPI` 的 switch 只处理 `token`/`PUT`/`DELETE`,详情页改为拉取 `GET /api/nodes` 全量列表后按 id 过滤(与 SitesPage 编辑器同款模式),多一次全量请求但无需后端改动。
+- **API 缺口(已解决,见文末《阶段 6 收尾修补》的落地要点)**:①`store.Node.CertGeneration` 打了 `json:"-"`,`/api/nodes` 从不下发证书代数,节点列表/详情页只能展示 `registered`(是否已完成过注册)与 `certNotAfter`,无法展示任务描述里的"证书代数";②没有 `GET /api/nodes/{id}`,`nodeAPI` 的 switch 只处理 `token`/`PUT`/`DELETE`,详情页改为拉取 `GET /api/nodes` 全量列表后按 id 过滤(与 SitesPage 编辑器同款模式),多一次全量请求但无需后端改动。
 - 节点列表页承担生命周期管理:新建(`POST /api/nodes`)、编辑名称/中继地址(`PUT /api/nodes/{id}`)、生成或重置 join token(`POST /api/nodes/{id}/token`,token 只在一次性 `UiModal` 中出现,`persistent` 阻止误关)、删除(`DELETE /api/nodes/{id}`)。
+
+**阶段 6 第 5 步(模拟器全路径)** 的落地要点:
+
+- **后端**(`internal/control/routing_paths.go`):`addPathSimulation` 在既有 `simulateRoute` 之后按匹配到的 upstream 调用,直接复用 `upstreamPaths`/`pathLabel`(`paths.go`)与 `matchLinkStatus`/`linkStatuses`(`topology.go`),不重走 `resolvePaths`——hop 的 `id` 就是配置里的节点/代理 ID,不需要解析出带凭据的 `snapshot.Proxy`,代理凭据自然不会出现在响应里。入口节点取 `siteNodes(input.Config)` 的第一个(`config.nodes` 为空时即 `local`,与既有放置语义一致);多节点放置时只取第一个作为模拟视角,不逐节点展开。选择规则 `selectSimulatedPath` 与 `failoverTransport.order`/`RoundTrip` 完全对齐:第一条非冷却路径胜出,全部冷却则回退到优先级最靠前的一条;没有健康上报(`siteId` 留空,或该站点从未在其入口节点上运行过)时按"健康"处理,与刚启动、从未失败过的 `pathTransport` 行为一致,但 `status` 字段如实标注为 `"unknown"` 而不是编造 `"healthy"`。
+- **安全**:响应里从不序列化 `namedProxy`/`snapshot.Proxy`,只用 `overlay.ProxyChainLabels` 派生的标签做链路匹配;代理跳只输出配置里的 ID。
+- **前端**:`RouteSimulator.jsx` 请求体新增 `siteId`(`site.id`)、`config.nodes` 与每个 upstream 的 `via`/`paths`(之前只发 `url`);现有单跳渲染不变,新增 `<SimulatedPaths result={result}/>`。纯逻辑(响应 → 视图模型、健康色调映射)在 `routeSimulatorPaths.js`(`node --test` 覆盖),渲染在新文件 `components/SimulatedPaths.jsx` + `SimulatedPaths.css`,健康色调复用 `UiStatusDot`/`UiTag`。
+- **测试**:`internal/control/routing_paths_test.go`(表驱动覆盖三种冷却场景选路、多跳含具名代理与链路 down/节点离线的健康渲染、未配置 paths 时字段不出现、无 `siteId` 时健康为 unknown、HTTP 层向后兼容与凭据不泄露的字符串扫描,均 `-race`);`web/src/routeSimulatorPaths.test.js`(`node --test`)。
+
+**阶段 6 收尾修补** 的落地要点:
+
+- 补齐第 4 步遗留的两个 API 缺口:`nodeView` 新增只读字段 `certGeneration`(`store.Node.CertGeneration` 的 `json:"-"` 保持不变,PUT 输入结构 `nodeMutation` 本就没有这个字段,不存在被覆写的风险);`nodeAPI` 补上 `GET /api/nodes/{id}`(含内嵌节点 `local`),形状与列表项一致,未找到 404,`internal/control/nodes_test.go` 表驱动 `-race` 覆盖三种场景。
+- 前端:`NodeDetailPage` 改用 `GET /api/nodes/{id}` 而不再拉取全量列表过滤;节点列表/详情页展示证书代数替换原 `registered` 标签,证书到期时间保留。
+- 导航:生产菜单重排为站点管理/节点/拓扑/具名代理/访问日志/请求追踪/日志适配器/系统设置并各配互不重复的语义图标;组件目录/页面示例/Token 演示页改为 `React.lazy` 懒加载且仅 `import.meta.env.DEV` 下注册路由/菜单,生产构建的主 chunk 不含其代码。
 
 **阶段 6.6a(旧页面主题统一)** 的落地要点:
 
