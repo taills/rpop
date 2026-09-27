@@ -34,6 +34,28 @@ test('validateSections names the upstream and checks routes', () => {
   assert.equal(validateSections(editing, sections, {}), '规则 #1：路径必须以 / 开头')
 })
 
+test('prepareSiteForEditing normalizes an upstream’s legacy via shorthand into paths', () => {
+  const editing = prepareSiteForEditing(site([{ url: 'http://a', via: [{ node: 'relay-1' }] }]))
+  assert.deepEqual(editing.config.upstreams[0].paths, [{ via: [{ node: 'relay-1' }] }])
+  assert.deepEqual(editing.config.upstreams[0].via, [])
+  assert.equal(sectionsForSite(editing).upstreams[0].paths, true)
+})
+
+test('applySections clears paths when the section is off and keeps them when on', () => {
+  const editing = prepareSiteForEditing(site([{ url: 'http://a', paths: [{ via: [{ proxy: 'p1' }] }] }]))
+  const sections = sectionsForSite(editing)
+  const off = applySections(editing, { ...sections, upstreams: [{ ...sections.upstreams[0], paths: false }] })
+  assert.deepEqual(off.config.upstreams[0].paths, [])
+  const on = applySections(editing, sections)
+  assert.deepEqual(on.config.upstreams[0].paths, [{ via: [{ proxy: 'p1' }] }])
+})
+
+test('validateSections rejects combining a proxy upstream with candidate paths', () => {
+  const editing = prepareSiteForEditing(site([{ url: 'http://a', proxyUrl: 'socks5://p', paths: [{ via: [] }] }]))
+  const sections = sectionsForSite(editing)
+  assert.match(validateSections(editing, sections, {}), /候选路径/)
+})
+
 test('removeUpstream keeps sections, files and routes aligned', () => {
   const editing = prepareSiteForEditing(site([{ url: 'http://a' }, { url: 'http://b' }, { url: 'http://c' }], [{ path: '/b', upstream: 1 }, { path: '/c', upstream: 2 }]))
   const state = { site: editing, sections: sectionsForSite(editing), files: [{}, { cert: 'b.pem' }, { cert: 'c.pem' }] }

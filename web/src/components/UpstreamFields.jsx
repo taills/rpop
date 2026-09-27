@@ -1,5 +1,6 @@
 import { isHTTPSURL } from '../siteForm.js'
 import { OptionToggle, certificateLabel } from './FormParts.jsx'
+import PathsEditor from './PathsEditor.jsx'
 
 function ClientCertificateFields({ upstream, clientCertificates, setUpstream, setFile }) {
   return <>
@@ -39,7 +40,7 @@ function TLSOptions({ upstream, sections, toggle, catalog, setUpstream, setFile 
 }
 
 // UpstreamFields edits one upstream; the first upstream is the default for requests that match no route.
-export default function UpstreamFields({ index, count, upstream, sections, routeCount, catalog, setUpstream, setSections, setFile, onRemove, onMakeDefault }) {
+export default function UpstreamFields({ index, count, upstream, sections, routeCount, catalog, placementIds, error, setUpstream, setSections, setFile, onRemove, onMakeDefault }) {
   const toggle = key => checked => setSections({ ...sections, [key]: checked })
   return <div className="wide upstream-card">
     <div className="upstream-card-head">
@@ -60,6 +61,9 @@ export default function UpstreamFields({ index, count, upstream, sections, route
         <label className="wide">连接地址<input required value={upstream.dialAddress || ''} onChange={event => setUpstream({ dialAddress: event.target.value })} placeholder="203.0.113.10:443"/>
           <span className={sections.proxy ? 'cert-coverage warn' : 'cert-coverage'}>{sections.proxy ? '已启用代理：连接地址不会生效，由代理解析上游域名。' : '省略端口时按上游协议使用 80 或 443。'}</span>
         </label>
+      </OptionToggle>
+      <OptionToggle checked={sections.paths} onChange={toggle('paths')} label="候选路径（节点 / 具名代理链路降级）" hint="按优先级排列，建连失败自动切换下一条">
+        <PathsEditor upstream={upstream} upstreamIndex={index} catalog={catalog} placementIds={placementIds} error={error} setUpstream={setUpstream}/>
       </OptionToggle>
       {isHTTPSURL(upstream.url)
         ? <TLSOptions upstream={upstream} sections={sections} toggle={toggle} catalog={catalog} setUpstream={setUpstream} setFile={setFile}/>

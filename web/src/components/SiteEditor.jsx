@@ -78,7 +78,7 @@ export default function SiteEditor({ site, isNew, sections, catalog, saving, err
 
         <FormSection title="上游" description="每个上游拥有独立的代理、TLS 与连接设置；#1 为默认上游">
           {upstreams.map((upstream, index) => <UpstreamFields key={upstreamFiles[index]?.uid ?? index} index={index} count={upstreams.length} upstream={upstream} sections={sections.upstreams[index]}
-            routeCount={routes.filter(route => Number(route.upstream) === index).length} catalog={catalog}
+            routeCount={routes.filter(route => Number(route.upstream) === index).length} catalog={catalog} placementIds={site.config.nodes || []} error={error}
             setUpstream={setUpstream(index)} setSections={setUpstreamSections(index)} setFile={(kind, file) => setUpstreamFile(index, kind, file)}
             onRemove={() => onRemoveUpstream(index)} onMakeDefault={() => onMakeDefault(index)}/>)}
           <button type="button" className="secondary add-upstream" onClick={onAddUpstream}>＋ 添加上游</button>

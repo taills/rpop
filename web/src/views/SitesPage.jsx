@@ -29,6 +29,8 @@ export default function SitesPage() {
   const [rootCertificates, setRootCertificates] = useState([])
   const [clientCertificates, setClientCertificates] = useState([])
   const [serverCertificates, setServerCertificates] = useState([])
+  const [nodes, setNodes] = useState([])
+  const [proxies, setProxies] = useState([])
 
   const refresh = useCallback(async () => {
     try {
@@ -40,8 +42,9 @@ export default function SitesPage() {
   }, [])
   const refreshSystemSettings = useCallback(async () => {
     try {
-      const settings = await api('/settings')
+      const [settings, nodeList, proxyList] = await Promise.all([api('/settings'), api('/nodes'), api('/proxies')])
       setRootCertificates(settings.rootCertificates || []); setClientCertificates(settings.clientCertificates || []); setServerCertificates(settings.serverCertificates || [])
+      setNodes(nodeList || []); setProxies(proxyList || [])
     } catch (e) { setError(e.message) }
   }, [])
   useEffect(() => { refresh(); refreshSystemSettings(); const timer = setInterval(refresh, 5000); return () => clearInterval(timer) }, [refresh, refreshSystemSettings])
@@ -126,6 +129,6 @@ export default function SitesPage() {
       {!filtered.length && <div className="empty"><div>⌘</div><b>{sites.length ? '没有匹配的站点' : '还没有代理站点'}</b><p>{sites.length ? '调整搜索词，或清空搜索。' : '新建站点后即可配置监听地址、TLS 证书和上游代理。'}</p>{!sites.length && <button className="primary" onClick={() => openEditor(blank)}>创建第一个站点</button>}</div>}
     </section>
     <footer>RPOP <span>·</span> Reverse Proxy over Proxy <span className="foot-right">API auto-refresh every 5 seconds</span></footer>
-    {editing && <SiteEditor site={editing} isNew={!sites.some(x => x.id === editing.id)} sections={sections} catalog={{ rootCertificates, clientCertificates, serverCertificates, logAdapters }} saving={busy === 'save'} error={formError} upstreamFiles={upstreamFiles} onChange={setEditing} onSectionsChange={setSections} setFile={(name, file) => fileSetters[name](file)} setUpstreamFile={setUpstreamFile} onAddUpstream={() => changeUpstreams(addUpstream)} onRemoveUpstream={removeUpstreamAt} onMakeDefault={index => changeUpstreams(state => makeDefaultUpstream(state, index))} onSimulate={simulateRoute} onCancel={closeEditor} onSubmit={save}/>}
+    {editing && <SiteEditor site={editing} isNew={!sites.some(x => x.id === editing.id)} sections={sections} catalog={{ rootCertificates, clientCertificates, serverCertificates, logAdapters, nodes, proxies }} saving={busy === 'save'} error={formError} upstreamFiles={upstreamFiles} onChange={setEditing} onSectionsChange={setSections} setFile={(name, file) => fileSetters[name](file)} setUpstreamFile={setUpstreamFile} onAddUpstream={() => changeUpstreams(addUpstream)} onRemoveUpstream={removeUpstreamAt} onMakeDefault={index => changeUpstreams(state => makeDefaultUpstream(state, index))} onSimulate={simulateRoute} onCancel={closeEditor} onSubmit={save}/>}
   </div>
 }

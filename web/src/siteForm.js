@@ -1,4 +1,5 @@
 import { normalizeRoute, remapRoutesAfterRemoval, remapRoutesForDefault, routeForEditing, validateRoutes } from './routing.js'
+import { normalizeUpstreamPaths, pathsProblem } from './pathsForm.js'
 
 // Optional parts of a site configuration. Each is shown only while its checkbox is on; values of a switched-off
 // section are kept while editing (so re-enabling restores them) and cleared by applySections when saving.
@@ -17,6 +18,7 @@ export function sectionsForUpstream(upstream = {}) {
     serverName: Boolean(upstream.serverName),
     rootCertificates: (upstream.rootCertificateIds || []).length > 0,
     mtls: Boolean(upstream.clientCertificateId || upstream.clientCertSecret),
+    paths: (upstream.paths || []).length > 0,
   }
 }
 
@@ -27,10 +29,11 @@ export function sectionsForSite(site) {
   }
 }
 
-// prepareSiteForEditing returns a copy whose routes use the editor shape (explicit header modes).
+// prepareSiteForEditing returns a copy whose routes use the editor shape (explicit header modes) and whose
+// upstreams always carry their candidate paths as the explicit `paths` array (see normalizeUpstreamPaths).
 export function prepareSiteForEditing(site) {
   const copy = structuredClone(site)
-  const upstreams = copy.config.upstreams?.length ? copy.config.upstreams : [blankUpstream()]
+  const upstreams = (copy.config.upstreams?.length ? copy.config.upstreams : [blankUpstream()]).map(normalizeUpstreamPaths)
   return { ...copy, config: { ...copy.config, upstreams, routes: (copy.config.routes || []).map(routeForEditing) } }
 }
 
@@ -48,6 +51,10 @@ function applyUpstreamSections(upstream, sections = {}) {
     clientCertSecret: mtls && !upstream.clientCertificateId ? upstream.clientCertSecret || '' : '',
     clientKeySecret: mtls && !upstream.clientCertificateId ? upstream.clientKeySecret || '' : '',
     insecureSkipVerify: https && Boolean(upstream.insecureSkipVerify),
+    // The editor always writes the canonical `paths` form; via (the server's single-path shorthand) is never
+    // re-emitted once a upstream has gone through the editor (see normalizeUpstreamPaths).
+    paths: sections.paths ? upstream.paths || [] : [],
+    via: [],
   }
 }
 
@@ -77,6 +84,8 @@ function upstreamProblem(upstream, sections = {}, uploadingClientCertificate) {
   if (https && sections.serverName && !upstream.serverName?.trim()) return '已勾选“自定义 SNI”，请填写 SNI'
   if (https && sections.rootCertificates && !(upstream.rootCertificateIds || []).length) return '已勾选“信任自定义 CA 根证书”，请至少选择一张根证书'
   if (https && sections.mtls && !upstream.clientCertificateId && !upstream.clientCertSecret && !uploadingClientCertificate) return '已勾选“上游双向 TLS（mTLS）”，请选择系统 Client 证书或上传证书与私钥'
+  if (sections.proxy && sections.paths) return '“通过代理连接上游”与“候选路径”不能同时启用，请二选一（可把该代理加入候选路径的某一跳）'
+  if (sections.paths) { const problem = pathsProblem(upstream.paths || []); if (problem) return problem }
   return ''
 }
 
