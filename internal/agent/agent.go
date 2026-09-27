@@ -204,28 +204,37 @@ func (a *Agent) Run(ctx context.Context) error {
 // configures it, and the old one must release the relay port first). The overlay is wired to the node's log
 // spool here too, since a re-registration (see watchLoop) replaces the overlay instance without going through
 // Run again.
+//
+// The new overlay is built and the pointer swapped under a.mu, but the old overlay's Close runs after
+// releasing it: Close waits for every link's maintain goroutine to exit and can, for one slow or unreachable
+// peer, still take a little while even with link.retire's own dial cancellation. Holding a.mu for that would
+// stall every other caller that needs it — agentPaths.DialPath, applyOverlay, status — for as long as Close
+// took, on every re-registration.
 func (a *Agent) use(identity *pki.Identity) {
 	previous := a.current.Swap(&session{identity: identity, client: newClient(identity.ControllerClientConfig())})
 	if previous != nil {
 		previous.client.CloseIdleConnections()
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.overlay != nil {
-		a.overlay.Close()
-	}
-	a.overlay = overlay.New(identity, a.log.Named("overlay"))
+	next := overlay.New(identity, a.log.Named("overlay"))
 	if a.spool != nil {
-		a.overlay.SetTunnelEventSink(a.spool)
+		next.SetTunnelEventSink(a.spool)
+	}
+	a.mu.Lock()
+	previousOverlay := a.overlay
+	a.overlay = next
+	a.mu.Unlock()
+	if previousOverlay != nil {
+		previousOverlay.Close()
 	}
 }
 
 func (a *Agent) closeOverlay() {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.overlay != nil {
-		a.overlay.Close()
-		a.overlay = nil
+	o := a.overlay
+	a.overlay = nil
+	a.mu.Unlock()
+	if o != nil {
+		o.Close()
 	}
 }
 
