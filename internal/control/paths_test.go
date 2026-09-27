@@ -60,6 +60,72 @@ func TestValidateRejectsMalformedPaths(t *testing.T) {
 	}
 }
 
+func boolPtr(b bool) *bool { return &b }
+
+func TestValidateFailover(t *testing.T) {
+	base := func(f *store.UpstreamFailover) store.Site {
+		return store.Site{ID: "s", Name: "s", Config: store.Config{Nodes: []string{"node1"}, ListenPort: 443,
+			Upstreams: []store.Upstream{{URL: "https://example.com", Failover: f}}}}
+	}
+	for name, f := range map[string]*store.UpstreamFailover{
+		"dial timeout too small":  {DialTimeoutMs: 999},
+		"dial timeout too large":  {DialTimeoutMs: 60_001},
+		"negative min cooldown":   {MinCooldownMs: -1},
+		"min exceeds max":         {MinCooldownMs: 5000, MaxCooldownMs: 1000},
+		"max exceeds default min": {MaxCooldownMs: 500}, // below dataplane.MinPathCooldown (1s)
+		"max cooldown too large":  {MaxCooldownMs: 11 * 60 * 1000},
+	} {
+		if err := validate(base(f)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	for name, f := range map[string]*store.UpstreamFailover{
+		"nil":                {},
+		"empty struct":       {},
+		"dial timeout min":   {DialTimeoutMs: 1000},
+		"dial timeout max":   {DialTimeoutMs: 60_000},
+		"cooldowns in range": {MinCooldownMs: 200, MaxCooldownMs: 30_000},
+		"cooldown ceiling":   {MinCooldownMs: 1, MaxCooldownMs: 10 * 60 * 1000},
+		"probe overridden":   {ActiveProbe: boolPtr(false)},
+	} {
+		if err := validate(base(f)); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if err := validate(base(nil)); err != nil {
+		t.Errorf("nil failover: %v", err)
+	}
+}
+
+func TestResolveUpstreamRendersFailover(t *testing.T) {
+	c, _, _ := newPublishingControl(t)
+	upstream := store.Upstream{URL: "https://example.com", Failover: &store.UpstreamFailover{
+		DialTimeoutMs: 5000, MinCooldownMs: 200, MaxCooldownMs: 30_000, ActiveProbe: boolPtr(true),
+	}}
+	resolved, err := c.resolveUpstream(context.Background(), "s", upstream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := resolved.Failover
+	if f == nil || f.DialTimeoutMs != 5000 || f.MinCooldownMs != 200 || f.MaxCooldownMs != 30_000 || f.ActiveProbe == nil || !*f.ActiveProbe {
+		t.Fatalf("resolved failover = %#v, want {5000 200 30000 true}", f)
+	}
+	// The rendered value must never alias the stored one (project immutability convention): mutating the
+	// resolved copy must not reach back into the upstream that was resolved.
+	*f.ActiveProbe = false
+	if !*upstream.Failover.ActiveProbe {
+		t.Fatalf("resolveUpstream aliased the stored Failover.ActiveProbe pointer")
+	}
+
+	noOverride, err := c.resolveUpstream(context.Background(), "s", store.Upstream{URL: "https://example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if noOverride.Failover != nil {
+		t.Fatalf("resolved failover = %#v, want nil", noOverride.Failover)
+	}
+}
+
 func TestUpstreamDialTarget(t *testing.T) {
 	for _, tc := range []struct{ url, dial, want string }{
 		{"https://example.com", "", "example.com:443"},

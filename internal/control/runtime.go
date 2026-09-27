@@ -99,6 +99,7 @@ func (c *Control) resolveUpstream(ctx context.Context, siteID string, upstream s
 	resolved := snapshot.Upstream{
 		URL: upstream.URL, ProxyURL: upstream.ProxyURL, ProxyType: upstream.ProxyType, InsecureSkipVerify: upstream.InsecureSkipVerify,
 		RootCAs: roots, CABundle: upstream.CABundle, DialAddress: upstream.DialAddress, ServerName: upstream.ServerName,
+		Failover: renderUpstreamFailover(upstream.Failover),
 	}
 	hasSecrets := upstream.ClientCertSecret != "" || upstream.ClientKeySecret != ""
 	switch {
@@ -123,6 +124,20 @@ func (c *Control) resolveUpstream(ctx context.Context, siteID string, upstream s
 		resolved.ClientCertificate = &snapshot.KeyPair{CertificatePEM: string(certificatePEM), PrivateKeyPEM: string(keyPEM)}
 	}
 	return resolved, nil
+}
+
+// renderUpstreamFailover copies an upstream's optional D19/D30 override into a fresh snapshot value (never
+// aliasing the stored one, per the project's immutability convention); nil stays nil.
+func renderUpstreamFailover(f *store.UpstreamFailover) *snapshot.UpstreamFailover {
+	if f == nil {
+		return nil
+	}
+	rendered := &snapshot.UpstreamFailover{DialTimeoutMs: f.DialTimeoutMs, MinCooldownMs: f.MinCooldownMs, MaxCooldownMs: f.MaxCooldownMs}
+	if f.ActiveProbe != nil {
+		activeProbe := *f.ActiveProbe
+		rendered.ActiveProbe = &activeProbe
+	}
+	return rendered
 }
 
 // startLocked starts a site, or rebuilds it from the stored configuration when it already runs.

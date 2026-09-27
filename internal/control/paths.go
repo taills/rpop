@@ -11,7 +11,9 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
+	"github.com/rpop-project/rpop/internal/dataplane"
 	"github.com/rpop-project/rpop/internal/snapshot"
 	"github.com/rpop-project/rpop/internal/store"
 )
@@ -19,6 +21,12 @@ import (
 const (
 	maxUpstreamPaths = 8
 	maxPathHops      = 8
+	// minFailoverDialTimeout/maxFailoverDialTimeout and maxFailoverCooldownCeiling bound an upstream's optional
+	// Failover override (D30); the defaults it can override (dataplane.MinPathCooldown etc.) already sit well
+	// inside these ranges, so only an explicit override can ever push a value out of bounds.
+	minFailoverDialTimeout     = time.Second
+	maxFailoverDialTimeout     = 60 * time.Second
+	maxFailoverCooldownCeiling = 10 * time.Minute
 )
 
 // upstreamPaths returns an upstream's candidate paths in priority order; via is shorthand for a single path.
@@ -45,9 +53,45 @@ func pathLabel(via []store.Hop) string {
 	return strings.Join(parts, " > ")
 }
 
-// validatePaths checks the shape of an upstream's paths. Whether their nodes and proxies exist is checked by
-// validatePathReferences.
+// validateFailover checks an upstream's optional D19/D30 degradation override (a sibling of Paths, so it is
+// checked regardless of whether the upstream has any). A nil override is always valid; within it, a zero field
+// keeps its own default and is not range-checked, only its effect on the min<=max ordering is.
+func validateFailover(index int, f *store.UpstreamFailover) error {
+	if f == nil {
+		return nil
+	}
+	field := fmt.Sprintf("upstreams[%d].failover", index)
+	if f.DialTimeoutMs != 0 {
+		timeout := time.Duration(f.DialTimeoutMs) * time.Millisecond
+		if timeout < minFailoverDialTimeout || timeout > maxFailoverDialTimeout {
+			return fmt.Errorf("%s.dialTimeoutMs must be between %d and %d", field, minFailoverDialTimeout.Milliseconds(), maxFailoverDialTimeout.Milliseconds())
+		}
+	}
+	effectiveMin, effectiveMax := dataplane.MinPathCooldown, dataplane.MaxPathCooldown
+	if f.MinCooldownMs != 0 {
+		effectiveMin = time.Duration(f.MinCooldownMs) * time.Millisecond
+	}
+	if f.MaxCooldownMs != 0 {
+		effectiveMax = time.Duration(f.MaxCooldownMs) * time.Millisecond
+	}
+	if effectiveMin <= 0 {
+		return fmt.Errorf("%s.minCooldownMs must be greater than 0", field)
+	}
+	if effectiveMax > maxFailoverCooldownCeiling {
+		return fmt.Errorf("%s.maxCooldownMs must be at most %d", field, maxFailoverCooldownCeiling.Milliseconds())
+	}
+	if effectiveMin > effectiveMax {
+		return fmt.Errorf("%s.minCooldownMs must not exceed maxCooldownMs", field)
+	}
+	return nil
+}
+
+// validatePaths checks the shape of an upstream's paths and its optional Failover override. Whether the paths'
+// nodes and proxies exist is checked by validatePathReferences.
 func validatePaths(cfg store.Config, index int, u store.Upstream) error {
+	if err := validateFailover(index, u.Failover); err != nil {
+		return err
+	}
 	if len(u.Via) > 0 && len(u.Paths) > 0 {
 		return fmt.Errorf("upstreams[%d] sets both via and paths; via is shorthand for a single path", index)
 	}
