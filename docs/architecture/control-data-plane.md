@@ -123,6 +123,8 @@
 
 - **遗留 TODO**:隧道事件保留期(14 天)、解压/单行大小上限(64MiB/32MiB)、查询范围收窄的两个窗口常量(`tunnelQueryWindowDays`、`traceQueryWindow`)目前都是代码常量,未像 spool 配额/限速那样开放环境变量;`nodeAdapterSet` 每次 ingest 都会 `store.List` 全部站点,站点数量很大时可考虑缓存或增量维护。
 
+**阶段 5(日志与追踪)端到端测试**:`internal/agent/e2e_*_test.go` 用真实 `*control.Control`(`NewWithLogDir`)+ 真实 `*agent.Agent`、真实 mTLS 与真实 spool 目录跑通节点到控制器的完整链路,覆盖:基本上传与查询(`e2e_basic_test.go`,含 track id 防伪造、trace 查询、节点 `LogStats` 上报);跨入口/中继/出口三节点的隧道全路径时间线(`e2e_overlay_trace_test.go`);控制器不可达时的 spool 积压与恢复、不丢不重(`e2e_backlog_test.go`);ACK 丢失后的幂等重传(`e2e_ack_idempotency_test.go`,用一个只包一层 `POST /southbound/v1/logs` 的测试网关模拟“已写入但响应丢失”);节点吊销重新注册后新 spool 从段号 1 起不被当重传丢弃(`e2e_reregister_test.go`);spool 配额丢段与控制器接受跳号(`e2e_quota_test.go`)。这批测试还发现并修复了一个真实缺陷:`agent.Run()` 原先的 `defer` 顺序让日志 spool 先于 `engine.StopAll()`/`closeOverlay()` 关闭,导致节点优雅关闭时刚产生的最后一批隧道事件(如入口自身的 `ended`)进了一个已经没有协程在读的 channel,静默丢失且从未落盘;修复后改为先停站点、关 overlay,最后才关 spool(`e2e_shutdown_test.go` 为回归测试,直接读 spool 磁盘文件断言)。
+
 ## 6. 非目标
 
 多路径负载均衡/加权分流;请求级透明重试;中继节点完全无入站(NAT 反向建链)。
