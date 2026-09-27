@@ -189,7 +189,7 @@ func TestFailoverBoundsHowLongOnePathMayTakeToConnect(t *testing.T) {
 	upstream := textUpstream(t, "ok")
 	target := strings.TrimPrefix(upstream.URL, "http://")
 	f, transports := newPathTransports(http.DefaultTransport.(*http.Transport).Clone(),
-		[]snapshot.Path{{Label: "hang", Target: target}, {Label: "good", Target: target}}, engine.pathDialer())
+		[]snapshot.Path{{Label: "hang", Target: target}, {Label: "good", Target: target}}, engine.pathDialer(), false)
 	defer closeIdle(transports)
 	f.establishTimeout = 100 * time.Millisecond
 	request, _ := http.NewRequest(http.MethodGet, upstream.URL, nil)

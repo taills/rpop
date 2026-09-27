@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"go.uber.org/zap"
 
 	"github.com/rpop-project/rpop/internal/pki"
 	"github.com/rpop-project/rpop/internal/snapshot"
+	"github.com/rpop-project/rpop/internal/traceid"
 )
 
 // Overlay is a node's side of the overlay network: its links to peers, the tunnels it opens on them, and its
@@ -25,11 +27,13 @@ type Overlay struct {
 	mu    sync.Mutex
 	links map[string]*link
 	relay *relayServer
+	// events queues tunnel lifecycle events for asynchronous delivery; see SetTunnelEventSink.
+	events *eventQueue
 }
 
 // New creates the overlay of the node identity names.
 func New(identity *pki.Identity, log *zap.Logger) *Overlay {
-	o := &Overlay{identity: identity, log: log, links: make(map[string]*link)}
+	o := &Overlay{identity: identity, log: log, links: make(map[string]*link), events: newEventQueue(log)}
 	o.peers.Store(&map[string]snapshot.Peer{})
 	o.routes.Store(&map[string]snapshot.RelayRoute{})
 	return o
@@ -112,22 +116,56 @@ func (o *Overlay) applyRelayLocked(s snapshot.Snapshot) error {
 }
 
 // DialPath connects to the path's target: through a tunnel when the path crosses nodes, otherwise directly
-// or through its proxies.
+// or through its proxies. When ctx carries WithTunnelLogging(true), it mints a tunnel ID, sends it and the
+// logging decision on the CONNECT stream so every relay and the exit record the same tunnel (D22, P7), and
+// reports its own arrived/established/ended events for this, the entry hop.
 func (o *Overlay) DialPath(ctx context.Context, path snapshot.Path) (net.Conn, error) {
 	if path.FirstNode == "" {
 		return DialChain(ctx, path.Egress, path.Target)
 	}
-	return o.tunnel(ctx, path.FirstNode, path.LinkProxies, path.Key)
+	open := tunnelOpen{logEvents: tunnelLoggingEnabled(ctx), reportOwnEnd: true}
+	if open.logEvents {
+		open.tunnelID = traceid.New()
+	}
+	arrived := time.Now()
+	if open.logEvents {
+		o.events.record(TunnelEvent{Timestamp: arrived, TunnelID: open.tunnelID, NodeID: o.identity.NodeID, Role: RoleEntry, Stage: StageArrived, Peer: path.FirstNode})
+	}
+	conn, err := o.tunnel(ctx, path.FirstNode, path.LinkProxies, path.Key, open)
+	if err != nil {
+		if open.logEvents {
+			o.events.record(TunnelEvent{Timestamp: time.Now(), TunnelID: open.tunnelID, NodeID: o.identity.NodeID, Role: RoleEntry, Stage: StageEnded, Peer: path.FirstNode, Duration: time.Since(arrived), Error: err.Error()})
+		}
+		return nil, err
+	}
+	if open.logEvents {
+		o.events.record(TunnelEvent{Timestamp: time.Now(), TunnelID: open.tunnelID, NodeID: o.identity.NodeID, Role: RoleEntry, Stage: StageEstablished, Peer: path.FirstNode, Duration: time.Since(arrived)})
+	}
+	return conn, nil
 }
 
-func (o *Overlay) dialNext(ctx context.Context, route snapshot.RelayRoute) (net.Conn, error) {
+// dialNext connects a relay to the rest of a route: onward to another relay through a tunnel that forwards the
+// tunnel ID and logging decision it received, or, at the exit, straight to the target. open.reportOwnEnd is
+// always false here: serveRelay wraps the whole hop's lifetime around this call instead of letting a nested
+// tunnel report its own end.
+func (o *Overlay) dialNext(ctx context.Context, route snapshot.RelayRoute, open tunnelOpen) (net.Conn, error) {
 	if route.Next == "" {
 		return DialChain(ctx, route.Egress, route.Target)
 	}
-	return o.tunnel(ctx, route.Next, route.LinkProxies, route.Key)
+	open.reportOwnEnd = false
+	return o.tunnel(ctx, route.Next, route.LinkProxies, route.Key, open)
 }
 
-func (o *Overlay) tunnel(ctx context.Context, peer string, proxies []snapshot.Proxy, key string) (net.Conn, error) {
+// tunnelOpen carries one CONNECT dial's tracing identity: whether the tunnel it belongs to logs lifecycle
+// events, the tunnel's ID, and whether this particular connection should itself report a StageEnded event when
+// it closes.
+type tunnelOpen struct {
+	tunnelID     string
+	logEvents    bool
+	reportOwnEnd bool
+}
+
+func (o *Overlay) tunnel(ctx context.Context, peer string, proxies []snapshot.Proxy, key string, open tunnelOpen) (net.Conn, error) {
 	address := (*o.peers.Load())[peer].Address
 	if address == "" {
 		return nil, fmt.Errorf("node %s has no relay address", peer)
@@ -137,9 +175,17 @@ func (o *Overlay) tunnel(ctx context.Context, peer string, proxies []snapshot.Pr
 	if err != nil {
 		return nil, fmt.Errorf("link to %s: %w", peer, err)
 	}
-	header := make(http.Header, 1)
+	header := make(http.Header, 3)
 	header.Set(RouteHeader, key)
-	return openTunnel(ctx, cc, peer, header)
+	if open.logEvents {
+		header.Set(TunnelIDHeader, open.tunnelID)
+		header.Set(TunnelLogHeader, "1")
+	}
+	var trace tunnelTrace
+	if open.logEvents && open.reportOwnEnd {
+		trace = tunnelTrace{tunnelID: open.tunnelID, nodeID: o.identity.NodeID, role: RoleEntry, events: o.events, opened: time.Now()}
+	}
+	return openTunnel(ctx, cc, peer, header, trace)
 }
 
 func (o *Overlay) link(peer, address string, proxies []snapshot.Proxy) *link {

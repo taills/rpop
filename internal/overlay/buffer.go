@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"sync/atomic"
 )
 
 const copyBufferSize = 32 << 10
@@ -43,4 +44,33 @@ func copyPooled(dst io.Writer, src io.Reader) error {
 	defer buffers.Put(buffer)
 	_, err := io.CopyBuffer(struct{ io.Writer }{dst}, struct{ io.Reader }{src}, *buffer)
 	return err
+}
+
+// countingReader and countingWriter tally the bytes a relay copies through a tunnel, so its StageEnded event
+// can report them. They are only used when the tunnel logs events (P7): the common case, with logging off,
+// copies through copyPooled/copyFlushing directly and pays nothing for counting.
+type countingReader struct {
+	io.Reader
+	n *atomic.Uint64
+}
+
+func (r countingReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if n > 0 {
+		r.n.Add(uint64(n))
+	}
+	return n, err
+}
+
+type countingWriter struct {
+	io.Writer
+	n *atomic.Uint64
+}
+
+func (w countingWriter) Write(p []byte) (int, error) {
+	n, err := w.Writer.Write(p)
+	if n > 0 {
+		w.n.Add(uint64(n))
+	}
+	return n, err
 }

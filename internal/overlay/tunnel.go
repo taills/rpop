@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rpop-project/rpop/internal/pki"
@@ -34,9 +35,18 @@ func (e *RelayError) Error() string {
 	return fmt.Sprintf("relay %s answered %d: %s", e.Peer, e.Status, e.Reason)
 }
 
+// tunnelTrace carries what tunnelConn needs to report its own StageEnded event when it closes. The zero value
+// disables it: a relay reuses tunnel() to reach further hops but tracks that hop's lifecycle itself, around its
+// call to dialNext, instead of letting the nested connection report its own end (see dialNext).
+type tunnelTrace struct {
+	tunnelID, nodeID, role string
+	events                 *eventQueue
+	opened                 time.Time
+}
+
 // openTunnel opens a CONNECT stream on a connection the caller reserved. The stream outlives ctx, which only
 // bounds how long the relay may take to connect the next hop.
-func openTunnel(ctx context.Context, cc *http.ClientConn, peer string, header http.Header) (net.Conn, error) {
+func openTunnel(ctx context.Context, cc *http.ClientConn, peer string, header http.Header, trace tunnelTrace) (net.Conn, error) {
 	reader, writer := io.Pipe()
 	streamCtx, cancel := context.WithCancel(context.Background())
 	name := pki.NodeName(peer)
@@ -67,7 +77,7 @@ func openTunnel(ctx context.Context, cc *http.ClientConn, peer string, header ht
 			writer.Close()
 			return nil, &RelayError{Peer: peer, Status: r.response.StatusCode, Reason: reason}
 		}
-		return &tunnelConn{body: r.response.Body, writer: writer, cancel: cancel, peer: peer}, nil
+		return &tunnelConn{body: r.response.Body, writer: writer, cancel: cancel, peer: peer, trace: trace}, nil
 	case <-ctx.Done():
 		cancel()
 		writer.CloseWithError(ctx.Err())
@@ -87,13 +97,33 @@ type tunnelConn struct {
 	cancel context.CancelFunc
 	peer   string
 	once   sync.Once
+	// trace is set only for the connection the entry hop itself hands to the data plane; see tunnelTrace.
+	trace             tunnelTrace
+	bytesIn, bytesOut atomic.Uint64
 
 	mu                    sync.Mutex
 	readTimer, writeTimer *time.Timer
 }
 
-func (c *tunnelConn) Read(p []byte) (int, error)  { return c.body.Read(p) }
-func (c *tunnelConn) Write(p []byte) (int, error) { return c.writer.Write(p) }
+func (c *tunnelConn) Read(p []byte) (int, error) {
+	n, err := c.body.Read(p)
+	if n > 0 && c.trace.events != nil {
+		c.bytesIn.Add(uint64(n))
+	}
+	return n, err
+}
+
+func (c *tunnelConn) Write(p []byte) (int, error) {
+	n, err := c.writer.Write(p)
+	if n > 0 && c.trace.events != nil {
+		c.bytesOut.Add(uint64(n))
+	}
+	return n, err
+}
+
+// TunnelID reports the tunnel this connection belongs to, or "" when the tunnel does not log lifecycle events.
+// The data plane reads it through httptrace.GotConn to tag its access log record (D22).
+func (c *tunnelConn) TunnelID() string { return c.trace.tunnelID }
 
 // CloseWrite ends the stream in the sending direction while responses keep arriving.
 func (c *tunnelConn) CloseWrite() error { return c.writer.Close() }
@@ -107,6 +137,12 @@ func (c *tunnelConn) Close() error {
 		stopTimer(c.readTimer)
 		stopTimer(c.writeTimer)
 		c.mu.Unlock()
+		if c.trace.events != nil {
+			c.trace.events.record(TunnelEvent{
+				Timestamp: time.Now(), TunnelID: c.trace.tunnelID, NodeID: c.trace.nodeID, Role: c.trace.role, Stage: StageEnded,
+				Peer: c.peer, BytesIn: c.bytesIn.Load(), BytesOut: c.bytesOut.Load(), Duration: time.Since(c.trace.opened),
+			})
+		}
 	})
 	return nil
 }

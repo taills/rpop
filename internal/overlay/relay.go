@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -115,10 +116,27 @@ func (o *Overlay) serveRelay(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusForbidden, "route is not allowed from this peer")
 		return
 	}
+	// The tunnel's opener decides whether it logs events (TunnelLogHeader): this relay's own route table cannot
+	// tell, because one route can be shared by sites with different access-log settings (P7).
+	open := tunnelOpen{tunnelID: r.Header.Get(TunnelIDHeader), logEvents: r.Header.Get(TunnelLogHeader) != ""}
+	role := RoleRelay
+	if route.Next == "" {
+		role = RoleExit
+	}
+	arrived := time.Now()
+	if open.logEvents {
+		o.events.record(TunnelEvent{Timestamp: arrived, TunnelID: open.tunnelID, NodeID: o.identity.NodeID, Role: role, Stage: StageArrived, Peer: peer})
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), dialTimeout+handshakeTimeout)
-	next, err := o.dialNext(ctx, route)
+	next, err := o.dialNext(ctx, route, open)
 	cancel()
 	if err != nil {
+		if open.logEvents {
+			o.events.record(TunnelEvent{
+				Timestamp: time.Now(), TunnelID: open.tunnelID, NodeID: o.identity.NodeID, Role: role, Stage: StageEnded,
+				Peer: peer, Duration: time.Since(arrived), Error: err.Error(),
+			})
+		}
 		o.log.Warn("relay could not reach the next hop", zap.String("from", peer), zap.String("next", route.Next), zap.Error(err))
 		refuse(w, http.StatusBadGateway, err.Error())
 		return
@@ -131,14 +149,33 @@ func (o *Overlay) serveRelay(w http.ResponseWriter, r *http.Request) {
 	if err := controller.Flush(); err != nil {
 		return
 	}
+	established := time.Now()
+	if open.logEvents {
+		o.events.record(TunnelEvent{Timestamp: established, TunnelID: open.tunnelID, NodeID: o.identity.NodeID, Role: role, Stage: StageEstablished, Peer: peer, Duration: established.Sub(arrived)})
+	}
+	var bytesUp, bytesDown atomic.Uint64
 	go func() {
-		if err := copyPooled(next, r.Body); err == nil {
+		var err error
+		if open.logEvents {
+			err = copyPooled(next, countingReader{r.Body, &bytesUp})
+		} else {
+			err = copyPooled(next, r.Body)
+		}
+		if err == nil {
 			_ = closeWrite(next)
 		} else {
 			next.Close()
 		}
 	}()
-	_ = copyFlushing(w, controller, next)
+	if open.logEvents {
+		_ = copyFlushing(countingWriter{w, &bytesDown}, controller, next)
+		o.events.record(TunnelEvent{
+			Timestamp: time.Now(), TunnelID: open.tunnelID, NodeID: o.identity.NodeID, Role: role, Stage: StageEnded,
+			Peer: peer, Duration: time.Since(established), BytesIn: bytesUp.Load(), BytesOut: bytesDown.Load(),
+		})
+	} else {
+		_ = copyFlushing(w, controller, next)
+	}
 }
 
 func refuse(w http.ResponseWriter, status int, reason string) {

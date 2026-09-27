@@ -32,8 +32,9 @@ func (e *Engine) siteHandler(site snapshot.Site) (http.Handler, []*http.Transpor
 	targets := make([]upstreamTarget, 0, len(site.Upstreams))
 	transports := make([]*http.Transport, 0, len(site.Upstreams))
 	dialer := e.pathDialer()
+	logTunnelEvents := accessLoggingEnabled(site.AccessLog)
 	for index, upstream := range site.Upstreams {
-		target, err := newUpstreamTarget(upstream, dialer)
+		target, err := newUpstreamTarget(upstream, dialer, logTunnelEvents)
 		if err != nil {
 			closeIdle(transports)
 			return nil, nil, fmt.Errorf("upstreams[%d]: %w", index, err)
@@ -44,7 +45,7 @@ func (e *Engine) siteHandler(site snapshot.Site) (http.Handler, []*http.Transpor
 	return e.observeSite(site.ID, site.AccessLog, routedHandler(router, targets)), transports, nil
 }
 
-func newUpstreamTarget(upstream snapshot.Upstream, dialer PathDialer) (upstreamTarget, error) {
+func newUpstreamTarget(upstream snapshot.Upstream, dialer PathDialer, logTunnelEvents bool) (upstreamTarget, error) {
 	u, err := url.Parse(upstream.URL)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return upstreamTarget{}, fmt.Errorf("invalid upstream URL")
@@ -56,7 +57,7 @@ func newUpstreamTarget(upstream snapshot.Upstream, dialer PathDialer) (upstreamT
 	var roundTripper http.RoundTripper = transport
 	transports := []*http.Transport{transport}
 	if len(upstream.Paths) > 0 {
-		roundTripper, transports = newPathTransports(transport, upstream.Paths, dialer)
+		roundTripper, transports = newPathTransports(transport, upstream.Paths, dialer, logTunnelEvents)
 	}
 	proxy := &httputil.ReverseProxy{
 		Transport: roundTripper,

@@ -103,7 +103,7 @@ type failoverTransport struct {
 	establishTimeout time.Duration
 }
 
-func newPathTransports(base *http.Transport, paths []snapshot.Path, dialer PathDialer) (*failoverTransport, []*http.Transport) {
+func newPathTransports(base *http.Transport, paths []snapshot.Path, dialer PathDialer, logTunnelEvents bool) (*failoverTransport, []*http.Transport) {
 	f := &failoverTransport{establishTimeout: pathEstablishTimeout}
 	transports := make([]*http.Transport, 0, len(paths))
 	for _, path := range paths {
@@ -113,7 +113,10 @@ func newPathTransports(base *http.Transport, paths []snapshot.Path, dialer PathD
 			// Connections outlive the context they were dialed with, so bounding it only bounds the attempt.
 			ctx, cancel := context.WithTimeout(ctx, f.establishTimeout)
 			defer cancel()
-			conn, err := dialer.DialPath(ctx, path)
+			// Whether to log this dial's tunnel events travels through ctx because only the site (the caller
+			// of DialPath, several layers up) knows its own access-log setting; overlay reads it back on the
+			// other side (see overlay.WithTunnelLogging).
+			conn, err := dialer.DialPath(overlay.WithTunnelLogging(ctx, logTunnelEvents), path)
 			if err != nil {
 				return nil, &pathDialError{label: path.Label, err: err}
 			}
