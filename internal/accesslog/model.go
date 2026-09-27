@@ -9,8 +9,12 @@ import (
 )
 
 type Record struct {
-	Timestamp              time.Time           `json:"timestamp"`
-	SiteID                 string              `json:"siteId"`
+	Timestamp time.Time `json:"timestamp"`
+	SiteID    string    `json:"siteId"`
+	// TrackID is the Rpop-Track-Id the ingress node minted for this request (D22); TunnelID names the cross-node
+	// tunnel the request's upstream connection used, empty for direct (single-node) upstreams.
+	TrackID                string              `json:"trackId,omitempty"`
+	TunnelID               string              `json:"tunnelId,omitempty"`
 	ClientIP               string              `json:"clientIp,omitempty"`
 	ClientPort             int                 `json:"clientPort,omitempty"`
 	ForwardedFor           string              `json:"forwardedFor,omitempty"`

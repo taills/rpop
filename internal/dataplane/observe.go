@@ -244,16 +244,17 @@ func (e *Engine) ForgetMetrics(siteID string) {
 	e.metrics.Delete(siteID)
 }
 
-// routeTrace lets the routing handler report the chosen upstream (redacted URL) and route label back to observeSite.
+// routeTrace lets the routing handler report the chosen upstream (redacted URL) and route label back to
+// observeSite, and lets observeSite itself record the tunnel ID (if any) the request's connection carried.
 type routeTrace struct {
-	upstream, route string
+	upstream, route, tunnelID string
 }
 
 type routeTraceKey struct{}
 
 // observeSite records metrics and access logs for a site.
 func (e *Engine) observeSite(siteID string, settings snapshot.AccessLog, next http.Handler) http.Handler {
-	loggingEnabled := strings.TrimSpace(settings.AdapterID) != ""
+	loggingEnabled := accessLoggingEnabled(settings)
 	includeBodies := loggingEnabled && settings.IncludeBodies
 	limit := settings.MaxBodyBytes
 	if limit == 0 || limit < -1 {
@@ -267,6 +268,7 @@ func (e *Engine) observeSite(siteID string, settings snapshot.AccessLog, next ht
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
+		trackID := assignTrackID(r)
 		m := e.metricsFor(siteID)
 		m.begin()
 		var requestBody *bodyCapture
@@ -287,15 +289,22 @@ func (e *Engine) observeSite(siteID string, settings snapshot.AccessLog, next ht
 		var firstByte time.Duration
 		var hasTTFB bool
 		var firstMu sync.Mutex
-		trace := &httptrace.ClientTrace{GotFirstResponseByte: func() {
-			firstMu.Lock()
-			if !hasTTFB {
-				firstByte = time.Since(started)
-				hasTTFB = true
-			}
-			firstMu.Unlock()
-		}}
 		route := &routeTrace{}
+		trace := &httptrace.ClientTrace{
+			GotFirstResponseByte: func() {
+				firstMu.Lock()
+				if !hasTTFB {
+					firstByte = time.Since(started)
+					hasTTFB = true
+				}
+				firstMu.Unlock()
+			},
+			GotConn: func(info httptrace.GotConnInfo) {
+				if id := tunnelIDFromConn(info.Conn); id != "" {
+					route.tunnelID = id
+				}
+			},
+		}
 		ctx := httptrace.WithClientTrace(context.WithValue(r.Context(), routeTraceKey{}, route), trace)
 		next.ServeHTTP(rw, r.WithContext(ctx))
 		elapsed := time.Since(started)
@@ -317,6 +326,7 @@ func (e *Engine) observeSite(siteID string, settings snapshot.AccessLog, next ht
 		responseHeaders := loggedHeaders(rw.Header(), settings.IncludeSensitiveHeaders)
 		record := requestRecord(r, siteID, route.upstream, started)
 		record.Route = route.route
+		record.TrackID, record.TunnelID = trackID, route.tunnelID
 		record.RequestHeaders, record.ResponseHeaders = requestHeaders, responseHeaders
 		record.Status, record.RequestBytes, record.ResponseBytes = rw.status, requestBytesCount, rw.bytes
 		record.TTFBMillis, record.ResponseMillis = float64(ttfb)/float64(time.Millisecond), float64(elapsed)/float64(time.Millisecond)
@@ -435,7 +445,8 @@ func capturedBody(b *bodyCapture) (string, string, int64, bool) {
 
 func accessLogFields(record accesslog.Record) []zap.Field {
 	fields := []zap.Field{
-		zap.String("site_id", record.SiteID), zap.String("client_ip", record.ClientIP), zap.Int("client_port", record.ClientPort), zap.String("forwarded_for", record.ForwardedFor),
+		zap.String("site_id", record.SiteID), zap.String("track_id", record.TrackID), zap.String("tunnel_id", record.TunnelID),
+		zap.String("client_ip", record.ClientIP), zap.Int("client_port", record.ClientPort), zap.String("forwarded_for", record.ForwardedFor),
 		zap.String("scheme", record.Scheme), zap.String("tls_version", record.TLSVersion), zap.String("host", record.Host),
 		zap.String("method", record.Method), zap.String("path", record.Path), zap.String("protocol", record.Protocol),
 		zap.String("referer", record.Referer), zap.String("user_agent", record.UserAgent), zap.String("upstream", record.Upstream), zap.String("route", record.Route),
