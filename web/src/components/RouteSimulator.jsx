@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { normalizeRoute, parseHeaderLines, validateRoutes } from '../routing.js'
+import SimulatedPaths from './SimulatedPaths.jsx'
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
 const SIMULATE_DELAY_MS = 350
@@ -47,9 +48,13 @@ export default function RouteSimulator({ site, onSimulate, onMatch }) {
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
   const sequence = useRef(0)
-  const upstreams = site.config.upstreams.map(upstream => ({ url: upstream.url }))
+  // via/paths ride along unmodified so the simulator can resolve the matched upstream's full candidate paths
+  // (docs/architecture/control-data-plane.md §5, "API 契约(6.5 定形)"); siteId/nodes only correlate the result
+  // with this site's live path health on its entry node and are harmless to send for an unsaved site (empty id
+  // just means every path reports "unknown" health, see addPathSimulation on the server).
+  const upstreams = site.config.upstreams.map(upstream => ({ url: upstream.url, via: upstream.via, paths: upstream.paths }))
   const routes = site.config.routes || []
-  const request = JSON.stringify({ config: { upstreams, routes: routes.map(normalizeRoute) }, method, url })
+  const request = JSON.stringify({ siteId: site.id, config: { nodes: site.config.nodes, upstreams, routes: routes.map(normalizeRoute) }, method, url })
   const localError = validateRoutes(routes, upstreams.length) || parseHeaderLines(headerText).error || (url.trim() ? '' : '请输入要模拟的 URL')
 
   useEffect(() => {
@@ -76,6 +81,9 @@ export default function RouteSimulator({ site, onSimulate, onMatch }) {
     <label>请求 Header（每行一个“名称: 值”，可用 Host 覆盖域名）
       <textarea rows="2" value={headerText} onChange={event => setHeaderText(event.target.value)} placeholder={'X-Env: canary\nUser-Agent: Googlebot'}/>
     </label>
-    {error ? <div className="sim-error" role="status">{error}</div> : result ? <SimulationResult method={method} result={result}/> : <div className="sim-pending">正在模拟…</div>}
+    {error ? <div className="sim-error" role="status">{error}</div> : result ? <>
+      <SimulationResult method={method} result={result}/>
+      <SimulatedPaths result={result}/>
+    </> : <div className="sim-pending">正在模拟…</div>}
   </div>
 }

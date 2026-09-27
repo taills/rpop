@@ -1,0 +1,86 @@
+.sim-paths {
+  display: grid;
+  gap: 10px;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px dashed #cfe0c8;
+}
+.sim-paths-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.sim-paths-head small {
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: #8b988f;
+}
+.sim-paths-head span {
+  font-size: 11px;
+  color: #8b988f;
+}
+.sim-path-row {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-primary, #e3ebe5);
+  border-radius: 10px;
+  background: var(--bg-secondary, #fbfcfb);
+}
+.sim-path-row.selected {
+  border-color: var(--accent-green, #6ca142);
+  box-shadow: 0 0 0 3px var(--soft-green, #bbee6255);
+}
+.sim-path-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.sim-path-index {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-secondary, #6d7d73);
+}
+.sim-path-until {
+  font-size: 11px;
+  color: var(--text-muted, #8b988f);
+}
+.sim-path-hops {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.sim-hop {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  background: var(--bg-tertiary, #f3f6f4);
+  font-size: 11px;
+}
+.sim-hop code {
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-primary, #26372e);
+}
+.sim-hop-target {
+  background: transparent;
+  border: 1px dashed var(--border-secondary, #cfe0c8);
+}
+.sim-hop-arrow {
+  color: var(--accent-green, #6ca142);
+  font-size: 13px;
+}
+.sim-path-reason {
+  font-size: 11px;
+  color: var(--text-secondary, #56705f);
+}
+@media (max-width: 700px) {
+  .sim-path-hops {
+    gap: 4px;
+  }
+}
