@@ -161,6 +161,15 @@ func (s *fileSink) SetTimeZone(location *time.Location) {
 	}
 }
 
+// locationSnapshot returns the sink's current time zone under lock. Background work that runs outside s.mu
+// (pruneArchives and anything it calls) must go through this instead of reading s.location directly, since
+// SetTimeZone can replace it concurrently.
+func (s *fileSink) locationSnapshot() *time.Location {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.location
+}
+
 func (s *fileSink) Write(ctx context.Context, record Record) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -604,6 +613,10 @@ func (s *fileSink) prunePeriodicArchives() error {
 	if err != nil {
 		return err
 	}
+	// prunePeriodicArchives runs from the background sweep (sweepOnce/rotateActiveLocked's launchArchive job),
+	// outside s.mu, while SetTimeZone can concurrently replace s.location under lock; take a snapshot instead of
+	// reading the field directly so the two never race.
+	location := s.locationSnapshot()
 	type candidate struct {
 		name   string
 		period string
@@ -615,7 +628,7 @@ func (s *fileSink) prunePeriodicArchives() error {
 		if name == activeFileName || strings.HasSuffix(name, ".archiving") {
 			continue
 		}
-		period, ok := parseFilePeriod(name, s.config.Rotation, s.location)
+		period, ok := parseFilePeriod(name, s.config.Rotation, location)
 		if !ok {
 			continue
 		}

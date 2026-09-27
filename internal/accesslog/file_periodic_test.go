@@ -378,3 +378,45 @@ func TestFileSink_ResumesInterruptedArchiveOnRestart(t *testing.T) {
 		t.Fatalf("resumed record not found: %#v", result)
 	}
 }
+
+// TestFileSink_SetTimeZoneRaceWithBackgroundSweep is the regression test for a data race between SetTimeZone
+// (called with s.mu held, e.g. right after accesslog.NewRegistry/NewManager construction) and the background
+// sweep triggerSweep launches: sweepOnce's call chain (pruneArchives -> prunePeriodicArchives) used to read
+// s.location without holding s.mu. Seeding real archived periods here makes prunePeriodicArchives actually reach
+// its parseFilePeriod call (the read that raced) on every pass rather than short-circuiting on an empty
+// directory. Run with -race; before the fix this fails on essentially every run.
+func TestFileSink_SetTimeZoneRaceWithBackgroundSweep(t *testing.T) {
+	sink, dir := newDayFileSink(t, 5, true)
+	old := time.Now().UTC().AddDate(0, 0, -30)
+	for i := 0; i < 8; i++ {
+		period := rotationPeriod("day", old.AddDate(0, 0, -i), time.UTC)
+		name := periodSlotName(period, 0)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}\n"), 0640); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	zones := []*time.Location{time.UTC, time.FixedZone("east", 9*3600), time.FixedZone("west", -5*3600)}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			sink.SetTimeZone(zones[i%len(zones)])
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			sink.sweepOnce()
+		}
+		close(stop)
+	}()
+	wg.Wait()
+}
