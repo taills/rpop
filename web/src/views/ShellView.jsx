@@ -12,49 +12,54 @@ export default function ShellView() {
 
   const menus = [
     { key: 'sites', label: '站点管理', icon: 'dashboard', to: '/sites' },
-    { key: 'logs', label: '访问日志', icon: 'table', to: '/logs' },
-    { key: 'log-settings', label: '日志适配器', icon: 'database', to: '/log-settings' },
-    { key: 'proxies', label: '具名代理', icon: 'link', to: '/proxies' },
-    { key: 'system-settings', label: '系统设置', icon: 'settings', to: '/system-settings' },
-    { key: 'trace', label: '请求追踪', icon: 'link', to: '/trace' },
-    { key: 'nodes', label: '节点', icon: 'link', to: '/nodes' },
+    { key: 'nodes', label: '节点', icon: 'bot', to: '/nodes' },
     { key: 'topology', label: '拓扑', icon: 'layers', to: '/topology' },
-    {
-      key: 'catalog',
-      label: '组件目录',
-      icon: 'layers',
-      to: '/catalog',
-      children: [
-        { key: 'foundation', label: '基础', icon: 'shield' },
-        { key: 'layout', label: '布局', icon: 'layout' },
-        { key: 'form', label: '表单', icon: 'form' },
-        { key: 'data', label: '数据', icon: 'table' },
-        { key: 'feedback', label: '反馈', icon: 'feedback' },
-        { key: 'display', label: '展示', icon: 'dashboard' },
-      ],
-    },
-    {
-      key: 'demo',
-      label: '页面示例',
-      icon: 'layout',
-      to: '/demo',
-      children: [
-        { key: 'list', label: '列表页' },
-        { key: 'pager', label: '分页样式' },
-      ],
-    },
-    {
-      key: 'tokens',
-      label: 'Token / 主题',
-      icon: 'palette',
-      to: '/tokens',
-      children: [
-        { key: 'category', label: '业务分类' },
-        { key: 'theme', label: '主题' },
-        { key: 'type', label: '字体档位' },
-        { key: 'nav', label: '导航布局' },
-      ],
-    },
+    { key: 'proxies', label: '具名代理', icon: 'link', to: '/proxies' },
+    { key: 'logs', label: '访问日志', icon: 'table', to: '/logs' },
+    { key: 'trace', label: '请求追踪', icon: 'clock', to: '/trace' },
+    { key: 'log-settings', label: '日志适配器', icon: 'database', to: '/log-settings' },
+    { key: 'system-settings', label: '系统设置', icon: 'settings', to: '/system-settings' },
+    // The catalog / demo pages / token playground are development aids only (see router/index.jsx, which only
+    // routes them under import.meta.env.DEV); keeping them out of the production menu keeps operators from
+    // stumbling into pages that a production build doesn't even ship.
+    ...(import.meta.env.DEV ? [
+      {
+        key: 'catalog',
+        label: '组件目录',
+        icon: 'layers',
+        to: '/catalog',
+        children: [
+          { key: 'foundation', label: '基础', icon: 'shield' },
+          { key: 'layout', label: '布局', icon: 'layout' },
+          { key: 'form', label: '表单', icon: 'form' },
+          { key: 'data', label: '数据', icon: 'table' },
+          { key: 'feedback', label: '反馈', icon: 'feedback' },
+          { key: 'display', label: '展示', icon: 'dashboard' },
+        ],
+      },
+      {
+        key: 'demo',
+        label: '页面示例',
+        icon: 'layout',
+        to: '/demo',
+        children: [
+          { key: 'list', label: '列表页' },
+          { key: 'pager', label: '分页样式' },
+        ],
+      },
+      {
+        key: 'tokens',
+        label: 'Token / 主题',
+        icon: 'palette',
+        to: '/tokens',
+        children: [
+          { key: 'category', label: '业务分类' },
+          { key: 'theme', label: '主题' },
+          { key: 'type', label: '字体档位' },
+          { key: 'nav', label: '导航布局' },
+        ],
+      },
+    ] : []),
   ]
 
   const active = String(location.pathname.split('/').filter(Boolean)[0] || 'sites')
