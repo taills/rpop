@@ -438,4 +438,3 @@ func TestApplyClosesTheRelayPortWhenTheNodeStopsRelaying(t *testing.T) {
 		t.Fatalf("in-flight tunnel after the relay port closed: got %q", got)
 	}
 }
-
