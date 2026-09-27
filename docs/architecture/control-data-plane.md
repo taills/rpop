@@ -160,6 +160,13 @@
 - **测试**(均 `-race`):`internal/overlay/link_status_test.go`(链路状态机三态、代理链渲染与脱敏、失败/成功清空错误与置位时间);`internal/dataplane/paths_test.go` 新增两个用例(冷却/失败/错误正确记录、未配置 paths 的上游不出现在 `PathHealth` 里);`internal/control/status_sanitize_test.go`(小报告原样通过、nil 直通、条数与长度上限、`nodeRegistry.report` 确实先脱敏再存);`internal/control/nodes_test.go` 新增 `nodeView`/`localNodeView` 读取健康数据的用例;`internal/control/topology_test.go`(复用阶段 4 已有的三节点+双代理夹具验证角色/边/代理列表/健康匹配与回退/凭据不泄露,外加简单单节点场景与鉴权)。
 - **未做(留给后续步骤)**:`POST /api/routes/simulate` 的全路径响应扩展(6.5,契约已在上面定形);前端页面(6.2-6.4)。
 
+**阶段 6 第 2 步(具名代理页 + paths 编辑器)实施记录**:
+
+- `main.jsx` 已切换到 `AppRouter`;`ShellView`(`AppShell`)成为整个控制台唯一的外壳,`站点管理/访问日志/日志适配器/具名代理/系统设置`与原有的`组件目录/页面示例/Token`同列在 `ShellView.jsx` 的 `menus` 数组里,默认路由从 `/catalog` 改为 `/sites`。登录态拆到 `stores/auth.js` + `components/AuthGate.jsx`(整个路由树的公共前置),`api.js` 统一处理 401(自动回登录),行为(登录/建密码、5s 轮询、站点增删改查、YAML 导入导出)不变,原先近乎无样式的自定义 rail 侧栏被替换。
+- `views/ProxiesPage.jsx` 按契约用 `UiTable`/`UiDrawer` 实现;`proxyForm.js` 的 `buildProxyMutation` 把编辑时留空的密码字段发送 `password: null`(保持不变),新建代理始终发送该字段;删除被引用时把 409 转成友好提示。
+- `components/PathsEditor.jsx` 接入 `UpstreamFields.jsx` 的新增 `OptionToggle`;`pathsForm.js` 提供路径/跳的增删排序、`via` 单路径简写迁移(`normalizeUpstreamPaths`,在 `siteForm.js` 的 `prepareSiteForEditing` 时机做一次)、hop 下拉的候选节点过滤(排除内嵌节点与站点自身 placement)以及 `parsePathsError`——从 `upstreams[i].paths[j](.via[k])?` 前缀定位服务端 400 错误到具体路径/跳。
+- 遗留:hop 下拉未按节点 `relayAddress` 是否已配置过滤,该校验仍完全靠服务端 400 兜底;控制台目前没有站点 placement(`config.nodes`)编辑 UI,因此"路径不能经过服务该站点的节点"这条排除规则实际只影响内嵌节点。
+
 ## 6. 非目标
 
 多路径负载均衡/加权分流;请求级透明重试;中继节点完全无入站(NAT 反向建链)。
