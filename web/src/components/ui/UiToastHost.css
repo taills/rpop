@@ -9,6 +9,18 @@
   width: min(340px, calc(100vw - 32px));
   pointer-events: none;
 }
+/* AppTopNav wraps onto a second row on narrow screens (see AppTopNav.css), so there is no single fixed header
+   height to offset around; anchoring toasts to the bottom instead keeps them from ever landing on top of the
+   theme switcher / logout button in the top-right corner, on any header height. */
+@media (max-width: 640px) {
+  .ui-toast-stack {
+    top: auto;
+    bottom: 16px;
+    left: 16px;
+    right: 16px;
+    width: auto;
+  }
+}
 .ui-toast {
   pointer-events: auto;
   display: flex;

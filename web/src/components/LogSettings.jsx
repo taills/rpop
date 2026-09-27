@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useToast } from '../stores/toast.js'
 import '../Logs.css'
 
 const blankConfig = { adapter: 'file', file: { rotation: 'day', maxSizeBytes: 1073741824, compress: true, keepFiles: 30 }, clickhouse: { url: '', database: 'default', table: 'access_logs', splitMode: 'none', username: '', password: '' }, elasticsearch: { url: '', index: 'rpop-access-logs', splitMode: 'none', authType: 'none', username: '', password: '', apiKey: '' }, s3: { endpoint: '', region: 'us-east-1', bucket: '', prefix: 'rpop/access', splitMode: 'hour', accessKeyId: '', secretAccessKey: '', sessionToken: '', forcePathStyle: true } }
@@ -24,6 +25,7 @@ function normalizeConfig(value = {}) {
 }
 
 export default function LogSettings({ api, onChange }) {
+  const { toast } = useToast()
   const [adapters, setAdapters] = useState([])
   const [editing, setEditing] = useState(null)
   const [name, setName] = useState('')
@@ -34,7 +36,6 @@ export default function LogSettings({ api, onChange }) {
   const [elasticsearchCredentialsSaved, setElasticsearchCredentialsSaved] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [message, setMessage] = useState('')
   const [error, setError] = useState('')
 
   async function loadAdapters() {
@@ -48,17 +49,17 @@ export default function LogSettings({ api, onChange }) {
   function patch(section, key, value) { setConfig(current => ({ ...current, [section]: { ...current[section], [key]: value } })) }
   function startCreate() {
     setEditing({ id: '' }); setName(''); setConfig(structuredClone(blankConfig)); setMaxSizeText(formatSize(blankConfig.file.maxSizeBytes))
-    setPasswordSaved(false); setS3CredentialsSaved(false); setElasticsearchCredentialsSaved(false); setError(''); setMessage('')
+    setPasswordSaved(false); setS3CredentialsSaved(false); setElasticsearchCredentialsSaved(false); setError('')
   }
   function startEdit(adapter) {
     const next = normalizeConfig(adapter.config)
     setEditing({ id: adapter.id }); setName(adapter.name); setConfig(next); setMaxSizeText(formatSize(next.file.maxSizeBytes))
-    setPasswordSaved(adapter.hasClickHousePassword); setS3CredentialsSaved(adapter.hasS3Credentials); setElasticsearchCredentialsSaved(adapter.hasElasticsearchCredentials); setError(''); setMessage('')
+    setPasswordSaved(adapter.hasClickHousePassword); setS3CredentialsSaved(adapter.hasS3Credentials); setElasticsearchCredentialsSaved(adapter.hasElasticsearchCredentials); setError('')
   }
   function closeEditor() { setEditing(null); setError('') }
 
   async function save(event) {
-    event.preventDefault(); setSaving(true); setMessage(''); setError('')
+    event.preventDefault(); setSaving(true); setError('')
     try {
       const size = parseSize(maxSizeText)
       if (config.adapter === 'file' && size === null) throw new Error('大小上限请输入如 1G、512MiB 或 1073741824 的正数')
@@ -69,24 +70,24 @@ export default function LogSettings({ api, onChange }) {
       const saved = (data.adapters || []).find(item => item.id === savedId)
       setAdapters(data.adapters || [])
       setEditing(null)
-      setMessage(saved ? `“${saved.name}”已保存` : '日志适配器已保存')
+      toast.success(saved ? `“${saved.name}”已保存` : '日志适配器已保存')
       await onChange?.()
     } catch (e) { setError(e.message) } finally { setSaving(false) }
   }
 
   async function remove(adapter) {
     if (!window.confirm(`删除日志适配器“${adapter.name}”？已绑定站点的适配器不能删除。`)) return
-    setError(''); setMessage('')
+    setError('')
     try {
       const data = await api(`/logging/adapters/${encodeURIComponent(adapter.id)}`, { method: 'DELETE' })
-      setAdapters(data.adapters || []); setMessage(`“${adapter.name}”已删除`); await onChange?.()
-    } catch (e) { setError(e.message) }
+      setAdapters(data.adapters || []); toast.success(`“${adapter.name}”已删除`); await onChange?.()
+    } catch (e) { toast.error(e.message) }
   }
 
   if (loading) return <section className="logs-page"><p>正在读取日志配置…</p></section>
   return <section className="logs-page">
     <div className="logs-heading"><div><div className="eyebrow">LOG STORAGE</div><h1>日志适配器</h1><p>可以配置多个同类型适配器；每个站点独立选择一个目标。</p></div><button className="primary" onClick={startCreate}>＋ 添加适配器</button></div>
-    {error && <div className="error">{error}</div>}{message && <div className="log-success">{message}</div>}
+    {error && <div className="error">{error}</div>}
     <div className="adapter-list">
       {!adapters.length && <div className="adapter-empty">还没有日志适配器。添加一个后，站点才能启用访问日志。</div>}
       {adapters.map(adapter => <article className="adapter-card" key={adapter.id}><div className="adapter-card-icon">{adapterIcon(adapter.config.adapter)}</div><div className="adapter-card-info"><strong>{adapter.name}</strong><span>{adapterLabel[adapter.config.adapter] || adapter.config.adapter} · ID: {adapter.id}</span></div><span className="adapter-type">{adapter.config.adapter}</span><div className="adapter-actions"><button className="secondary" onClick={() => startEdit(adapter)}>编辑</button><button className="secondary danger-action" onClick={() => remove(adapter)}>删除</button></div></article>)}

@@ -215,6 +215,7 @@
 - 窄屏(390px)顶栏横向溢出:`AppTopNav.css` 的 `.app-top-nav__right` 原是 `flex-shrink:0`,内容(主题/字体档位/导航布局切换器 + 登出)撑到约 1257px。改为允许其收缩并在自身内部继续 `flex-wrap`,顶栏整体也允许换行;字体档位/导航布局切换器(演示性开关)收回仅 `DEV` 展示;主题切换器窄屏下隐藏文字只留色块,与 `UiNavLayoutSwitcher` 已有的同类处理一致。节点表格、拓扑 SVG 容器本身已有独立横向滚动,未受影响;侧栏折叠按钮已存在,无需改动。
 - 补 `GET /api/sites/{id}`(与 README 一致但此前缺失,`site()` 对 `len(parts)==3` 只处理了 PUT/DELETE);`NodeDetailPage` 补 `requestRef` 计数器防止 `id` 切换时旧响应覆盖新响应(仿 `TracePage.jsx`)。
 - 次要:`SimulatedPaths.css` 两处硬编码色改用既有 token;`LogDetailDrawer` 的 `trackId`/`tunnelId` 拼路由前 `encodeURIComponent`;`NodeLinksTable` 行 key 改用 `peer+代理链`;`PathsEditor` 的图标按钮补 `aria-label`。
+- 生产环境 toast 完全不显示:`UiToastHost.jsx` 一直存在且 `toast.js` 本身没问题,但从未被真正挂进应用树(`CatalogPage.jsx` 只在组件名清单字符串里提到它,从未渲染),`main.jsx` 补上唯一一处 `<UiToastHost/>`(挂在 `AuthGate` 旁而非其内部,登录页也能看到提示,且不受 `AuthGate` 内部三种渲染分支影响)。顺带把 `SitesPage.jsx`/`LogSettings.jsx` 里纯"一次性操作结果"(启停站点、导入 YAML、删除站点/适配器、保存适配器成功)的旧横幅/`log-success` 提示改为调用 `toast.*`,页面级持久轮询错误(`refresh`)与表单内校验错误(`formError`/保存中的 `error`)保持原样不动;`SystemSettings.jsx`/`KeyedCertificateManager.jsx` 的提示紧贴对应表单展示,判定为表单内反馈,未迁移。窄屏(390px)下 `.ui-toast-stack` 改为在 `max-width:640px` 时贴底显示,避免顶栏因换行到不确定高度时被 toast 盖住主题切换器/登出按钮。新增 `appMount.test.js` 静态断言 `main.jsx` 挂载且全仓库生产代码只挂载一次。
 
 **阶段 7(长尾)设计**:以下是 §4 第 7 阶段四项遗留工作(窗口调优、协议版本治理、ClickHouse 去重、时钟偏差标注)的契约,以及 §5 遗留 TODO(行 134)与 D19 的收口方案;7.1-7.6 据此并行实施,均为新增/追加式改动,不需要引入南向协议版本升级。
 
