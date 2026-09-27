@@ -183,6 +183,15 @@
 - `LogDetailDrawer.jsx` 新增 Track ID / Tunnel ID 两行,渲染成可点击按钮(`useNavigate` 跳转到 `/trace/:trackId` 或 `/trace?tunnel=`),没有 tunnelId 时提示"直连出口,未经过隧道"。
 - 未发现 API 缺口:`accesslog.Record` 的 `trackId`/`tunnelId`/`reportedBy`/`upstream` 与 `overlay.TunnelEvent` 的字段已经满足摘要与时间线所需的全部展示项。
 
+**阶段 6 第 4 步(节点/拓扑/健康页面)** 的落地要点:
+
+- 新增 `web/src/views/{NodesPage,NodeDetailPage,TopologyPage}.jsx`,路由/菜单只在 `router/index.jsx`、`ShellView.jsx` 追加一行;纯逻辑抽到 `web/src/nodeHealth.js`(字节/时间格式化、链路/路径/日志健康摘要与判定)与 `web/src/topologyLayout.js`(分层布局、多边偏移、颜色映射),均有 `node --test` 覆盖,零新增依赖。
+- **拓扑分层规则**:一个节点可能同时具备多个 `roles`;契约未规定多角色如何选层,本步固定为"取 entry→relay→exit 中最靠前出现的角色"(等价于 `roles[0]`,因为 API 已按此顺序返回),无任何角色的节点单独归入末尾的"未分配角色"列,而不是被丢弃。布局只读节点自身的 `roles`,不遍历边,因此链路环路/自环不会影响分层或造成死循环。
+- **多边区分**:边按 `(from, to, 代理链)` 三元组各自成行(与后端去重键一致);同一对节点(含反向 A↔B)的多条边按车道号 `0,+1,-1,+2,-2…` 沿垂直于连线的方向偏移,自环单独计数、向外画弧,车道计算与坐标布局一样是纯函数并有单测。
+- **具名代理呈现**:`/api/topology` 的 `proxies` 是一份扁平列表,不携带到节点的连接信息,因此代理链只在边的 hover tooltip(SVG `<title>`)中按 `type://address` 展示,并在图下方列出全部具名代理供参照,没有按设计草案建议的"作为图中方形节点"渲染(缺少连接坐标,强行展示无意义)。
+- **API 缺口**:①`store.Node.CertGeneration` 打了 `json:"-"`,`/api/nodes` 从不下发证书代数,节点列表/详情页只能展示 `registered`(是否已完成过注册)与 `certNotAfter`,无法展示任务描述里的"证书代数";②没有 `GET /api/nodes/{id}`,`nodeAPI` 的 switch 只处理 `token`/`PUT`/`DELETE`,详情页改为拉取 `GET /api/nodes` 全量列表后按 id 过滤(与 SitesPage 编辑器同款模式),多一次全量请求但无需后端改动。
+- 节点列表页承担生命周期管理:新建(`POST /api/nodes`)、编辑名称/中继地址(`PUT /api/nodes/{id}`)、生成或重置 join token(`POST /api/nodes/{id}/token`,token 只在一次性 `UiModal` 中出现,`persistent` 阻止误关)、删除(`DELETE /api/nodes/{id}`)。
+
 ## 6. 非目标
 
 多路径负载均衡/加权分流;请求级透明重试;中继节点完全无入站(NAT 反向建链)。
