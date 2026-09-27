@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/rpop-project/rpop/internal/dataplane"
+	"github.com/rpop-project/rpop/internal/overlay"
 	"github.com/rpop-project/rpop/internal/pki"
 	"github.com/rpop-project/rpop/internal/snapshot"
 	"github.com/rpop-project/rpop/internal/southbound"
@@ -44,7 +46,10 @@ type Config struct {
 	JoinToken string
 	// DataDir holds the node key, certificates, and the last applied snapshot.
 	DataDir string
-	Version string
+	// RelayListen overrides the address the relay port binds, for a node whose relay address other nodes dial
+	// is forwarded to a different local port. Empty binds the port of the relay address on every interface.
+	RelayListen string
+	Version     string
 }
 
 // session is the identity the node authenticates with and the client that presents it.
@@ -66,6 +71,24 @@ type Agent struct {
 	mu       sync.Mutex
 	revision int64
 	errors   map[string]string
+	// overlay carries upstream paths across nodes under the node's current identity; relayError explains a relay
+	// port that could not bind. Both are guarded by mu.
+	overlay    *overlay.Overlay
+	relayError string
+}
+
+// agentPaths dials upstream paths through the overlay of the node's current identity, which is replaced when
+// the node registers again.
+type agentPaths struct{ a *Agent }
+
+func (p agentPaths) DialPath(ctx context.Context, path snapshot.Path) (net.Conn, error) {
+	p.a.mu.Lock()
+	o := p.a.overlay
+	p.a.mu.Unlock()
+	if o == nil {
+		return nil, errors.New("the node has no identity to reach other nodes with")
+	}
+	return o.DialPath(ctx, path)
 }
 
 // New validates the configuration of a node.
@@ -77,7 +100,9 @@ func New(cfg Config, log *zap.Logger) (*Agent, error) {
 	if cfg.DataDir == "" {
 		return nil, errors.New("node data directory is required")
 	}
-	return &Agent{cfg: cfg, base: base, log: log, engine: dataplane.New(log), started: time.Now(), kick: make(chan struct{}, 1)}, nil
+	a := &Agent{cfg: cfg, base: base, log: log, engine: dataplane.New(log), started: time.Now(), kick: make(chan struct{}, 1)}
+	a.engine.SetPathDialer(agentPaths{a})
+	return a, nil
 }
 
 // Engine is the data plane the node drives.
@@ -93,6 +118,7 @@ func (a *Agent) NodeID() string {
 
 // Run brings the node up and follows the controller until ctx ends, then stops every site.
 func (a *Agent) Run(ctx context.Context) error {
+	defer a.closeOverlay()
 	defer a.engine.StopAll()
 	if err := os.MkdirAll(a.cfg.DataDir, 0o700); err != nil {
 		return fmt.Errorf("create node data directory: %w", err)
@@ -127,6 +153,23 @@ func (a *Agent) use(identity *pki.Identity) {
 	previous := a.current.Swap(&session{identity: identity, client: newClient(identity.ControllerClientConfig())})
 	if previous != nil {
 		previous.client.CloseIdleConnections()
+	}
+	// Links and the relay port authenticate with the node certificate, so a new registration needs a new overlay;
+	// the next snapshot configures it. The old one must release the relay port first.
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.overlay != nil {
+		a.overlay.Close()
+	}
+	a.overlay = overlay.New(identity, a.log.Named("overlay"))
+}
+
+func (a *Agent) closeOverlay() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.overlay != nil {
+		a.overlay.Close()
+		a.overlay = nil
 	}
 }
 
@@ -222,13 +265,15 @@ func (a *Agent) watch(ctx context.Context) error {
 	}
 }
 
-// apply hands a snapshot to the engine. Unchanged sites are left alone, so re-applying after a reconnect only
-// retries the sites that failed before.
+// apply hands a snapshot to the overlay and then to the engine, so links toward the peers of new paths are
+// already dialing when sites start using them. Unchanged sites are left alone, so re-applying after a reconnect
+// only retries the sites that failed before.
 func (a *Agent) apply(s snapshot.Snapshot) {
 	if s.NodeID != a.NodeID() {
 		a.log.Error("ignoring a snapshot rendered for another node", zap.String("snapshot_node", s.NodeID))
 		return
 	}
+	a.applyOverlay(s)
 	errs := a.engine.Apply(s.Sites)
 	messages := make(map[string]string, len(errs))
 	for id, err := range errs {
@@ -242,6 +287,19 @@ func (a *Agent) apply(s snapshot.Snapshot) {
 		a.log.Warn("could not cache the applied snapshot", zap.Error(err))
 	}
 	a.kickStatus()
+}
+
+func (a *Agent) applyOverlay(s snapshot.Snapshot) {
+	if s.RelayListen != "" && a.cfg.RelayListen != "" {
+		s.RelayListen = a.cfg.RelayListen
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.relayError = ""
+	if err := a.overlay.Apply(s); err != nil {
+		a.relayError = err.Error()
+		a.log.Error("the relay port did not start; tunnels through this node fail over", zap.Error(err))
+	}
 }
 
 // saveCache stores what the node actually serves: a site that failed to apply is cached with the spec it still
@@ -320,7 +378,10 @@ func (a *Agent) statusLoop(ctx context.Context) {
 
 func (a *Agent) status() southbound.Status {
 	a.mu.Lock()
-	status := southbound.Status{Version: a.cfg.Version, Revision: a.revision, StartedAt: a.started}
+	status := southbound.Status{Version: a.cfg.Version, Revision: a.revision, StartedAt: a.started, RelayError: a.relayError}
+	if a.overlay != nil {
+		status.Links = a.overlay.Links()
+	}
 	if len(a.errors) > 0 {
 		status.Errors = make(map[string]string, len(a.errors))
 		for id, message := range a.errors {

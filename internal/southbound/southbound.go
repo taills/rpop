@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/rpop-project/rpop/internal/dataplane"
+	"github.com/rpop-project/rpop/internal/overlay"
 	"github.com/rpop-project/rpop/internal/snapshot"
 )
 
@@ -64,4 +65,7 @@ type Status struct {
 	Running   []string                             `json:"running"`
 	Metrics   map[string]dataplane.MetricsSnapshot `json:"metrics,omitempty"`
 	StartedAt time.Time                            `json:"startedAt"`
+	// Links are the node's overlay links to its peers; RelayError explains a relay port that could not bind.
+	Links      []overlay.LinkStatus `json:"links,omitempty"`
+	RelayError string               `json:"relayError,omitempty"`
 }

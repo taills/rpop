@@ -83,7 +83,13 @@ func (c *controller) call(method, path, body string, want int) *httptest.Respons
 
 func (c *controller) createNode(id string) string {
 	c.t.Helper()
-	response := c.call(http.MethodPost, "/api/nodes", fmt.Sprintf(`{"id":%q,"name":"Node %s"}`, id, id), http.StatusCreated)
+	return c.createRelayNode(id, "")
+}
+
+// createRelayNode creates a node that other nodes reach at relayAddress.
+func (c *controller) createRelayNode(id, relayAddress string) string {
+	c.t.Helper()
+	response := c.call(http.MethodPost, "/api/nodes", fmt.Sprintf(`{"id":%q,"name":"Node %s","relayAddress":%q}`, id, id, relayAddress), http.StatusCreated)
 	var created struct {
 		JoinToken string `json:"joinToken"`
 	}
@@ -100,6 +106,10 @@ type nodeState struct {
 	InSync          bool     `json:"inSync"`
 	AppliedRevision int64    `json:"appliedRevision"`
 	Running         []string `json:"running"`
+	Links           []struct {
+		Peer        string `json:"peer"`
+		Connections int    `json:"connections"`
+	} `json:"links"`
 }
 
 func (c *controller) node(id string) nodeState {
@@ -129,7 +139,12 @@ func freePort(t *testing.T) int {
 
 func eventually(t *testing.T, what string, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	eventuallyWithin(t, 10*time.Second, what, condition)
+}
+
+func eventuallyWithin(t *testing.T, limit time.Duration, what string, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(limit)
 	for !condition() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting until %s", what)

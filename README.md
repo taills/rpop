@@ -41,6 +41,30 @@ One binary runs in three modes, selected with `-mode` (env `RPOP_MODE`):
 
 Create a node with `POST /api/nodes` (`{"id":"edge-1","name":"Edge 1"}`); the response contains a single-use join token valid for 24 hours. The token pins the controller's internal CA, so the node authenticates the controller on first contact; the node then generates its key locally and receives a certificate through a CSR. All southbound traffic is HTTP/2 with mutual TLS. Place a site on nodes with `config.nodes: [edge-1, edge-2]`; the controller streams each node a full snapshot of its sites whenever a new revision is published, and the node reports the revision it applied, per-site errors, running sites, and metrics. A site that fails to apply on a node (for example, a port in use) keeps its previous configuration there. The node caches the last applied snapshot (mode `0600`, including the TLS keys it serves) and serves it after a restart even while the controller is unreachable. Certificates renew automatically 30 days before expiry. Reissuing a token (`POST /api/nodes/{id}/token`) and registering again revokes the node's earlier certificates; a node started with a join token re-registers by itself when the controller rejects its certificate. Failed registrations are rate-limited per client address.
 
+### Upstream paths across nodes
+
+An upstream can reach its origin through other nodes and external proxies instead of connecting directly. `paths` lists candidate routes in priority order; each `via` is an ordered mix of nodes and registered proxies, and an empty `via` connects directly. `via` on the upstream itself is shorthand for a single path.
+
+```yaml
+upstreams:
+  - url: https://example.com
+    paths:
+      - via: [{proxy: socks5-A}, {node: node2}, {node: node3}, {proxy: socks5-B}]  # client > node1 > socks5-A > node2 > node3 > socks5-B > origin
+      - via: [{proxy: socks5-A}, {node: node2}, {node: node3}]
+      - via: [{node: node2}, {node: node3}]
+      - via: [{node: node3}]
+      - via: []                                                                   # direct
+```
+
+- The site's own node (here `node1`, from `config.nodes`) terminates the client connection and keeps all HTTP logic: routing, access logs, metrics, and the upstream's TLS settings. Upstream TLS runs end to end from that node to the origin, so relays and proxies only ever see ciphertext.
+- Relay nodes serve no sites. Each opens a relay port that only accepts nodes holding a certificate from the controller's CA and forwards a tunnel only along a route the controller rendered for the node it came from. Give a relay node a `relayAddress` (`host:port` other nodes dial); it binds that port on every interface, or `-relay-listen` (env `RPOP_RELAY_LISTEN`) when port forwarding maps it elsewhere. A node that relays for a site cannot be deleted or lose its relay address.
+- A proxy before the first node carries the ingress's link to it, a proxy between two nodes carries their link, and proxies after the last node are dialed by the exit node, so SOCKS handshakes with the exit proxy happen next to it. Consecutive proxies are chained.
+- Links between nodes are persistent HTTP/2 mutual-TLS connections kept warm for every candidate path, and each tunnel is one stream on them, so no request pays for a TCP, proxy, or TLS handshake between nodes. Relays copy with pooled buffers and flush every chunk, so SSE and WebSocket traffic is not held back on any hop.
+- The ingress uses the first path that connects. When connecting fails before any request byte is sent (a node, link, or proxy is down, a relay refuses, the exit cannot reach the origin, or 10 s pass) it moves on to the next path at once; the failed path cools down with exponential backoff (1 s to 1 min) and is tried again after that. Links known to be down are skipped without waiting. A request that already reached an upstream is never sent again. Every path has its own connection pool, so after failing back, new requests use the preferred path while requests on the fallback finish undisturbed.
+- The embedded node of an all-in-one controller can be the ingress of such paths, but it cannot relay.
+
+Register proxies with `POST /api/proxies` (`{"id":"socks5-A","name":"A","type":"socks5h","address":"10.0.0.1:1080","username":"u","password":"p"}`); `type` is `socks5` (the node resolves names), `socks5h` (the proxy resolves names), `http`, or `https`. Passwords are write-only: `PUT /api/proxies/{id}` keeps the stored password when `password` is omitted and clears it when it is empty. A proxy used by a site cannot be deleted. `paths` and `proxyUrl` are mutually exclusive.
+
 ## Capabilities in this baseline
 
 - Site HTTPS can use a centrally managed server certificate from System Settings (`config.certificateId`), so several sites can share one wildcard certificate, or site-scoped `certificateSecret`/`privateKeySecret` uploads; the two are mutually exclusive.
@@ -112,7 +136,8 @@ sites:
 - `GET /api/sites/{id}`, `PUT /api/sites/{id}`, `DELETE /api/sites/{id}`
 - `POST /api/sites/{id}/start|stop|restart|reload`
 - `GET /api/sites/{id}/metrics` returns current process metrics (reset when the process restarts), summed over the nodes the site runs on, with per-node values in `byNode`. Averages are weighted by request count; P95 is the highest node P95.
-- `GET /api/nodes`, `POST /api/nodes` (returns a join token), `PUT/DELETE /api/nodes/{id}`, `POST /api/nodes/{id}/token` (reissue). A node used by a site cannot be deleted. Node entries report `registered`, `online`, `appliedRevision`, `publishedRevision`, `inSync`, per-site `errors`, and `running` sites.
+- `GET /api/nodes`, `POST /api/nodes` (returns a join token), `PUT/DELETE /api/nodes/{id}`, `POST /api/nodes/{id}/token` (reissue). A node used by a site cannot be deleted. Node entries report `registered`, `online`, `appliedRevision`, `publishedRevision`, `inSync`, per-site `errors`, `running` sites, overlay `links` (peer, address, connections, open tunnels, failures), and `relayError` when the relay port could not bind.
+- `GET /api/proxies`, `POST /api/proxies`, `PUT/DELETE /api/proxies/{id}`. Entries report `hasPassword` and the sites that use them in `usedBy`.
 - `PUT/DELETE /api/sites/{id}/secrets/{name}`
 - `GET /api/config.yaml` (download), `PUT /api/config.yaml` (transactional upsert import)
 
@@ -123,7 +148,8 @@ sites:
 - Authentication sessions are held in process memory and expire after 12 hours; a process restart invalidates all sessions. Put the management API behind HTTPS. When TLS terminates at a reverse proxy, configure that trusted proxy to set `X-Forwarded-Proto: https` and strip client-supplied forwarding headers.
 - Access-log bodies may contain credentials, personal information, or business data. Body capture defaults to 1 MiB; positive limits are capped at 8 MiB, while `maxBodyBytes: -1` disables truncation. Unlimited capture can consume substantial memory, and access-log entries may still be dropped if the asynchronous log queue is saturated; sensitive headers are redacted by default. Restrict access to log files and disable body logging when it is not needed.
 - Metrics are in-memory and reset on process restart. Access logs are asynchronously written through the configured adapter; `droppedAccessLogCount` reports records dropped when the bounded queue is saturated. The process's own zap diagnostic log remains a separate local `rpop.log` file.
-- Each route targets exactly one upstream; health checks, failover/load balancing, config versioning/rollback, and graceful zero-downtime listener replacement remain follow-up work.
+- Each route targets exactly one upstream; failover happens only between the paths of one upstream. Health checks, load balancing across upstreams or paths, config versioning/rollback, and graceful zero-downtime listener replacement remain follow-up work.
+- A node receives the credentials of exactly the proxies it connects through, inline in its snapshot over mutual TLS, and caches them with the snapshot (mode `0600`).
 - The custom `dialAddress` is applied in direct mode; custom destination resolution through an upstream proxy requires an explicit policy and is not silently implemented.
 - File-adapter search scans active and archived local log files. S3 search uses the selected date prefix and a delimiter-based listing of direct objects to retain compatibility with earlier unsplit layouts; broad or mode-mixed time ranges can still require more key enumeration, so prefer ClickHouse for large searchable log volumes. ClickHouse searches the configured base table and its date/hour tables.
 - The separate zap diagnostic file currently does not rotate; configure external rotation for `rpop.log` if needed.

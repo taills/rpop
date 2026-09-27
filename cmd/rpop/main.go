@@ -29,7 +29,7 @@ var Version = "dev"
 
 type options struct {
 	mode, serverAddr, southboundAddr, webDir, dbPath, logDir string
-	controllerURL, joinToken, dataDir                        string
+	controllerURL, joinToken, dataDir, relayListen           string
 }
 
 func main() {
@@ -43,6 +43,7 @@ func main() {
 	flag.StringVar(&o.controllerURL, "controller", envDefault("RPOP_CONTROLLER", ""), "node mode: controller southbound URL, e.g. https://controller:7443 (env RPOP_CONTROLLER)")
 	flag.StringVar(&o.joinToken, "join-token", envDefault("RPOP_JOIN_TOKEN", ""), "node mode: join token for the first registration (env RPOP_JOIN_TOKEN)")
 	flag.StringVar(&o.dataDir, "data-dir", envDefault("RPOP_DATA_DIR", "data/node"), "node mode: directory for the node identity and snapshot cache (env RPOP_DATA_DIR)")
+	flag.StringVar(&o.relayListen, "relay-listen", envDefault("RPOP_RELAY_LISTEN", ""), "node mode: bind the relay port here instead of on the port of the node's relay address (env RPOP_RELAY_LISTEN)")
 	healthCheck := flag.Bool("health-check", false, "probe the control API at -addr and exit 0 when healthy (for container health checks)")
 	flag.Parse()
 
@@ -83,7 +84,7 @@ func main() {
 }
 
 func runNode(ctx context.Context, logger *zap.Logger, o options) {
-	node, err := agent.New(agent.Config{ControllerURL: o.controllerURL, JoinToken: o.joinToken, DataDir: o.dataDir, Version: Version}, logger)
+	node, err := agent.New(agent.Config{ControllerURL: o.controllerURL, JoinToken: o.joinToken, DataDir: o.dataDir, RelayListen: o.relayListen, Version: Version}, logger)
 	if err != nil {
 		logger.Fatal("configure node", zap.Error(err))
 	}

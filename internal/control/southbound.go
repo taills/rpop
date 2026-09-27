@@ -190,8 +190,9 @@ func (c *Control) southboundRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, apiError{"could not record the registration"})
 		return
 	}
-	// Streams opened with certificates from an earlier registration re-authenticate and end.
-	c.published.wake()
+	// Peers must accept the new certificate and refuse older ones, so every node gets a snapshot naming the
+	// current generation; streams opened with certificates from an earlier registration re-authenticate and end.
+	c.publishLocked(r.Context(), publishScope{})
 	c.log.Info("node registered", zap.String("node", node.ID), zap.String("remote", client))
 	writeJSON(w, http.StatusOK, southbound.RegisterResponse{CertificatePEM: certificatePEM, CAPEM: ca.CertPEM})
 }

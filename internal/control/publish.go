@@ -39,10 +39,11 @@ func newPublication() *publication {
 	return &publication{snapshots: make(map[string]snapshot.Snapshot), lastGood: make(map[string]publishedSite), changed: make(chan struct{})}
 }
 
-// publishedSite is a resolved site and the nodes it is placed on.
+// publishedSite is a resolved site, the nodes it is placed on, and the relay routes its paths need.
 type publishedSite struct {
-	spec  snapshot.Site
-	nodes []string
+	spec   snapshot.Site
+	nodes  []string
+	routes []plannedRoute
 }
 
 // publishScope says which desired sites a publication resolves from the store again; the others keep the spec
@@ -176,7 +177,7 @@ func (c *Control) publishLocked(ctx context.Context, scope publishScope) map[str
 	c.published.revision++
 	revision := c.published.revision
 	snapshots := make(map[string]snapshot.Snapshot, len(nodes))
-	for _, nodeID := range nodes {
+	for nodeID := range nodes {
 		snapshots[nodeID] = snapshot.Snapshot{Revision: revision, NodeID: nodeID, Sites: []snapshot.Site{}}
 	}
 	ids := make([]string, 0, len(entries))
@@ -192,6 +193,7 @@ func (c *Control) publishLocked(ctx context.Context, scope publishScope) map[str
 			}
 		}
 	}
+	renderOverlay(snapshots, entries, nodes)
 	c.published.snapshots = snapshots
 	c.published.lastGood = entries
 	c.published.wakeLocked()
@@ -201,6 +203,9 @@ func (c *Control) publishLocked(ctx context.Context, scope publishScope) map[str
 		c.log.Error("persist config revision", zap.Int64("revision", revision), zap.Error(err))
 	}
 	localErrors := make(map[string]string)
+	if err := c.applyLocalOverlayLocked(ctx, snapshots[LocalNodeID]); err != nil {
+		c.log.Error("the embedded node cannot reach other nodes; its paths through them fail over", zap.Error(err))
+	}
 	for id, err := range c.engine.Apply(snapshots[LocalNodeID].Sites, scope.sites...) {
 		errs[id] = err
 		localErrors[id] = err.Error()
@@ -220,9 +225,9 @@ func (c *Control) resolvePublished(ctx context.Context, id string) (publishedSit
 	if err != nil {
 		return publishedSite{}, err
 	}
-	spec, err := c.resolveSite(ctx, site)
+	spec, routes, err := c.resolveSite(ctx, site)
 	if err != nil {
 		return publishedSite{}, err
 	}
-	return publishedSite{spec: spec, nodes: siteNodes(site.Config)}, nil
+	return publishedSite{spec: spec, nodes: siteNodes(site.Config), routes: routes}, nil
 }

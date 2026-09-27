@@ -40,6 +40,10 @@ type Control struct {
 	caMu          sync.Mutex
 	ca            *pki.CA
 	registrations *failureLimiter
+	proxies       proxyRegistry
+	// overlay carries the embedded node's upstream paths across other nodes; it is created, under opMu, when a
+	// site on that node first needs it.
+	overlay *localOverlay
 
 	accessLogs       *accesslog.Registry
 	systemSettingsMu sync.RWMutex
@@ -76,6 +80,8 @@ func (c *Control) Handler() http.Handler {
 	m.HandleFunc("/api/routes/simulate", c.simulateRoute)
 	m.HandleFunc("/api/nodes", c.nodesAPI)
 	m.HandleFunc("/api/nodes/", c.nodeAPI)
+	m.HandleFunc("/api/proxies", c.proxiesAPI)
+	m.HandleFunc("/api/proxies/", c.proxyAPI)
 	return c.authMiddleware(m)
 }
 
@@ -367,6 +373,9 @@ func validate(x store.Site) error {
 		parsed, err := url.ParseRequestURI(u.URL)
 		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 			return fmt.Errorf("invalid upstream URL")
+		}
+		if err := validatePaths(x.Config, index, u); err != nil {
+			return err
 		}
 		if (u.ClientCertSecret == "") != (u.ClientKeySecret == "") {
 			return fmt.Errorf("upstreams[%d] client certificate and key must be configured together", index)

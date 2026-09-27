@@ -24,19 +24,20 @@ func (w registryWriter) WriteAccessLog(ctx context.Context, adapterID string, re
 	return w.registry.Write(ctx, adapterID, record)
 }
 
-// resolveSite validates a stored site and inlines every certificate, key, and CA it references.
-func (c *Control) resolveSite(ctx context.Context, site store.Site) (snapshot.Site, error) {
+// resolveSite validates a stored site and inlines every certificate, key, CA, and proxy it references.
+func (c *Control) resolveSite(ctx context.Context, site store.Site) (snapshot.Site, []plannedRoute, error) {
 	if err := validate(site); err != nil {
-		return snapshot.Site{}, err
+		return snapshot.Site{}, nil, err
 	}
 	if err := c.validateAccessLogAdapter(site); err != nil {
-		return snapshot.Site{}, err
+		return snapshot.Site{}, nil, err
 	}
 	return c.resolveSpec(ctx, site)
 }
 
-// resolveSpec inlines every certificate, key, and CA a site references.
-func (c *Control) resolveSpec(ctx context.Context, site store.Site) (snapshot.Site, error) {
+// resolveSpec inlines every certificate, key, CA, and proxy a site references. It also returns the relay
+// routes the site's paths need on the nodes they pass through.
+func (c *Control) resolveSpec(ctx context.Context, site store.Site) (snapshot.Site, []plannedRoute, error) {
 	cfg := site.Config
 	spec := snapshot.Site{
 		ID: site.ID, ListenAddress: cfg.ListenAddress, ListenPort: cfg.ListenPort, TLS: cfg.TLS,
@@ -49,18 +50,24 @@ func (c *Control) resolveSpec(ctx context.Context, site store.Site) (snapshot.Si
 	if cfg.TLS {
 		pair, err := c.siteServerKeyPair(ctx, site)
 		if err != nil {
-			return snapshot.Site{}, err
+			return snapshot.Site{}, nil, err
 		}
 		spec.Certificate = pair
 	}
+	var routes []plannedRoute
 	for index, upstream := range cfg.Upstreams {
 		resolved, err := c.resolveUpstream(ctx, site.ID, upstream)
+		if err == nil {
+			var planned []plannedRoute
+			resolved.Paths, planned, err = c.resolvePaths(ctx, upstream)
+			routes = append(routes, planned...)
+		}
 		if err != nil {
-			return snapshot.Site{}, fmt.Errorf("upstreams[%d]: %w", index, err)
+			return snapshot.Site{}, nil, fmt.Errorf("upstreams[%d]: %w", index, err)
 		}
 		spec.Upstreams = append(spec.Upstreams, resolved)
 	}
-	return spec, nil
+	return spec, routes, nil
 }
 
 func (c *Control) siteServerKeyPair(ctx context.Context, site store.Site) (*snapshot.KeyPair, error) {
@@ -188,6 +195,10 @@ func (c *Control) StopAll() {
 	clear(c.desired)
 	c.publishLocked(context.Background(), publishScope{})
 	c.engine.StopAll()
+	if c.overlay != nil {
+		c.overlay.Close()
+		c.overlay = nil
+	}
 }
 
 // placedOnLocal reports whether a stored site runs on the embedded node.
@@ -215,7 +226,7 @@ func (c *Control) DrainAccessLogs(ctx context.Context) error {
 
 // proxyHandler builds the proxy of a site configuration without binding a listener.
 func (c *Control) proxyHandler(ctx context.Context, id string, cfg store.Config) (http.Handler, error) {
-	spec, err := c.resolveSpec(ctx, store.Site{ID: id, Name: id, Config: cfg})
+	spec, _, err := c.resolveSpec(ctx, store.Site{ID: id, Name: id, Config: cfg})
 	if err != nil {
 		return nil, err
 	}

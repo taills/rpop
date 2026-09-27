@@ -21,6 +21,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/rpop-project/rpop/internal/dataplane"
+	"github.com/rpop-project/rpop/internal/overlay"
 	"github.com/rpop-project/rpop/internal/pki"
 	"github.com/rpop-project/rpop/internal/southbound"
 	"github.com/rpop-project/rpop/internal/store"
@@ -146,25 +147,33 @@ func (c *Control) SetEmbeddedNode(enabled bool) {
 	c.embedded = enabled
 }
 
-// knownNodesLocked lists the nodes that receive snapshots: the embedded node and every provisioned node.
-func (c *Control) knownNodesLocked(ctx context.Context) []string {
-	var ids []string
+// knownNodesLocked returns the nodes that receive snapshots: the embedded node and every provisioned node.
+func (c *Control) knownNodesLocked(ctx context.Context) map[string]store.Node {
+	nodes := make(map[string]store.Node)
 	if c.embedded {
-		ids = append(ids, LocalNodeID)
+		nodes[LocalNodeID] = store.Node{ID: LocalNodeID, CertGeneration: localGeneration}
 	}
-	nodes, err := c.store.ListNodes(ctx)
+	provisioned, err := c.store.ListNodes(ctx)
 	if err != nil {
 		c.log.Error("list nodes for publishing", zap.Error(err))
-		return ids
+		return nodes
 	}
-	for _, node := range nodes {
-		ids = append(ids, node.ID)
+	for _, node := range provisioned {
+		nodes[node.ID] = node
 	}
-	return ids
+	return nodes
 }
 
-// validateNodeReferences checks that a site is placed only on nodes that exist.
+// validateNodeReferences checks that a site is placed only on nodes that exist and that its paths pass only
+// through nodes and proxies that exist.
 func (c *Control) validateNodeReferences(ctx context.Context, site store.Site) error {
+	if err := c.validatePlacementReferences(ctx, site); err != nil {
+		return err
+	}
+	return c.validatePathReferences(ctx, site)
+}
+
+func (c *Control) validatePlacementReferences(ctx context.Context, site store.Site) error {
 	for _, id := range siteNodes(site.Config) {
 		if id == LocalNodeID {
 			if !c.embedded {
@@ -184,20 +193,22 @@ func (c *Control) validateNodeReferences(ctx context.Context, site store.Site) e
 
 type nodeView struct {
 	store.Node
-	Embedded          bool              `json:"embedded,omitempty"`
-	Registered        bool              `json:"registered"`
-	Online            bool              `json:"online"`
-	LastSeen          string            `json:"lastSeen,omitempty"`
-	Version           string            `json:"version,omitempty"`
-	AppliedRevision   int64             `json:"appliedRevision"`
-	PublishedRevision int64             `json:"publishedRevision"`
-	InSync            bool              `json:"inSync"`
-	Errors            map[string]string `json:"errors,omitempty"`
-	Running           []string          `json:"running"`
+	Embedded          bool                 `json:"embedded,omitempty"`
+	Registered        bool                 `json:"registered"`
+	Online            bool                 `json:"online"`
+	LastSeen          string               `json:"lastSeen,omitempty"`
+	Version           string               `json:"version,omitempty"`
+	AppliedRevision   int64                `json:"appliedRevision"`
+	PublishedRevision int64                `json:"publishedRevision"`
+	InSync            bool                 `json:"inSync"`
+	Errors            map[string]string    `json:"errors,omitempty"`
+	Running           []string             `json:"running"`
+	RelayError        string               `json:"relayError,omitempty"`
+	Links             []overlay.LinkStatus `json:"links"`
 }
 
 func (c *Control) nodeView(node store.Node) nodeView {
-	view := nodeView{Node: node, Registered: node.CertGeneration > 0, Running: []string{}}
+	view := nodeView{Node: node, Registered: node.CertGeneration > 0, Running: []string{}, Links: []overlay.LinkStatus{}}
 	if published, ok := c.published.Snapshot(node.ID); ok {
 		view.PublishedRevision = published.Revision
 	}
@@ -207,8 +218,12 @@ func (c *Control) nodeView(node store.Node) nodeView {
 			view.LastSeen = runtime.lastSeen.UTC().Format(time.RFC3339)
 		}
 		view.Version, view.AppliedRevision, view.Errors = runtime.status.Version, runtime.status.Revision, runtime.status.Errors
+		view.RelayError = runtime.status.RelayError
 		if runtime.status.Running != nil {
 			view.Running = runtime.status.Running
+		}
+		if runtime.status.Links != nil {
+			view.Links = runtime.status.Links
 		}
 	}
 	view.InSync = view.Online && view.AppliedRevision == view.PublishedRevision
@@ -218,9 +233,13 @@ func (c *Control) nodeView(node store.Node) nodeView {
 func (c *Control) localNodeView() nodeView {
 	c.opMu.Lock()
 	revision, errs := c.localRevision, c.localErrors
+	links := []overlay.LinkStatus{}
+	if c.overlay != nil {
+		links = c.overlay.Links()
+	}
 	c.opMu.Unlock()
 	view := nodeView{Node: store.Node{ID: LocalNodeID, Name: "Embedded node"}, Embedded: true, Registered: true, Online: true,
-		AppliedRevision: revision, Running: c.engine.RunningSites(), Errors: errs}
+		AppliedRevision: revision, Running: c.engine.RunningSites(), Errors: errs, Links: links}
 	if published, ok := c.published.Snapshot(LocalNodeID); ok {
 		view.PublishedRevision = published.Revision
 	}
@@ -376,6 +395,15 @@ func (c *Control) nodeAPI(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, apiError{err.Error()})
 			return
 		}
+		if input.RelayAddress == "" && node.RelayAddress != "" {
+			if users, err := c.sitesRelayingThrough(r.Context(), id); err != nil {
+				writeError(w, err)
+				return
+			} else if len(users) > 0 {
+				writeJSON(w, http.StatusConflict, apiError{fmt.Sprintf("node %q relays for sites %s and needs a relay address", id, strings.Join(users, ", "))})
+				return
+			}
+		}
 		node.Name, node.RelayAddress = input.Name, input.RelayAddress
 		if err := c.store.SaveNode(r.Context(), node); err != nil {
 			writeError(w, err)
@@ -403,7 +431,7 @@ func (c *Control) nodeAPI(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// sitesUsingNode lists sites that reference a node, so it cannot be deleted from under them.
+// sitesUsingNode lists sites placed on a node or relaying through it, so it cannot be deleted from under them.
 func (c *Control) sitesUsingNode(ctx context.Context, id string) ([]string, error) {
 	sites, err := c.store.List(ctx)
 	if err != nil {
@@ -411,11 +439,34 @@ func (c *Control) sitesUsingNode(ctx context.Context, id string) ([]string, erro
 	}
 	var users []string
 	for _, site := range sites {
-		if slices.Contains(site.Config.Nodes, id) {
+		if slices.Contains(site.Config.Nodes, id) || relaysThrough(site, id) {
 			users = append(users, site.ID)
 		}
 	}
 	return users, nil
+}
+
+// sitesRelayingThrough lists sites whose paths pass through a node, which then needs a relay address.
+func (c *Control) sitesRelayingThrough(ctx context.Context, id string) ([]string, error) {
+	sites, err := c.store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var users []string
+	for _, site := range sites {
+		if relaysThrough(site, id) {
+			users = append(users, site.ID)
+		}
+	}
+	return users, nil
+}
+
+func relaysThrough(site store.Site, id string) bool {
+	return slices.ContainsFunc(site.Config.Upstreams, func(u store.Upstream) bool {
+		return slices.ContainsFunc(upstreamPaths(u), func(p store.UpstreamPath) bool {
+			return slices.ContainsFunc(p.Via, func(h store.Hop) bool { return h.Node == id })
+		})
+	})
 }
 
 func (c *Control) embeddedNode() bool {

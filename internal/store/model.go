@@ -14,6 +14,21 @@ type Upstream struct {
 	ClientKeySecret     string   `json:"clientKeySecret,omitempty" yaml:"clientKeySecret,omitempty"`
 	DialAddress         string   `json:"dialAddress,omitempty" yaml:"dialAddress,omitempty"`
 	ServerName          string   `json:"serverName,omitempty" yaml:"serverName,omitempty"`
+	// Paths route the upstream connection through nodes and named proxies, in priority order: the first path
+	// that connects is used. Via is shorthand for a single path.
+	Paths []UpstreamPath `json:"paths,omitempty" yaml:"paths,omitempty"`
+	Via   []Hop          `json:"via,omitempty" yaml:"via,omitempty"`
+}
+
+// UpstreamPath is one candidate route from the site's node to the upstream. An empty Via connects directly.
+type UpstreamPath struct {
+	Via []Hop `json:"via" yaml:"via"`
+}
+
+// Hop is one step of a path: a node that relays the connection, or a named proxy it passes through.
+type Hop struct {
+	Node  string `json:"node,omitempty" yaml:"node,omitempty"`
+	Proxy string `json:"proxy,omitempty" yaml:"proxy,omitempty"`
 }
 
 // Route and HeaderMatch are defined by the routing package, which the controller and data plane share.
