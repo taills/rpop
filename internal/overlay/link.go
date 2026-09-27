@@ -151,6 +151,12 @@ func (l *link) dial(ctx context.Context, finished chan struct{}) (*http.ClientCo
 	}
 	close(finished)
 	if err != nil {
+		// A dial that failed only because the leader's own context ended says nothing about the peer: the link
+		// stays up, and whichever tunnel wakes up next leads its own attempt at once, with no backoff. A dial
+		// that ran out of its own bounded timeout is a real signal instead, and still counts as a failure.
+		if ctx.Err() == context.Canceled {
+			return nil, err
+		}
 		l.failures++
 		l.downUntil = time.Now().Add(backoff(l.failures))
 		return nil, err

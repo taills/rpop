@@ -127,7 +127,11 @@ func (o *Overlay) serveRelay(w http.ResponseWriter, r *http.Request) {
 	if open.logEvents {
 		o.events.record(TunnelEvent{Timestamp: arrived, TunnelID: open.tunnelID, NodeID: o.identity.NodeID, Role: role, Stage: StageArrived, Peer: peer})
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), dialTimeout+handshakeTimeout)
+	// The dial must not inherit r.Context()'s cancellation: link.acquire serializes dials to a peer, so one
+	// stream ending mid-handshake would otherwise fail the dial every other tunnel on that link is waiting for,
+	// even though the peer is perfectly reachable. Once next is open, the context.AfterFunc below still closes
+	// it as soon as this stream ends.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), dialTimeout+handshakeTimeout)
 	next, err := o.dialNext(ctx, route, open)
 	cancel()
 	if err != nil {
