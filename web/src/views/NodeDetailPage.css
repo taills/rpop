@@ -1,0 +1,13 @@
+.node-detail-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.node-detail-page__tab {
+  padding: 14px 16px 16px;
+}
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
