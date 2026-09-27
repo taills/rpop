@@ -95,6 +95,18 @@ func (p *publication) Snapshot(nodeID string) (snapshot.Snapshot, bool) {
 	return s, ok
 }
 
+// Snapshots returns every node's latest published snapshot, keyed by node ID, for callers (topologyAPI) that
+// need to look across every node at once rather than one at a time.
+func (p *publication) Snapshots() map[string]snapshot.Snapshot {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := make(map[string]snapshot.Snapshot, len(p.snapshots))
+	for id, s := range p.snapshots {
+		out[id] = s
+	}
+	return out
+}
+
 // Revision returns the latest published revision.
 func (p *publication) Revision() int64 {
 	p.mu.RLock()

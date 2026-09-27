@@ -127,6 +127,7 @@ func (c *Control) Handler() http.Handler {
 	m.HandleFunc("/api/routes/simulate", c.simulateRoute)
 	m.HandleFunc("/api/nodes", c.nodesAPI)
 	m.HandleFunc("/api/nodes/", c.nodeAPI)
+	m.HandleFunc("/api/topology", c.topologyAPI)
 	m.HandleFunc("/api/proxies", c.proxiesAPI)
 	m.HandleFunc("/api/proxies/", c.proxyAPI)
 	return c.authMiddleware(m)
