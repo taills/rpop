@@ -700,6 +700,32 @@ func (s *fileSink) pruneSequentialArchives() error {
 // a window a few instructions wide.
 var searchGlobHook func(paths []string)
 
+// skipShadowedArchiving drops any ".archiving" path from paths when this same Glob snapshot also contains that
+// period's finished ".gz" form. The two can briefly coexist on disk: gzipFileTo renames the ".gz" into place
+// before removing the ".archiving" source it compressed from (see its doc comment), so a Glob landing in that
+// window returns both names for what is really one period's records. The ".gz" is always the complete copy in
+// that window (readRecordsTolerant's ENOENT fallback handles the ".archiving"-vanishes-later case separately),
+// so it wins and the ".archiving" copy is left out to avoid double-counting every record in it.
+func skipShadowedArchiving(paths []string) []string {
+	gz := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		if strings.HasSuffix(p, ".gz") {
+			gz[p] = true
+		}
+	}
+	if len(gz) == 0 {
+		return paths
+	}
+	kept := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if strings.HasSuffix(p, ".archiving") && gz[strings.TrimSuffix(p, ".archiving")+".gz"] {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	return kept
+}
+
 func (s *fileSink) Search(ctx context.Context, query Query) (SearchResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -714,6 +740,7 @@ func (s *fileSink) Search(ctx context.Context, query Query) (SearchResult, error
 	if searchGlobHook != nil {
 		searchGlobHook(paths)
 	}
+	paths = skipShadowedArchiving(paths)
 	var records []Record
 	for _, path := range paths {
 		if err := ctx.Err(); err != nil {
