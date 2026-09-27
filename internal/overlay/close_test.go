@@ -79,3 +79,30 @@ func TestOverlayCloseRacesDialPath(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+// TestCloseWaitsForEveryLinksMaintainGoroutineToExit covers a link's background maintain goroutine outliving
+// Close: once Close returns, nothing should still be running that redials under an overlay already discarded.
+func TestCloseWaitsForEveryLinksMaintainGoroutineToExit(t *testing.T) {
+	o, _ := closeTestFixture(t)
+	// Give maintain a moment to actually start its first dial, not just be freshly spawned.
+	time.Sleep(20 * time.Millisecond)
+	o.mu.Lock()
+	links := make([]*link, 0, len(o.links))
+	for _, l := range o.links {
+		links = append(links, l)
+	}
+	o.mu.Unlock()
+	if len(links) == 0 {
+		t.Fatal("the fixture's path did not create a link")
+	}
+
+	o.Close()
+
+	for _, l := range links {
+		select {
+		case <-l.done:
+		default:
+			t.Fatalf("link to %s still has its maintain goroutine running after Close returned", l.peer)
+		}
+	}
+}

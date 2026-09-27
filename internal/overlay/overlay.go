@@ -247,17 +247,17 @@ func (o *Overlay) Links() []LinkStatus {
 	return statuses
 }
 
-// Close closes the relay port and every link, ending all tunnels. Once it returns, every method that would
-// start new work (Apply, DialPath) refuses it with ErrClosed instead of starting a link or relay port that
-// this overlay, being discarded, will never close again.
+// Close closes the relay port and every link, ending all tunnels. It waits for each link's maintain goroutine
+// to exit before returning, so nothing keeps redialing under an identity this overlay, once discarded, will
+// never renew or watch again.
 func (o *Overlay) Close() {
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	o.closed = true
 	if o.relay != nil {
 		o.relay.close()
 		o.relay = nil
 	}
+	links := make([]*link, 0, len(o.links))
 	for key, l := range o.links {
 		l.retire()
 		l.mu.Lock()
@@ -265,6 +265,13 @@ func (o *Overlay) Close() {
 			cc.Close()
 		}
 		l.mu.Unlock()
+		links = append(links, l)
 		delete(o.links, key)
+	}
+	o.mu.Unlock()
+	// Wait outside the lock: maintain does not need o.mu, but Links and status reporting still take it, and
+	// they must not block on a link that is merely finishing up its last redial attempt.
+	for _, l := range links {
+		<-l.done
 	}
 }
