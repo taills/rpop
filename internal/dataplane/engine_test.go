@@ -186,11 +186,32 @@ func TestSharedListenerRejectsOverlappingHostnames(t *testing.T) {
 	}
 }
 
+// TestSitesCanTradeListenersInOneApply swaps two sites' listen ports within a single Apply call.
+//
+// The first Apply below is what actually binds portA/portB for the first time; freePort only proves a port was
+// free at the moment it probed it (bind, note the number, close), so on a busy machine something else can grab
+// that exact ephemeral port in the gap before this test gets around to binding it - a classic bind-then-later-
+// use TOCTOU race in the test helper, not a listener-swap bug in the dataplane: Engine.install/shutdownGroup
+// already close a retired listener synchronously (http.Server.Shutdown closes its listener as its first,
+// synchronous step, see internal/dataplane/listeners.go) before any site tries to rebind that same address.
+// Retrying with a freshly probed pair of ports on that rare failure is simpler and more reliable than trying to
+// eliminate the race in freePort itself.
 func TestSitesCanTradeListenersInOneApply(t *testing.T) {
 	engine := newTestEngine(t)
-	portA, portB := freePort(t), freePort(t)
 	upA, upB := textUpstream(t, "a").URL, textUpstream(t, "b").URL
-	mustApply(t, engine, plainSite("a", portA, upA), plainSite("b", portB, upB))
+	var portA, portB int
+	var errs map[string]error
+	const attempts = 5
+	for attempt := 1; attempt <= attempts; attempt++ {
+		portA, portB = freePort(t), freePort(t)
+		errs = engine.Apply([]snapshot.Site{plainSite("a", portA, upA), plainSite("b", portB, upB)})
+		if len(errs) == 0 {
+			break
+		}
+	}
+	if len(errs) > 0 {
+		t.Fatalf("apply failed after %d attempts with freshly probed ports: %v", attempts, errs)
+	}
 	mustApply(t, engine, plainSite("a", portB, upA), plainSite("b", portA, upB))
 	if get(t, portA, "") != "b" || get(t, portB, "") != "a" {
 		t.Fatal("sites did not trade listeners")
