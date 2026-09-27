@@ -18,6 +18,23 @@ type Upstream struct {
 	// that connects is used. Via is shorthand for a single path.
 	Paths []UpstreamPath `json:"paths,omitempty" yaml:"paths,omitempty"`
 	Via   []Hop          `json:"via,omitempty" yaml:"via,omitempty"`
+	// Failover overrides the global D19/D30 path degradation tuning for this upstream; nil keeps every default.
+	// It is a sibling of Paths, not a per-path field: cooldown and probing are a per-upstream trade-off.
+	Failover *UpstreamFailover `json:"failover,omitempty" yaml:"failover,omitempty"`
+}
+
+// UpstreamFailover overrides the node-wide defaults (internal/dataplane's pathFailoverConfig) for one upstream's
+// candidate paths; a nil field keeps that setting's default. See internal/control/paths.go's validateFailover
+// for the accepted ranges.
+type UpstreamFailover struct {
+	// DialTimeoutMs bounds connecting along one candidate path; 0 keeps the node default (10s).
+	DialTimeoutMs int64 `json:"dialTimeoutMs,omitempty" yaml:"dialTimeoutMs,omitempty"`
+	// MinCooldownMs/MaxCooldownMs bound the exponential cooldown a path serves after a connection failure; 0
+	// keeps the node defaults (1s/1min).
+	MinCooldownMs int64 `json:"minCooldownMs,omitempty" yaml:"minCooldownMs,omitempty"`
+	MaxCooldownMs int64 `json:"maxCooldownMs,omitempty" yaml:"maxCooldownMs,omitempty"`
+	// ActiveProbe overrides the global D19 active-probe switch for this upstream; nil keeps the global default.
+	ActiveProbe *bool `json:"activeProbe,omitempty" yaml:"activeProbe,omitempty"`
 }
 
 // UpstreamPath is one candidate route from the site's node to the upstream. An empty Via connects directly.

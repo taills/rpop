@@ -100,6 +100,18 @@ type Upstream struct {
 	ServerName        string   `json:"serverName,omitempty"`
 	// Paths are the candidate routes in priority order; empty means a direct connection (or ProxyURL).
 	Paths []Path `json:"paths,omitempty"`
+	// Failover overrides the node-wide D19/D30 path degradation tuning for this upstream (dataplane's
+	// pathFailoverConfig); nil keeps every default. A sibling of Paths, not a per-path field.
+	Failover *UpstreamFailover `json:"failover,omitempty"`
+}
+
+// UpstreamFailover is the resolved (still optional) per-upstream override of the node-wide failover defaults;
+// see store.UpstreamFailover, which this mirrors, for field documentation.
+type UpstreamFailover struct {
+	DialTimeoutMs int64 `json:"dialTimeoutMs,omitempty"`
+	MinCooldownMs int64 `json:"minCooldownMs,omitempty"`
+	MaxCooldownMs int64 `json:"maxCooldownMs,omitempty"`
+	ActiveProbe   *bool `json:"activeProbe,omitempty"`
 }
 
 // AccessLog controls per-site access logging; an empty AdapterID disables it.
