@@ -2,6 +2,7 @@ import { useState } from 'react'
 import '../Routing.css'
 import { uncoveredHostnames } from '../siteForm.js'
 import { FormSection, OptionToggle, certificateLabel } from './FormParts.jsx'
+import PlacementFields from './PlacementFields.jsx'
 import UpstreamFields from './UpstreamFields.jsx'
 import RouteEditor from './RouteEditor.jsx'
 import RouteSimulator from './RouteSimulator.jsx'
@@ -74,6 +75,10 @@ export default function SiteEditor({ site, isNew, sections, catalog, saving, err
           <OptionToggle checked={!!site.config.tls} onChange={tls => setConfig({ tls })} label="启用站点 HTTPS" hint="选择系统证书，或上传站点专属证书与私钥">
             <ServerCertificateFields site={site} serverCertificates={serverCertificates} setConfig={setConfig} setFile={setFile}/>
           </OptionToggle>
+        </FormSection>
+
+        <FormSection title="站点放置" description="选择运行该站点的数据面节点（D5）；候选路径可用的跳点会随此设置实时更新">
+          <PlacementFields nodeIds={site.config.nodes || []} nodes={catalog.nodes || []} error={error} onChange={nodes => setConfig({ nodes })}/>
         </FormSection>
 
         <FormSection title="上游" description="每个上游拥有独立的代理、TLS 与连接设置；#1 为默认上游">

@@ -7,7 +7,7 @@ import SiteEditor from '../components/SiteEditor.jsx'
 import { addUpstream, applySections, blankUpstream, makeDefaultUpstream, prepareSiteForEditing, removeUpstream, sectionsForSite, uploadSlot, validateSections } from '../siteForm.js'
 import { clientCertificateUploads, planSecretUploads, referencedSecrets, stagedConfig } from '../siteSecrets.js'
 
-const blank = { id: '', name: '', autoStart: false, config: { listenAddress: '127.0.0.1', listenPort: 8081, tls: false, certificateId: '', hostnames: [], accessLog: { adapterId: '', includeBodies: false, maxBodyBytes: 1048576 }, upstreams: [blankUpstream()], routes: [] } }
+const blank = { id: '', name: '', autoStart: false, config: { listenAddress: '127.0.0.1', listenPort: 8081, tls: false, certificateId: '', hostnames: [], nodes: [], accessLog: { adapterId: '', includeBodies: false, maxBodyBytes: 1048576 }, upstreams: [blankUpstream()], routes: [] } }
 
 // SitesPage owns the site list and the site editor modal; it is the console's landing page. Data fetching lives
 // here (rather than a shared store) because nothing outside this page needs it live: the editor re-fetches the

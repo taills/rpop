@@ -1,0 +1,61 @@
+/* Placement.css — site placement (config.nodes) and path-hop-eligibility styling added in stage 6.6b.
+   Routing.css/Admin.css/Rpop.css/Logs.css are being reformatted and token-ized in parallel elsewhere, so anything
+   new lives here instead; every color is a theme token (var(--*)), never a literal, per the console's theming rule. */
+
+.placement-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.placement-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.placement-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-md);
+  color: var(--text-primary);
+}
+
+.placement-node input {
+  margin: 0;
+}
+
+.placement-badge {
+  font-size: var(--fs-caption);
+  line-height: 1.6;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--soft-muted);
+  color: var(--text-secondary);
+}
+
+.placement-badge.warn {
+  background: var(--soft-orange);
+  color: var(--accent-orange);
+}
+
+.placement-error {
+  margin-top: 4px;
+  font-size: var(--fs-sm);
+  color: var(--accent-red);
+  background: var(--soft-red);
+  border: 1px solid var(--accent-red);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+}
+
+/* hop-row (Routing.css) is a 4-column grid; this is an extra row flagging an already-saved, now-ineligible hop. */
+.hop-warning {
+  grid-column: 1 / -1;
+  font-size: var(--fs-xs);
+  color: var(--accent-orange);
+  background: var(--soft-orange);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+}

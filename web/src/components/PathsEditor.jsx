@@ -1,22 +1,26 @@
+import '../Placement.css'
 import {
-  addHop, addPath, availableHopNodes, hopFromSelection, hopSelection, moveHop, movePath,
+  addHop, addPath, hopFromSelection, hopNodeOptions, hopNodeWarning, hopSelection, moveHop, movePath,
   parsePathsError, pathLabel, removeHop, removePath, setHop,
 } from '../pathsForm.js'
 
-function HopRow({ hop, hopIndex, hopCount, nodes, proxies, onChange, onMove, onRemove }) {
+function HopRow({ hop, hopIndex, hopCount, nodeOptions, proxies, warning, onChange, onMove, onRemove }) {
   return <div className="hop-row">
     <select aria-label={`第 ${hopIndex + 1} 跳`} value={hopSelection(hop)} onChange={event => onChange(hopFromSelection(event.target.value))}>
       <option value="">选择节点或代理…</option>
-      <optgroup label="节点">{nodes.map(node => <option key={node.id} value={`node:${node.id}`}>{node.name || node.id}</option>)}</optgroup>
+      <optgroup label="节点">{nodeOptions.map(({ node, reason }) => (
+        <option key={node.id} value={`node:${node.id}`} disabled={!!reason} title={reason || undefined}>{node.name || node.id}{reason ? '（不可用）' : ''}</option>
+      ))}</optgroup>
       <optgroup label="具名代理">{proxies.map(proxy => <option key={proxy.id} value={`proxy:${proxy.id}`}>{proxy.name || proxy.id}</option>)}</optgroup>
     </select>
     <button type="button" className="icon-btn" title="上移" disabled={hopIndex === 0} onClick={() => onMove(-1)}>↑</button>
     <button type="button" className="icon-btn" title="下移" disabled={hopIndex === hopCount - 1} onClick={() => onMove(1)}>↓</button>
     <button type="button" className="icon-btn danger" title="删除该跳" onClick={onRemove}>×</button>
+    {warning && <span className="hop-warning">⚠ {warning}</span>}
   </div>
 }
 
-function PathRow({ path, index, pathCount, nodes, proxies, error, onMove, onRemove, onAddHop, onHopChange, onHopMove, onHopRemove }) {
+function PathRow({ path, index, pathCount, nodeOptions, nodes, proxies, placementIds, error, onMove, onRemove, onAddHop, onHopChange, onHopMove, onHopRemove }) {
   return <div className="path-row">
     <div className="path-row-head">
       <span className="path-no">#{index + 1}</span>
@@ -29,7 +33,8 @@ function PathRow({ path, index, pathCount, nodes, proxies, error, onMove, onRemo
     </div>
     {error && <div className="path-error">{error}</div>}
     <div className="path-hops">
-      {path.via.map((hop, hopIndex) => <HopRow key={hopIndex} hop={hop} hopIndex={hopIndex} hopCount={path.via.length} nodes={nodes} proxies={proxies}
+      {path.via.map((hop, hopIndex) => <HopRow key={hopIndex} hop={hop} hopIndex={hopIndex} hopCount={path.via.length} nodeOptions={nodeOptions} proxies={proxies}
+        warning={hopNodeWarning(hop, nodes, placementIds)}
         onChange={next => onHopChange(hopIndex, next)} onMove={delta => onHopMove(hopIndex, delta)} onRemove={() => onHopRemove(hopIndex)}/>)}
       <button type="button" className="link-btn" onClick={onAddHop}>＋ 添加跳</button>
     </div>
@@ -42,17 +47,18 @@ function PathRow({ path, index, pathCount, nodes, proxies, error, onMove, onRemo
 // pathsForm.js's pure helpers so the list logic stays covered by pathsForm.test.js.
 export default function PathsEditor({ upstream, upstreamIndex, catalog, placementIds, error, setUpstream }) {
   const paths = upstream.paths || []
-  const nodes = availableHopNodes(catalog.nodes || [], placementIds || [])
+  const nodes = catalog.nodes || []
+  const nodeOptions = hopNodeOptions(nodes, placementIds || [])
   const proxies = catalog.proxies || []
   const located = parsePathsError(error)
   const setPaths = next => setUpstream({ paths: next })
 
   return <div className="wide path-list">
-    <p className="form-note">按优先级从上到下依次尝试；建连失败（尚未发出任何请求字节）时自动切换下一条，某条路径为空表示直连。每条路径最多 8 跳，最多 8 条候选路径。</p>
+    <p className="form-note">按优先级从上到下依次尝试；建连失败（尚未发出任何请求字节）时自动切换下一条，某条路径为空表示直连。每条路径最多 8 跳，最多 8 条候选路径。灰色节点不能作为跳点，鼠标悬停查看原因。</p>
     {paths.map((path, index) => {
       const rowLocated = located && located.upstreamIndex === upstreamIndex && located.pathIndex === index ? located : null
       const rowError = rowLocated ? (rowLocated.hopIndex >= 0 ? `第 ${rowLocated.hopIndex + 1} 跳：${error}` : error) : ''
-      return <PathRow key={index} path={path} index={index} pathCount={paths.length} nodes={nodes} proxies={proxies} error={rowError}
+      return <PathRow key={index} path={path} index={index} pathCount={paths.length} nodeOptions={nodeOptions} nodes={nodes} proxies={proxies} placementIds={placementIds || []} error={rowError}
         onMove={delta => setPaths(movePath(paths, index, delta))}
         onRemove={() => setPaths(removePath(paths, index))}
         onAddHop={() => setPaths(addHop(paths, index))}
