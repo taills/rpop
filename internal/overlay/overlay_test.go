@@ -357,3 +357,36 @@ func TestTunnelsFailFastWhileADownLinkRedials(t *testing.T) {
 		t.Fatalf("the tunnel waited %v for a redial of a link known to be down", waited)
 	}
 }
+
+// TestLinkComesUpSoonAfterItsPeerStartsListening covers nodes applying one revision at the same moment: a relay
+// dials its next hop before that node's relay port is up, and the link must not stay down for long after.
+func TestLinkComesUpSoonAfterItsPeerStartsListening(t *testing.T) {
+	ca, err := pki.NewCA("overlay test CA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := startLineEcho(t)
+	relayAddr := freeAddress(t)
+	const key = "route-1"
+	path := snapshot.Path{Key: key, Label: "node2", FirstNode: "node2", Target: target}
+	ingress := newOverlay(t, identityFor(t, ca, "node1", 1))
+	apply(t, ingress, snapshot.Snapshot{NodeID: "node1", Peers: []snapshot.Peer{{ID: "node2", Address: relayAddr, Generation: 1}},
+		Sites: []snapshot.Site{{ID: "s", Upstreams: []snapshot.Upstream{{URL: "http://" + target, Paths: []snapshot.Path{path}}}}}})
+	deadline := time.Now().Add(5 * time.Second)
+	for ingress.Links()[0].Failures == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the link to a port nobody listens on never failed")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	relay := newOverlay(t, identityFor(t, ca, "node2", 1))
+	apply(t, relay, snapshot.Snapshot{NodeID: "node2", Peers: []snapshot.Peer{{ID: "node1", Generation: 1}}, RelayListen: relayAddr,
+		Relay: []snapshot.RelayRoute{{Key: key, From: []string{"node1"}, Target: target}}})
+	started := time.Now()
+	for ingress.Links()[0].Connections == 0 {
+		if time.Since(started) > 800*time.Millisecond {
+			t.Fatalf("the link was still down %v after its peer started listening", time.Since(started))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

@@ -22,10 +22,12 @@ const (
 	streamWindow     = 16 << 20
 	connectionWindow = 64 << 20
 
-	linkPingAfter     = 15 * time.Second
-	linkPingTimeout   = 10 * time.Second
-	linkIdleConns     = 1
-	minLinkBackoff    = time.Second
+	linkPingAfter   = 15 * time.Second
+	linkPingTimeout = 10 * time.Second
+	linkIdleConns   = 1
+	// Nodes apply a revision at the same moment, so a relay often dials its next hop just before that node's
+	// relay port is up. A short first backoff brings the link up right after; it doubles for peers that stay down.
+	minLinkBackoff    = 200 * time.Millisecond
 	maxLinkBackoff    = 30 * time.Second
 	maxStreamsPerConn = 1000
 )
@@ -164,7 +166,7 @@ func (l *link) dial(ctx context.Context, finished chan struct{}) (*http.ClientCo
 }
 
 func backoff(failures int) time.Duration {
-	return min(minLinkBackoff<<min(failures-1, 5), maxLinkBackoff)
+	return min(minLinkBackoff<<min(failures-1, 8), maxLinkBackoff)
 }
 
 // changed runs when a connection's load or health changes.
