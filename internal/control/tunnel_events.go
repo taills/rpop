@@ -60,6 +60,13 @@ const (
 	// write just by alternating which day its reported event timestamps fall on. An hour is frequent enough that
 	// neither limit is ever meaningfully exceeded in practice.
 	tunnelEventPruneInterval = time.Hour
+	// tunnelEventDedupCapacity bounds tunnelEventStore's write-time dedup cache (D29): how many recent
+	// overlay.TunnelEvent.DedupKey values Write remembers before evicting the oldest to make room for a new one.
+	// 4096 comfortably covers "the same segment redelivered right after its own successful upload" (D24's main
+	// retransmission scenario), for however many tunnels are active at once, without growing without bound.
+	// Resetting to empty on every restart is an accepted residual risk (a redelivery landing exactly across a
+	// restart could double-count once) — Query's own dedup pass (see dedupTunnelEvents) is the backstop for that.
+	tunnelEventDedupCapacity = 4096
 )
 
 // tunnelEventStore persists overlay.TunnelEvent records so GET /api/logging/tunnels/{tunnelId} (D22) can
@@ -98,6 +105,11 @@ type tunnelEventStore struct {
 	stop          chan struct{}
 	stopOnce      sync.Once
 	stopped       chan struct{} // closed by pruneLoop right before it returns.
+	// dedupSeen holds the up to tunnelEventDedupCapacity most recently written DedupKey values (D29), for O(1)
+	// membership tests; dedupOrder holds the same keys in insertion order, oldest first, so Write can evict the
+	// oldest once the cache is full. Both guarded by mu, same as everything else Write touches.
+	dedupSeen  map[string]struct{}
+	dedupOrder []string
 }
 
 func newTunnelEventStore(logDir string, log *zap.Logger) (*tunnelEventStore, error) {
@@ -120,6 +132,7 @@ func newTunnelEventStoreWithPruneInterval(logDir string, log *zap.Logger, pruneI
 		pruneInterval: pruneInterval,
 		stop:          make(chan struct{}),
 		stopped:       make(chan struct{}),
+		dedupSeen:     make(map[string]struct{}),
 	}
 	go s.pruneLoop()
 	return s, nil
@@ -130,7 +143,9 @@ func tunnelEventPath(dir, day string) string {
 }
 
 // Write appends one event to day's partition, opening it (or reusing an already-cached handle, see handles) as
-// needed.
+// needed. A retransmitted event whose DedupKey (D29) is still in the recent-write cache is silently dropped
+// instead: the store's other client, GET /api/logging/tunnels/{tunnelId}, would otherwise see the same lifecycle
+// point twice for a redelivered segment (D24).
 func (s *tunnelEventStore) Write(ctx context.Context, event overlay.TunnelEvent) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -148,12 +163,37 @@ func (s *tunnelEventStore) Write(ctx context.Context, event overlay.TunnelEvent)
 	day := event.Timestamp.Format("20060102")
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.rememberDedupKeyLocked(event.DedupKey()) {
+		return nil
+	}
 	file, err := s.openLocked(day)
 	if err != nil {
 		return err
 	}
 	_, err = file.Write(line)
 	return err
+}
+
+// rememberDedupKeyLocked reports whether key has already been written recently — D29's main "retransmit right
+// after the last successful upload" scenario — and, if not, adds it to the bounded recency cache before
+// returning false, so an immediately following duplicate is caught too. An empty key (see
+// overlay.TunnelEvent.DedupKey) is never remembered or matched: the store cannot tell such events apart, so it
+// must not risk merging unrelated ones. Called with mu held.
+func (s *tunnelEventStore) rememberDedupKeyLocked(key string) bool {
+	if key == "" {
+		return false
+	}
+	if _, ok := s.dedupSeen[key]; ok {
+		return true
+	}
+	if len(s.dedupOrder) >= tunnelEventDedupCapacity {
+		oldest := s.dedupOrder[0]
+		s.dedupOrder = s.dedupOrder[1:]
+		delete(s.dedupSeen, oldest)
+	}
+	s.dedupSeen[key] = struct{}{}
+	s.dedupOrder = append(s.dedupOrder, key)
+	return false
 }
 
 // openLocked returns day's file handle, from the LRU cache if already open, so alternating writes between a
@@ -291,7 +331,8 @@ func (s *tunnelEventStore) pruneLocked() {
 // is the tunnel's timeline from the hop that opened it through to the hop that closed it (D22). A non-zero start
 // narrows the scan to its UTC day partition plus tunnelQueryWindowDays-1 more (see that constant); the zero
 // value scans every partition still on disk, for callers that could not derive a starting day (e.g. tunnelID is
-// not a UUIDv7).
+// not a UUIDv7). The result is deduplicated by DedupKey (D29) as a backstop for whatever Write's bounded, and
+// restart-reset, recency cache let through onto disk more than once.
 func (s *tunnelEventStore) Query(ctx context.Context, tunnelID string, start time.Time) ([]overlay.TunnelEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -311,7 +352,28 @@ func (s *tunnelEventStore) Query(ctx context.Context, tunnelID string, start tim
 		events = append(events, found...)
 	}
 	sort.Slice(events, func(i, j int) bool { return events[i].Timestamp.Before(events[j].Timestamp) })
-	return events, nil
+	return dedupTunnelEvents(events), nil
+}
+
+// dedupTunnelEvents is Query's fallback deduplication pass (D29): it collapses events sharing the same non-empty
+// DedupKey down to their first occurrence in events' already-sorted order, catching whatever Write's bounded,
+// restart-reset recency cache let through — most notably a retransmit landing after the cache's window has moved
+// on, or after a restart cleared it. An event with an empty DedupKey (see overlay.TunnelEvent.DedupKey) is never
+// collapsed with anything, including another empty-keyed one.
+func dedupTunnelEvents(events []overlay.TunnelEvent) []overlay.TunnelEvent {
+	seen := make(map[string]bool, len(events))
+	deduped := make([]overlay.TunnelEvent, 0, len(events))
+	for _, event := range events {
+		key := event.DedupKey()
+		if key != "" {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+		}
+		deduped = append(deduped, event)
+	}
+	return deduped
 }
 
 // candidatePathsLocked lists the partition files Query should read: every one on disk for a zero start, or

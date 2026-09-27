@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -57,6 +59,184 @@ func TestTunnelEventStoreWriteAndQuery(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("Query(tunnel-missing) = %#v, want empty", got)
+	}
+}
+
+// TestTunnelEventStoreWriteDedupesRetransmittedEvents covers D29's main scenario directly: the same event
+// (identical tunnelId+nodeId+stage) written twice, as a retransmitted segment would (D24), must be stored once.
+func TestTunnelEventStoreWriteDedupesRetransmittedEvents(t *testing.T) {
+	store, err := newTunnelEventStore(t.TempDir(), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	event := overlay.TunnelEvent{Timestamp: time.Now().UTC(), TunnelID: "tunnel-retransmit", NodeID: "entry-1", Role: overlay.RoleEntry, Stage: overlay.StageArrived}
+	if err := store.Write(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Write(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Query(ctx, "tunnel-retransmit", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Query returned %d events, want 1 (the retransmitted duplicate must be dropped): %#v", len(got), got)
+	}
+}
+
+// TestTunnelEventStoreWriteDoesNotDedupeDifferentStages sanity-checks that DedupKey's stage component actually
+// matters: two events for the same tunnel/node but different lifecycle stages are not duplicates and must both
+// be stored.
+func TestTunnelEventStoreWriteDoesNotDedupeDifferentStages(t *testing.T) {
+	store, err := newTunnelEventStore(t.TempDir(), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	base := overlay.TunnelEvent{Timestamp: time.Now().UTC(), TunnelID: "tunnel-stages", NodeID: "entry-1", Role: overlay.RoleEntry}
+	arrived, ended := base, base
+	arrived.Stage, ended.Stage = overlay.StageArrived, overlay.StageEnded
+	if err := store.Write(ctx, arrived); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Write(ctx, ended); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Query(ctx, "tunnel-stages", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("Query returned %d events, want 2 (different stages are different events): %#v", len(got), got)
+	}
+}
+
+// TestTunnelEventStoreWriteNeverDedupesEmptyDedupKeys covers the defensive edge case: an event with no TunnelID
+// (DedupKey returns "") must never be collapsed with another such event, since an empty key does not identify
+// anything.
+func TestTunnelEventStoreWriteNeverDedupesEmptyDedupKeys(t *testing.T) {
+	store, err := newTunnelEventStore(t.TempDir(), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	at := time.Now().UTC()
+	if err := store.Write(ctx, overlay.TunnelEvent{Timestamp: at, NodeID: "n", Stage: overlay.StageArrived}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Write(ctx, overlay.TunnelEvent{Timestamp: at, NodeID: "n", Stage: overlay.StageArrived}); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	dedupSeenSize := len(store.dedupSeen)
+	store.mu.Unlock()
+	if dedupSeenSize != 0 {
+		t.Fatalf("dedupSeen tracked %d empty-key events, want 0 (an empty key must never be remembered)", dedupSeenSize)
+	}
+	// Both must still land in the same day's partition even though neither was deduplicated by the store itself;
+	// readTunnelEvents (and so Query) can only find them by tunnelID, which is empty here, so read the file
+	// directly instead.
+	path := tunnelEventPath(store.dir, at.Format("20060102"))
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := 0
+	for _, b := range data {
+		if b == '\n' {
+			lines++
+		}
+	}
+	if lines != 2 {
+		t.Fatalf("partition file has %d lines, want 2 (neither empty-tunnelId write may be dropped)", lines)
+	}
+}
+
+// TestTunnelEventStoreDedupCacheIsBounded covers the LRU's capacity limit: once more than
+// tunnelEventDedupCapacity distinct dedup keys have been written, the oldest one falls out of the cache, so a
+// later "retransmit" of it is (correctly) treated as new rather than being dropped forever.
+func TestTunnelEventStoreDedupCacheIsBounded(t *testing.T) {
+	store, err := newTunnelEventStore(t.TempDir(), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	at := time.Now().UTC()
+	first := overlay.TunnelEvent{Timestamp: at, TunnelID: "tunnel-0", NodeID: "n", Stage: overlay.StageArrived}
+	if err := store.Write(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= tunnelEventDedupCapacity; i++ {
+		filler := overlay.TunnelEvent{Timestamp: at, TunnelID: "tunnel-" + strconv.Itoa(i), NodeID: "n", Stage: overlay.StageArrived}
+		if err := store.Write(ctx, filler); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store.mu.Lock()
+	cacheSize := len(store.dedupSeen)
+	_, firstStillCached := store.dedupSeen[first.DedupKey()]
+	store.mu.Unlock()
+	if cacheSize != tunnelEventDedupCapacity {
+		t.Fatalf("dedup cache holds %d keys, want the bounded capacity of %d", cacheSize, tunnelEventDedupCapacity)
+	}
+	if firstStillCached {
+		t.Fatal("expected the very first dedup key to have been evicted once the cache filled beyond its capacity")
+	}
+	// Now that it fell out of the cache, "retransmitting" it must be accepted at write time as a new event —
+	// checked against the raw partition file, not Query: Query's own fallback dedup pass (see
+	// TestTunnelEventStoreQueryDedupesEvenAfterTheLRUForgetsIt) would collapse two same-key events regardless of
+	// whether the write-time cache let both through, so it cannot distinguish "the LRU dropped it silently" from
+	// "the LRU wrote it and Query merged it afterward".
+	if err := store.Write(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(tunnelEventPath(store.dir, at.Format("20060102")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(data), `"tunnelId":"tunnel-0"`); got != 2 {
+		t.Fatalf("partition file contains %d lines for tunnel-0, want 2 (the evicted key must reach disk again, not be silently dropped at write time)", got)
+	}
+}
+
+// TestTunnelEventStoreQueryDedupesEvenAfterTheLRUForgetsIt covers Query's fallback deduplication pass: a restart
+// (or simply the LRU's capacity being exceeded) resets the write-time cache, so a retransmit that lands afterward
+// reaches disk as a genuine second line — Query must still collapse it to one event.
+func TestTunnelEventStoreQueryDedupesEvenAfterTheLRUForgetsIt(t *testing.T) {
+	store, err := newTunnelEventStore(t.TempDir(), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	event := overlay.TunnelEvent{Timestamp: time.Now().UTC(), TunnelID: "tunnel-restart", NodeID: "entry-1", Stage: overlay.StageArrived}
+	if err := store.Write(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the write-time cache being reset (a restart, D29's accepted residual risk) and the identical event
+	// being retransmitted afterward: it is no longer recognized as a duplicate at write time, so it really does
+	// land on disk a second time.
+	store.mu.Lock()
+	store.dedupSeen = make(map[string]struct{})
+	store.dedupOrder = nil
+	store.mu.Unlock()
+	if err := store.Write(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.Query(ctx, "tunnel-restart", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Query returned %d events, want 1 (the query-time dedup pass must still collapse the duplicate): %#v", len(got), got)
 	}
 }
 
@@ -117,8 +297,11 @@ func TestTunnelEventStoreQueryWithAStartLimitsToItsWindow(t *testing.T) {
 	start := time.Date(2035, 6, 1, 0, 0, 0, 0, time.UTC)
 	inWindow := []time.Time{start, start.AddDate(0, 0, tunnelQueryWindowDays-1).Add(2 * time.Hour)}
 	outOfWindow := start.AddDate(0, 0, tunnelQueryWindowDays).Add(2 * time.Hour)
-	for _, ts := range inWindow {
-		if err := store.Write(ctx, overlay.TunnelEvent{Timestamp: ts, TunnelID: "tunnel-window", NodeID: "in-window"}); err != nil {
+	// Distinct stages, not just distinct timestamps: two otherwise-identical events would collide under the D29
+	// dedup key (tunnelId+nodeId+stage) and collapse to one, which is not what this test is exercising.
+	for i, ts := range inWindow {
+		stage := []string{overlay.StageArrived, overlay.StageEstablished}[i]
+		if err := store.Write(ctx, overlay.TunnelEvent{Timestamp: ts, TunnelID: "tunnel-window", NodeID: "in-window", Stage: stage}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -271,8 +454,11 @@ func TestTunnelEventStorePruneClosesTheEvictedPartitionsCachedHandle(t *testing.
 	}
 
 	// A later write for the same (still stale) day must reopen the file rather than reuse a stale reference to
-	// the one pruneLocked already removed; it lands in a fresh file, immediately queryable again.
-	if err := store.Write(ctx, overlay.TunnelEvent{Timestamp: stale, TunnelID: "stale", NodeID: "n"}); err != nil {
+	// the one pruneLocked already removed; it lands in a fresh file, immediately queryable again. A distinct
+	// Stage from the first "stale" write, not just a re-lands-later timing difference, so this write is not
+	// itself collapsed by the D29 dedup key (tunnelId+nodeId+stage) into the very handle-recreation path this
+	// test is exercising.
+	if err := store.Write(ctx, overlay.TunnelEvent{Timestamp: stale, TunnelID: "stale", NodeID: "n", Stage: overlay.StageEnded}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := store.Query(ctx, "stale", time.Time{})
@@ -304,7 +490,10 @@ func TestTunnelEventStoreCachesOpenFileHandlesAcrossDaySwitches(t *testing.T) {
 		if i%2 == 1 {
 			ts = dayB
 		}
-		if err := s.Write(context.Background(), overlay.TunnelEvent{Timestamp: ts, TunnelID: "t", NodeID: "n"}); err != nil {
+		// Stage carries the write index so no two of these 20 writes share a D29 dedup key
+		// (tunnelId+nodeId+stage): this test is about handle caching across day switches, not deduplication, and
+		// every write must independently reach openLocked to be counted.
+		if err := s.Write(context.Background(), overlay.TunnelEvent{Timestamp: ts, TunnelID: "t", NodeID: "n", Stage: strconv.Itoa(i)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -335,9 +524,14 @@ func TestTunnelEventStoreEvictsTheLeastRecentlyUsedHandleOverCapacity(t *testing
 	t.Cleanup(func() { _ = s.Close() })
 
 	base := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	seq := 0
 	write := func(day int) {
 		t.Helper()
-		if err := s.Write(context.Background(), overlay.TunnelEvent{Timestamp: base.AddDate(0, 0, day), TunnelID: "t", NodeID: "n"}); err != nil {
+		// Stage carries a call-sequence number, not the day, so even the two calls for day 0 (below) get distinct
+		// D29 dedup keys: this test is about which file handle gets touched/evicted, and a deduplicated write
+		// would never reach openLocked to touch anything.
+		seq++
+		if err := s.Write(context.Background(), overlay.TunnelEvent{Timestamp: base.AddDate(0, 0, day), TunnelID: "t", NodeID: "n", Stage: strconv.Itoa(seq)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -446,7 +640,10 @@ func TestTunnelEventStoreConcurrentWriteAndQueryIsRaceFree(t *testing.T) {
 			for i := range 50 {
 				day := (worker + i) % 5 // more distinct days than maxOpenTunnelEventFiles, to force eviction too
 				ts := base.AddDate(0, 0, day)
-				if err := s.Write(context.Background(), overlay.TunnelEvent{Timestamp: ts, TunnelID: "concurrent", NodeID: "n"}); err != nil {
+				// NodeID is unique per call so this stress test actually keeps writing through to openLocked
+				// under the D29 dedup check, instead of every call after the first becoming a no-op duplicate.
+				nodeID := "n-" + strconv.Itoa(worker) + "-" + strconv.Itoa(i)
+				if err := s.Write(context.Background(), overlay.TunnelEvent{Timestamp: ts, TunnelID: "concurrent", NodeID: nodeID}); err != nil {
 					t.Error(err)
 				}
 				if _, err := s.Query(context.Background(), "concurrent", time.Time{}); err != nil {
@@ -472,7 +669,10 @@ func BenchmarkTunnelEventStoreAlternatingDayWrites(b *testing.B) {
 		if i%2 == 1 {
 			ts = dayB
 		}
-		if err := s.Write(context.Background(), overlay.TunnelEvent{Timestamp: ts, TunnelID: "t", NodeID: "n"}); err != nil {
+		// A unique Stage per iteration keeps every write past the D29 dedup check (see the equivalent fix in
+		// TestTunnelEventStoreCachesOpenFileHandlesAcrossDaySwitches), so this still benchmarks the day-switching
+		// write path itself rather than the dedup short-circuit.
+		if err := s.Write(context.Background(), overlay.TunnelEvent{Timestamp: ts, TunnelID: "t", NodeID: "n", Stage: strconv.Itoa(i)}); err != nil {
 			b.Fatal(err)
 		}
 	}
