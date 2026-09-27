@@ -27,6 +27,10 @@ const (
 	// before giving up: only ever grows past 1 if a period's file gets archived and then written to again, which
 	// a real deployment does at most a handful of times per period.
 	maxSlotShards = 1000
+	// compressingTempPrefix names gzipFileTo's staging file while it writes a compressed archive: it never
+	// starts with "access-", so Search/sweepOnce/pruneArchives (which all glob or filter by that prefix) never
+	// see it, even while it is only partially written.
+	compressingTempPrefix = ".compressing-"
 )
 
 // fileSink is the NDJSON access log adapter. Records for the sink's current rotation period (day or hour, in
@@ -129,11 +133,17 @@ func (s *fileSink) resumeInterruptedArchives() {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		if !strings.HasSuffix(name, ".archiving") {
-			continue
+		switch {
+		case strings.HasSuffix(name, ".archiving"):
+			original := strings.TrimSuffix(name, ".archiving")
+			_ = os.Rename(filepath.Join(s.dir, name), filepath.Join(s.dir, original))
+		case strings.HasPrefix(name, compressingTempPrefix):
+			// gzipFileTo writes a compressed archive under this name and renames it into place only once it
+			// is complete (see its doc comment), so one left behind by a process that died mid-compression is
+			// always incomplete garbage; the source it was compressing is handled by the case above (or was
+			// never renamed away to begin with), so the next sweep just redoes the work.
+			_ = os.Remove(filepath.Join(s.dir, name))
 		}
-		original := strings.TrimSuffix(name, ".archiving")
-		_ = os.Rename(filepath.Join(s.dir, name), filepath.Join(s.dir, original))
 	}
 }
 
@@ -530,13 +540,20 @@ func parseFilePeriod(name, rotation string, location *time.Location) (string, bo
 	return "", false
 }
 
+// gzipFileTo compresses srcPath to destPath, making destPath appear only once compression has fully succeeded.
+// It writes under a temporary, compressingTempPrefix-named path in the same directory and renames that into
+// destPath as the last step (a same-directory rename is atomic), rather than creating destPath itself up front
+// and filling it in: archiveSlot calls this in the background, outside the sink's lock, while Search (and
+// sweepOnce/pruneArchives) can run concurrently, and any of them could otherwise glob or open destPath's final
+// name while it still held only a partial, undecodable gzip stream.
 func gzipFileTo(srcPath, destPath string) error {
 	input, err := os.Open(srcPath)
 	if err != nil {
 		return err
 	}
 	defer input.Close()
-	output, err := os.OpenFile(destPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0640)
+	tmpPath := filepath.Join(filepath.Dir(destPath), compressingTempPrefix+filepath.Base(destPath))
+	output, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0640)
 	if err != nil {
 		return err
 	}
@@ -545,16 +562,20 @@ func gzipFileTo(srcPath, destPath string) error {
 	closeErr := writer.Close()
 	fileErr := output.Close()
 	if copyErr != nil {
-		_ = os.Remove(destPath)
+		_ = os.Remove(tmpPath)
 		return copyErr
 	}
 	if closeErr != nil {
-		_ = os.Remove(destPath)
+		_ = os.Remove(tmpPath)
 		return closeErr
 	}
 	if fileErr != nil {
-		_ = os.Remove(destPath)
+		_ = os.Remove(tmpPath)
 		return fileErr
+	}
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
 	}
 	return os.Remove(srcPath)
 }
