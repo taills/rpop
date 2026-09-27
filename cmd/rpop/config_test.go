@@ -62,6 +62,29 @@ func TestEnvDefaultInt(t *testing.T) {
 	}
 }
 
+func TestEnvDefaultBool(t *testing.T) {
+	t.Setenv("RPOP_TEST_BOOL_TRUE", "false")
+	t.Setenv("RPOP_TEST_BOOL_FALSE", "true")
+	t.Setenv("RPOP_TEST_BOOL_EMPTY", "")
+	t.Setenv("RPOP_TEST_BOOL_BAD", "not-a-bool")
+	tests := []struct {
+		key      string
+		fallback bool
+		want     bool
+	}{
+		{"RPOP_TEST_BOOL_TRUE", true, false},
+		{"RPOP_TEST_BOOL_FALSE", false, true},
+		{"RPOP_TEST_BOOL_EMPTY", true, true},
+		{"RPOP_TEST_BOOL_UNSET", true, true},
+		{"RPOP_TEST_BOOL_BAD", true, true},
+	}
+	for _, tt := range tests {
+		if got := envDefaultBool(tt.key, tt.fallback); got != tt.want {
+			t.Errorf("envDefaultBool(%q, %v) = %v, want %v", tt.key, tt.fallback, got, tt.want)
+		}
+	}
+}
+
 func TestHealthCheckURL(t *testing.T) {
 	tests := []struct{ addr, want string }{
 		{"0.0.0.0:60000", "http://127.0.0.1:60000/api/health"},

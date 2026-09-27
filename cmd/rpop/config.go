@@ -48,6 +48,21 @@ func envDefaultInt(key string, fallback int) int {
 	return parsed
 }
 
+// envDefaultBool is envDefault for a boolean setting (D30's -path-active-probe switch); strconv.ParseBool accepts
+// "1"/"t"/"T"/"true"/... and their "0"/"f"/"false"/... counterparts. An unset, empty, or unparsable value falls
+// back the same way as envDefault's own string case.
+func envDefaultBool(key string, fallback bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
 // healthCheckURL maps the control API listen address to a URL reachable from the same host:
 // wildcard hosts (empty, 0.0.0.0, ::) are probed on loopback.
 func healthCheckURL(addr string) (string, error) {

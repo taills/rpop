@@ -19,6 +19,7 @@ func defaultOptionsForLimits() options {
 		logIngestRateBytesPerSecond:  control.DefaultLogIngestRateBytesPerSecond,
 		tunnelEventStoreMaxBytes:     control.DefaultTunnelEventStoreMaxBytes,
 		tunnelEventRetentionDays:     control.DefaultTunnelEventRetentionDays,
+		pathActiveProbe:              true,
 	}
 }
 

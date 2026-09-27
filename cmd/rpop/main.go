@@ -40,6 +40,8 @@ type options struct {
 	logIngestMaxConcurrent                                int
 	logIngestRateBytesPerSecond, tunnelEventStoreMaxBytes int64
 	tunnelEventRetentionDays                              int
+	// D30: node mode and the controller's embedded node share this active-probe switch.
+	pathActiveProbe bool
 }
 
 func main() {
@@ -64,6 +66,7 @@ func main() {
 	flag.Int64Var(&o.logIngestRateBytesPerSecond, "log-ingest-rate-bytes", envDefaultInt64("RPOP_LOG_INGEST_RATE_BYTES", control.DefaultLogIngestRateBytesPerSecond), "controller mode: max bytes/second of compressed log segments accepted from a single node (env RPOP_LOG_INGEST_RATE_BYTES)")
 	flag.Int64Var(&o.tunnelEventStoreMaxBytes, "tunnel-event-store-max-bytes", envDefaultInt64("RPOP_TUNNEL_EVENT_STORE_MAX_BYTES", control.DefaultTunnelEventStoreMaxBytes), "controller mode: disk quota for the tunnel event store (env RPOP_TUNNEL_EVENT_STORE_MAX_BYTES)")
 	flag.IntVar(&o.tunnelEventRetentionDays, "tunnel-event-retention-days", envDefaultInt("RPOP_TUNNEL_EVENT_RETENTION_DAYS", control.DefaultTunnelEventRetentionDays), "controller mode: days tunnel events stay queryable before pruning (env RPOP_TUNNEL_EVENT_RETENTION_DAYS)")
+	flag.BoolVar(&o.pathActiveProbe, "path-active-probe", envDefaultBool("RPOP_PATH_ACTIVE_PROBE", true), "enable D19 active probing of a candidate path as soon as its cooldown ends, for node mode and the controller's embedded node alike (env RPOP_PATH_ACTIVE_PROBE)")
 	healthCheck := flag.Bool("health-check", false, "probe the control API at -addr and exit 0 when healthy (for container health checks)")
 	flag.Parse()
 
@@ -114,7 +117,7 @@ func runNode(ctx context.Context, logger *zap.Logger, o options, overlayCfg over
 	node, err := agent.New(agent.Config{
 		ControllerURL: o.controllerURL, JoinToken: o.joinToken, DataDir: o.dataDir, RelayListen: o.relayListen, Version: Version,
 		LogDir: o.logDir, LogSpoolQuotaBytes: o.logSpoolQuotaBytes, LogUploadRateBytesPerSecond: o.logUploadRateBytes,
-		OverlayConfig: overlayCfg,
+		OverlayConfig: overlayCfg, PathActiveProbe: &o.pathActiveProbe,
 	}, logger)
 	if err != nil {
 		logger.Fatal("configure node", zap.Error(err))
@@ -150,6 +153,7 @@ func runController(ctx context.Context, logger *zap.Logger, o options, overlayCf
 	service.SetLogIngestLimits(o.logIngestMaxConcurrent, o.logIngestRateBytesPerSecond)
 	service.SetTunnelEventStoreCapacity(o.tunnelEventStoreMaxBytes)
 	service.SetTunnelEventRetention(o.tunnelEventRetentionDays)
+	service.SetPathActiveProbe(o.pathActiveProbe)
 	if err := service.StartAutoSites(context.Background()); err != nil {
 		logger.Fatal("load auto-start sites", zap.Error(err))
 	}

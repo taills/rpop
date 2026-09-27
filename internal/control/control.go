@@ -98,6 +98,15 @@ func (c *Control) SetOverlayConfig(cfg overlay.Config) {
 	c.overlayConfig = cfg
 }
 
+// SetPathActiveProbe overrides the engine-wide default for D19 active probing (D30, enabled by default; see
+// dataplane.Engine.SetPathActiveProbe) on the embedded node's own engine; an upstream's Failover.ActiveProbe
+// still overrides this again for that upstream alone. Unlike SetOverlayConfig this is not a startup-only
+// setting: Engine.SetPathActiveProbe only documents "affects sites built or rebuilt afterward," not "call before
+// Apply," so calling this later is safe, just not retroactive for already-running sites.
+func (c *Control) SetPathActiveProbe(enabled bool) {
+	c.engine.SetPathActiveProbe(enabled)
+}
+
 // SetClockSkewWarnThreshold overrides nodeView/topologyAPI's cutoff (in milliseconds) for marking a node's
 // reported clock skew (D28) "warn" instead of "ok" (see DefaultClockSkewWarnThresholdMillis); ms <= 0 leaves the
 // default in place. Call before serving console traffic.

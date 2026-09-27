@@ -66,6 +66,12 @@ type Config struct {
 	// falls back to overlay.DefaultConfig() only when every field is zero, so a caller that does not care about
 	// this at all may simply leave it unset.
 	OverlayConfig overlay.Config
+	// PathActiveProbe overrides the engine-wide default for D19 active probing (D30, enabled by default; see
+	// dataplane.Engine.SetPathActiveProbe) for every site this node runs; an upstream's own Failover.ActiveProbe
+	// still overrides this again for that upstream alone. nil leaves the engine's own default (enabled) in place,
+	// mirroring OverlayConfig's own "a caller that does not care about this may simply leave it unset" guarantee
+	// (-path-active-probe/RPOP_PATH_ACTIVE_PROBE).
+	PathActiveProbe *bool
 }
 
 // session is the identity the node authenticates with and the client that presents it.
@@ -134,6 +140,9 @@ func New(cfg Config, log *zap.Logger) (*Agent, error) {
 	}
 	a := &Agent{cfg: cfg, base: base, log: log, engine: dataplane.New(log), started: time.Now(), kick: make(chan struct{}, 1)}
 	a.engine.SetPathDialer(agentPaths{a})
+	if cfg.PathActiveProbe != nil {
+		a.engine.SetPathActiveProbe(*cfg.PathActiveProbe)
+	}
 	return a, nil
 }
 
