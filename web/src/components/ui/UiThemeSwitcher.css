@@ -44,3 +44,15 @@
   border-radius: 50%;
   border: 1px solid rgba(0, 0, 0, 0.08);
 }
+
+/* Narrow screens (see AppTopNav.css): six theme chips with full names is the single widest thing in the top
+   bar; dropping to swatches-only (same treatment UiNavLayoutSwitcher already gives its own chip names) keeps
+   the header from forcing horizontal scroll on the whole page. */
+@media (max-width: 640px) {
+  .ui-theme-switcher__name {
+    display: none;
+  }
+  .ui-theme-switcher__chip {
+    padding: 4px 8px;
+  }
+}

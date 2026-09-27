@@ -1,9 +1,11 @@
 .app-top-nav {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 16px;
-  padding: 0 16px 0 20px;
-  height: 56px;
+  row-gap: 8px;
+  padding: 8px 16px 8px 20px;
+  min-height: 56px;
   background: var(--bg-card);
   border-bottom: 1px solid var(--border-primary);
   box-shadow: var(--shadow-xs);
@@ -93,9 +95,18 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-shrink: 0;
+  min-width: 0;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+/* Narrow screens: the brand subtitle is the least useful part of the header, so it is the first thing dropped
+   to make room; app-top-nav__right (theme switcher + logout) and app-top-nav__menus can already wrap/scroll on
+   their own (see above), but this keeps the header itself from ever needing three lines just to fit both. */
+@media (max-width: 640px) {
+  .app-top-nav__sub {
+    display: none;
+  }
 }
 
 .app-sub-nav {
