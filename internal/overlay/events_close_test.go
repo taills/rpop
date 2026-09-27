@@ -73,7 +73,7 @@ func TestOverlayCloseStopsEventQueueGoroutine(t *testing.T) {
 	before := runtime.NumGoroutine()
 	const rounds = 20
 	for i := 0; i < rounds; i++ {
-		o := New(identityFor(t, ca, "node1", 1), zap.NewNop())
+		o := New(identityFor(t, ca, "node1", 1), zap.NewNop(), DefaultConfig())
 		o.Close()
 	}
 	if after := waitForGoroutineCount(before, 2*time.Second); after > before {

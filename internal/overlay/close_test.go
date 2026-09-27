@@ -22,7 +22,7 @@ func closeTestFixture(t *testing.T) (*Overlay, snapshot.Path) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	o := New(identityFor(t, ca, "node1", 1), zap.NewNop())
+	o := New(identityFor(t, ca, "node1", 1), zap.NewNop(), DefaultConfig())
 	path := snapshot.Path{Key: "k", Label: "node2", FirstNode: "node2", Target: "127.0.0.1:1"}
 	err = o.Apply(snapshot.Snapshot{NodeID: "node1", Peers: []snapshot.Peer{{ID: "node2", Address: freeAddress(t), Generation: 1}},
 		Sites: []snapshot.Site{{ID: "s", Upstreams: []snapshot.Upstream{{URL: "http://example.test", Paths: []snapshot.Path{path}}}}}})

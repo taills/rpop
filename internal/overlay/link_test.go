@@ -21,6 +21,7 @@ import (
 // matter but also makes an isolated test of it nondeterministic unless maintain is kept out of the way.
 func newLinkWithoutMaintain(identity *pki.Identity, peer, address string, proxies []snapshot.Proxy, currentGeneration func() (int64, bool), log *zap.Logger) *link {
 	generation, _ := currentGeneration()
+	cfg := DefaultConfig()
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
 			return DialChain(ctx, proxies, addr)
@@ -29,7 +30,7 @@ func newLinkWithoutMaintain(identity *pki.Identity, peer, address string, proxie
 		TLSHandshakeTimeout: handshakeTimeout,
 		HTTP2: &http.HTTP2Config{
 			SendPingTimeout: linkPingAfter, PingTimeout: linkPingTimeout,
-			MaxReceiveBufferPerStream: streamWindow, MaxReceiveBufferPerConnection: connectionWindow,
+			MaxReceiveBufferPerStream: cfg.StreamWindowBytes, MaxReceiveBufferPerConnection: cfg.ConnectionWindowBytes,
 		},
 	}
 	transport.Protocols = new(http.Protocols)

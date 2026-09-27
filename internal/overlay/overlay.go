@@ -27,8 +27,11 @@ var ErrClosed = errors.New("overlay is closed")
 type Overlay struct {
 	identity *pki.Identity
 	log      *zap.Logger
-	peers    atomic.Pointer[map[string]snapshot.Peer]
-	routes   atomic.Pointer[map[string]snapshot.RelayRoute]
+	// config holds the HTTP/2 window and stream settings (D31) every link and the relay port are built with;
+	// set once by New and never modified afterward, so reading it needs no lock.
+	config Config
+	peers  atomic.Pointer[map[string]snapshot.Peer]
+	routes atomic.Pointer[map[string]snapshot.RelayRoute]
 
 	mu    sync.Mutex
 	links map[string]*link
@@ -38,9 +41,10 @@ type Overlay struct {
 	closed bool
 }
 
-// New creates the overlay of the node identity names.
-func New(identity *pki.Identity, log *zap.Logger) *Overlay {
-	o := &Overlay{identity: identity, log: log, links: make(map[string]*link), events: newEventQueue(log)}
+// New creates the overlay of the node identity names, tuned with cfg's HTTP/2 window and stream settings (D31;
+// see DefaultConfig for the zero-configuration values).
+func New(identity *pki.Identity, log *zap.Logger, cfg Config) *Overlay {
+	o := &Overlay{identity: identity, log: log, config: cfg, links: make(map[string]*link), events: newEventQueue(log)}
 	o.peers.Store(&map[string]snapshot.Peer{})
 	o.routes.Store(&map[string]snapshot.RelayRoute{})
 	return o
@@ -94,7 +98,7 @@ func (o *Overlay) Apply(s snapshot.Snapshot) error {
 		key := linkKey(spec.peer, info.Generation, info.Address, spec.proxies)
 		keep[key] = true
 		if o.links[key] == nil {
-			o.links[key] = newLink(o.identity, spec.peer, info.Address, spec.proxies, o.peerGeneration(spec.peer), o.log)
+			o.links[key] = newLink(o.identity, spec.peer, info.Address, spec.proxies, o.peerGeneration(spec.peer), o.config, o.log)
 		}
 	}
 	for key, l := range o.links {
@@ -216,7 +220,7 @@ func (o *Overlay) link(peer, address string, generation int64, proxies []snapsho
 	}
 	l := o.links[key]
 	if l == nil {
-		l = newLink(o.identity, peer, address, proxies, o.peerGeneration(peer), o.log)
+		l = newLink(o.identity, peer, address, proxies, o.peerGeneration(peer), o.config, o.log)
 		o.links[key] = l
 	}
 	return l, nil

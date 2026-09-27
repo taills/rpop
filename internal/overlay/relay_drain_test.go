@@ -18,7 +18,7 @@ func TestRelayDrainFreesTheAddressImmediately(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	o := New(identityFor(t, ca, "node1", 1), zap.NewNop())
+	o := New(identityFor(t, ca, "node1", 1), zap.NewNop(), DefaultConfig())
 	address := freeAddress(t)
 
 	for i := range 20 {

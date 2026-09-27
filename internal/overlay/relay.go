@@ -47,8 +47,8 @@ func (o *Overlay) startRelay(address string) (*relayServer, error) {
 		ConnContext:       rememberTLSConn,
 		ErrorLog:          log.New(io.Discard, "", 0),
 		HTTP2: &http.HTTP2Config{
-			MaxConcurrentStreams: maxStreamsPerConn, SendPingTimeout: relayPingAfter, PingTimeout: relayPingTimeout,
-			MaxReceiveBufferPerStream: streamWindow, MaxReceiveBufferPerConnection: connectionWindow,
+			MaxConcurrentStreams: o.config.MaxStreamsPerConn, SendPingTimeout: relayPingAfter, PingTimeout: relayPingTimeout,
+			MaxReceiveBufferPerStream: o.config.StreamWindowBytes, MaxReceiveBufferPerConnection: o.config.ConnectionWindowBytes,
 		},
 	}
 	r := &relayServer{address: address, server: server, listener: listener}

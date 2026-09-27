@@ -77,7 +77,7 @@ func startLineEcho(t *testing.T) string {
 
 func newOverlay(t *testing.T, identity *pki.Identity) *Overlay {
 	t.Helper()
-	o := New(identity, zap.NewNop())
+	o := New(identity, zap.NewNop(), DefaultConfig())
 	t.Cleanup(o.Close)
 	return o
 }

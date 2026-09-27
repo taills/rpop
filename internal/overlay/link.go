@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"sync"
@@ -17,20 +18,71 @@ import (
 )
 
 const (
-	// Flow-control windows sized for the bandwidth-delay product of long links: a 16 MiB stream window keeps a
-	// single download at line rate across a 100 ms, 1 Gbit/s path, and the connection window bounds memory.
-	streamWindow     = 16 << 20
-	connectionWindow = 64 << 20
-
 	linkPingAfter   = 15 * time.Second
 	linkPingTimeout = 10 * time.Second
 	linkIdleConns   = 1
 	// Nodes apply a revision at the same moment, so a relay often dials its next hop just before that node's
 	// relay port is up. A short first backoff brings the link up right after; it doubles for peers that stay down.
-	minLinkBackoff    = 200 * time.Millisecond
-	maxLinkBackoff    = 30 * time.Second
-	maxStreamsPerConn = 1000
+	minLinkBackoff = 200 * time.Millisecond
+	maxLinkBackoff = 30 * time.Second
 )
+
+// Config holds the overlay's HTTP/2 flow-control window sizes and per-connection stream limit (D31): a process
+// startup parameter for whichever node or embedded node runs this overlay, tuned once for a host's own
+// bandwidth-delay product and connection budget rather than rendered per site or per snapshot revision (it never
+// travels in a snapshot). New takes one and hands it, unmodified, to every link it dials and to its relay port, so
+// building it once at construction is what makes every later read of these fields safe without a lock.
+type Config struct {
+	// StreamWindowBytes is the HTTP/2 flow-control window for one stream (one tunnel): the default keeps a single
+	// download at line rate across a 100 ms, 1 Gbit/s path.
+	StreamWindowBytes int
+	// ConnectionWindowBytes is the flow-control window shared by every stream on one connection.
+	ConnectionWindowBytes int
+	// MaxStreamsPerConn bounds concurrent tunnels the relay port accepts on one connection; a link dialing out
+	// opens another connection instead of queuing once every open one is at this limit (see link.acquire).
+	MaxStreamsPerConn int
+}
+
+// Default* are Config's zero-configuration values (D31): unchanged from the constants they replace, so a process
+// given no overlay configuration behaves exactly as it did before those constants became configurable.
+const (
+	DefaultStreamWindowBytes     = 16 << 20
+	DefaultConnectionWindowBytes = 64 << 20
+	DefaultMaxStreamsPerConn     = 1000
+)
+
+// Bounds a Config must satisfy (see ValidateConfig). A window below MinWindowBytes can stall a fast link's
+// throughput; one above MaxWindowBytes, or a stream count above MaxStreamsPerConnLimit, risks unbounded
+// per-connection memory or file-descriptor growth from a single misconfigured value.
+const (
+	MinWindowBytes         = 64 << 10
+	MaxWindowBytes         = 256 << 20
+	MinStreamsPerConn      = 1
+	MaxStreamsPerConnLimit = 10000
+)
+
+// DefaultConfig is the overlay's configuration with nothing overriding it.
+func DefaultConfig() Config {
+	return Config{
+		StreamWindowBytes: DefaultStreamWindowBytes, ConnectionWindowBytes: DefaultConnectionWindowBytes,
+		MaxStreamsPerConn: DefaultMaxStreamsPerConn,
+	}
+}
+
+// ValidateConfig rejects a Config outside the bounds above, so a bad CLI flag or environment variable fails at
+// startup with a clear message instead of silently misconfiguring every link and relay port the process opens.
+func ValidateConfig(cfg Config) error {
+	if cfg.StreamWindowBytes < MinWindowBytes || cfg.StreamWindowBytes > MaxWindowBytes {
+		return fmt.Errorf("overlay stream window must be between %d and %d bytes, got %d", MinWindowBytes, MaxWindowBytes, cfg.StreamWindowBytes)
+	}
+	if cfg.ConnectionWindowBytes < MinWindowBytes || cfg.ConnectionWindowBytes > MaxWindowBytes {
+		return fmt.Errorf("overlay connection window must be between %d and %d bytes, got %d", MinWindowBytes, MaxWindowBytes, cfg.ConnectionWindowBytes)
+	}
+	if cfg.MaxStreamsPerConn < MinStreamsPerConn || cfg.MaxStreamsPerConn > MaxStreamsPerConnLimit {
+		return fmt.Errorf("overlay max streams per connection must be between %d and %d, got %d", MinStreamsPerConn, MaxStreamsPerConnLimit, cfg.MaxStreamsPerConn)
+	}
+	return nil
+}
 
 // linkKey identifies a link: one peer at one registration generation, reached at one address through one proxy
 // chain. Generation is part of the key so a peer that re-registers gets a brand new link, forcing a fresh,
@@ -80,7 +132,7 @@ type link struct {
 // newLink builds a link to peer, verifying on every handshake that it still presents a certificate for the
 // generation currentGeneration currently reports, so a peer revoked and re-registered after this link was
 // created is rejected rather than trusted for as long as the connection happens to stay open.
-func newLink(identity *pki.Identity, peer, address string, proxies []snapshot.Proxy, currentGeneration func() (int64, bool), log *zap.Logger) *link {
+func newLink(identity *pki.Identity, peer, address string, proxies []snapshot.Proxy, currentGeneration func() (int64, bool), cfg Config, log *zap.Logger) *link {
 	generation, _ := currentGeneration()
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
@@ -90,7 +142,7 @@ func newLink(identity *pki.Identity, peer, address string, proxies []snapshot.Pr
 		TLSHandshakeTimeout: handshakeTimeout,
 		HTTP2: &http.HTTP2Config{
 			SendPingTimeout: linkPingAfter, PingTimeout: linkPingTimeout,
-			MaxReceiveBufferPerStream: streamWindow, MaxReceiveBufferPerConnection: connectionWindow,
+			MaxReceiveBufferPerStream: cfg.StreamWindowBytes, MaxReceiveBufferPerConnection: cfg.ConnectionWindowBytes,
 		},
 	}
 	transport.Protocols = new(http.Protocols)

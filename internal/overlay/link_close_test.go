@@ -68,7 +68,7 @@ func TestLinkRetireCancelsInFlightMaintainDial(t *testing.T) {
 	}
 	blackHole := startBlackHole(t)
 	l := newLink(identityFor(t, ca, "client", 1), "peer", blackHole.Addr().String(), nil,
-		func() (int64, bool) { return 1, true }, zap.NewNop())
+		func() (int64, bool) { return 1, true }, DefaultConfig(), zap.NewNop())
 
 	select {
 	case <-blackHole.accepted:
@@ -97,7 +97,7 @@ func TestOverlayCloseReturnsQuicklyDialingAnUnresponsivePeer(t *testing.T) {
 		t.Fatal(err)
 	}
 	blackHole := startBlackHole(t)
-	o := New(identityFor(t, ca, "node1", 1), zap.NewNop())
+	o := New(identityFor(t, ca, "node1", 1), zap.NewNop(), DefaultConfig())
 	path := snapshot.Path{Key: "k", Label: "node2", FirstNode: "node2", Target: "127.0.0.1:1"}
 	if err := o.Apply(snapshot.Snapshot{NodeID: "node1", Peers: []snapshot.Peer{{ID: "node2", Address: blackHole.Addr().String(), Generation: 1}},
 		Sites: []snapshot.Site{{ID: "s", Upstreams: []snapshot.Upstream{{URL: "http://example.test", Paths: []snapshot.Path{path}}}}}}); err != nil {
@@ -125,7 +125,7 @@ func TestOverlayCloseWithConcurrentDialPathRace(t *testing.T) {
 		t.Fatal(err)
 	}
 	blackHole := startBlackHole(t)
-	o := New(identityFor(t, ca, "node1", 1), zap.NewNop())
+	o := New(identityFor(t, ca, "node1", 1), zap.NewNop(), DefaultConfig())
 	path := snapshot.Path{Key: "k", Label: "node2", FirstNode: "node2", Target: "127.0.0.1:1"}
 	if err := o.Apply(snapshot.Snapshot{NodeID: "node1", Peers: []snapshot.Peer{{ID: "node2", Address: blackHole.Addr().String(), Generation: 1}},
 		Sites: []snapshot.Site{{ID: "s", Upstreams: []snapshot.Upstream{{URL: "http://example.test", Paths: []snapshot.Path{path}}}}}}); err != nil {
