@@ -76,12 +76,13 @@ type eventQueue struct {
 	dropped atomic.Uint64
 	sink    atomic.Pointer[sinkHolder]
 	log     *zap.Logger
-	// closeMu serializes record's closed-check-and-send against close's shutdown sequence (mark closed, stop
-	// loop, wait for it to drain and exit). Without it, record can observe closed==false and reach its send just
+	// closeMu serializes record's closed-check-and-send against close's marking of closed=true — and only that:
+	// close holds the write lock just long enough to flip the flag, not for the rest of its shutdown sequence (see
+	// close's doc comment for why). Without it at all, record could observe closed==false and reach its send just
 	// as loop finishes draining the channel and returns: the event lands in a buffer nobody will ever read again,
 	// neither delivered nor counted as dropped. record only ever takes the read lock, so concurrent record calls
 	// (the hot path) never contend each other over it — the only holder of the write lock is the one close call
-	// a queue ever gets.
+	// a queue ever gets, and only for that one bool assignment.
 	closeMu sync.RWMutex
 	closed  bool
 	stop    chan struct{}
@@ -153,14 +154,18 @@ func (q *eventQueue) deliver(event TunnelEvent) {
 }
 
 // close stops loop and waits for it to exit, so nothing keeps a reference to a discarded overlay's event queue
-// alive (a node re-registering builds a whole new Overlay; see Overlay.Close). Holding closeMu's write lock for
-// the whole sequence — not just the closed flag flip — is what closes the TOCTOU window with record: any record
-// call already past its own read-locked check is guaranteed to finish its send (and so be visible to loop's
-// drain) before this proceeds, and none can start until this returns, closed, and unlocks.
+// alive (a node re-registering builds a whole new Overlay; see Overlay.Close). It holds closeMu's write lock only
+// long enough to flip closed to true — not for the rest of the shutdown sequence — which is still enough to close
+// the TOCTOU window with record: Lock() cannot return until every record call already past its own read-locked
+// check has finished its send (and so is visible to loop's drain), and every record call starting afterwards sees
+// closed==true and drops instead. Draining loop's buffer and waiting for it to exit then happens with the lock
+// released, so a sink doing synchronous I/O (e.g. the controller's embedded node writing straight into the tunnel
+// event file store) never holds up concurrent record calls on the forwarding path — only loop's own exit, which
+// nothing but this same close call ever waits on (P8).
 func (q *eventQueue) close() {
 	q.closeMu.Lock()
-	defer q.closeMu.Unlock()
 	q.closed = true
+	q.closeMu.Unlock()
 	close(q.stop)
 	<-q.done
 }
