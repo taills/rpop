@@ -16,6 +16,7 @@ export default function ShellView() {
     { key: 'log-settings', label: '日志适配器', icon: 'database', to: '/log-settings' },
     { key: 'proxies', label: '具名代理', icon: 'link', to: '/proxies' },
     { key: 'system-settings', label: '系统设置', icon: 'settings', to: '/system-settings' },
+    { key: 'trace', label: '请求追踪', icon: 'link', to: '/trace' },
     {
       key: 'catalog',
       label: '组件目录',

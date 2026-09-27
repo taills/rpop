@@ -8,6 +8,7 @@ import ProxiesPage from '@/views/ProxiesPage'
 import CatalogPage from '@/views/CatalogPage'
 import DemoPage from '@/views/DemoPage'
 import TokensPage from '@/views/TokensPage'
+import TracePage from '@/views/TracePage'
 
 export default function AppRouter() {
   return (
@@ -22,6 +23,7 @@ export default function AppRouter() {
         <Route path="catalog" element={<CatalogPage />} />
         <Route path="demo" element={<DemoPage />} />
         <Route path="tokens" element={<TokensPage />} />
+        <Route path="trace/:trackId?" element={<TracePage />} />
       </Route>
       <Route path="*" element={<Navigate to="/sites" replace />} />
     </Routes>

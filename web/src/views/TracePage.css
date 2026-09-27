@@ -1,0 +1,76 @@
+.mt {
+  margin-top: 16px;
+}
+.trace-search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px;
+}
+.trace-search .ui-field {
+  flex: 1;
+  min-width: 280px;
+}
+.trace-id {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.trace-skew-note {
+  margin: 0 0 14px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.trace-item-error {
+  margin-top: 4px;
+  color: var(--accent-red);
+}
+
+/* Hand-rolled per-hop duration chart: one swimlane row per hop, a proportional bar positioned by percentage
+   across the tunnel's total observed span (see hopDurationBars in trace.js). No charting dependency. */
+.trace-gantt {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.trace-gantt__row {
+  display: grid;
+  grid-template-columns: 180px 1fr 72px;
+  align-items: center;
+  gap: 10px;
+}
+.trace-gantt__label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.trace-gantt__node {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trace-gantt__track {
+  position: relative;
+  height: 10px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-tertiary);
+}
+.trace-gantt__bar {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  min-width: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--grad-primary);
+}
+.trace-gantt__duration {
+  font-family: var(--font-num);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  text-align: right;
+}

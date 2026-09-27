@@ -103,3 +103,21 @@ export function hopDurationBars(hops) {
     }
   })
 }
+
+// tunnelSectionState collapses TracePage's several loading/error/empty booleans into the one state its "隧道
+// 时间线" card actually renders on — a pure function so every branch (including the ones that are easy to get
+// backwards, like "record failed to load" vs "record loaded but has no tunnel") has a unit test instead of only
+// ever being exercised by clicking through the UI.
+export function tunnelSectionState({ trackId, recordLoading, recordError, record, eventsLoading, eventsError, events }) {
+  if (trackId) {
+    if (recordLoading) return 'loading'
+    // The record card above already explains a failed lookup; nothing meaningful to add here.
+    if (recordError) return 'hidden'
+    if (record && !record.tunnelId) return 'no-tunnel'
+  }
+  if (eventsLoading) return 'loading'
+  if (eventsError) return 'error'
+  if (events && events.length === 0) return 'empty'
+  if (events && events.length > 0) return 'ready'
+  return 'hidden'
+}

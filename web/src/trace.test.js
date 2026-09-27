@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { groupHops, hopDurationBars, isValidTraceId, sortTunnelEvents, withRelativeTiming } from './trace.js'
+import { groupHops, hopDurationBars, isValidTraceId, sortTunnelEvents, tunnelSectionState, withRelativeTiming } from './trace.js'
 
 test('isValidTraceId accepts only UUID-shaped strings, matching the controller pattern', () => {
   assert.equal(isValidTraceId('0190f3d1-9e2b-7c3a-8b1a-1234567890ab'), true)
@@ -161,4 +161,26 @@ test('hopDurationBars keeps a zero-duration hop visible with the minimum bar wid
 
 test('hopDurationBars returns nothing for an empty hop list', () => {
   assert.deepEqual(hopDurationBars([]), [])
+})
+
+test('tunnelSectionState reflects the record lookup while it is in flight or has no tunnel', () => {
+  assert.equal(tunnelSectionState({ trackId: 't1', recordLoading: true }), 'loading')
+  assert.equal(tunnelSectionState({ trackId: 't1', recordError: 'no access log record found' }), 'hidden')
+  assert.equal(tunnelSectionState({ trackId: 't1', record: { tunnelId: '' } }), 'no-tunnel')
+})
+
+test('tunnelSectionState reflects the tunnel event lookup once a tunnel id is known', () => {
+  const withTunnel = { trackId: 't1', record: { tunnelId: 'u1' } }
+  assert.equal(tunnelSectionState({ ...withTunnel, eventsLoading: true }), 'loading')
+  assert.equal(tunnelSectionState({ ...withTunnel, eventsError: 'boom' }), 'error')
+  assert.equal(tunnelSectionState({ ...withTunnel, events: [] }), 'empty')
+  assert.equal(tunnelSectionState({ ...withTunnel, events: [{}] }), 'ready')
+})
+
+test('tunnelSectionState supports a bare tunnel id query with no track id at all', () => {
+  assert.equal(tunnelSectionState({ eventsLoading: true }), 'loading')
+  assert.equal(tunnelSectionState({ eventsError: 'boom' }), 'error')
+  assert.equal(tunnelSectionState({ events: [] }), 'empty')
+  assert.equal(tunnelSectionState({ events: [{}] }), 'ready')
+  assert.equal(tunnelSectionState({}), 'hidden')
 })
