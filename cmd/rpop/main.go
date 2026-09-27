@@ -160,7 +160,7 @@ func startSouthbound(ctx context.Context, logger *zap.Logger, service *control.C
 		logger.Fatal("prepare southbound TLS", zap.Error(err))
 	}
 	server := &http.Server{Addr: addr, Handler: service.SouthboundHandler(), TLSConfig: tlsConfig,
-		ReadHeaderTimeout: control.HeaderTimeout, IdleTimeout: 2 * time.Minute}
+		ReadHeaderTimeout: control.HeaderTimeout, IdleTimeout: 2 * time.Minute, HTTP2: control.SouthboundHTTP2Config()}
 	go func() {
 		logger.Info("southbound API listening", zap.String("addr", addr))
 		if err := server.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {

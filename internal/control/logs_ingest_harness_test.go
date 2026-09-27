@@ -42,9 +42,20 @@ type ingestHarness struct {
 	console    http.Handler
 	cookie     *http.Cookie
 	southbound *httptest.Server
+	// configureSouthbound, if set, runs against the southbound *http.Server before every start (including
+	// restart), so a test can override its timeouts or HTTP/2 tuning without duplicating the rest of this
+	// harness (see TestSouthboundWatchSurvivesShortIdleAndHeaderTimeouts).
+	configureSouthbound func(*http.Server)
 }
 
 func newIngestHarness(t *testing.T) *ingestHarness {
+	t.Helper()
+	return newIngestHarnessWithSouthboundConfig(t, nil)
+}
+
+// newIngestHarnessWithSouthboundConfig is newIngestHarness with configure applied to the southbound
+// *http.Server before it starts (and every restart); a nil configure behaves exactly like newIngestHarness.
+func newIngestHarnessWithSouthboundConfig(t *testing.T, configure func(*http.Server)) *ingestHarness {
 	t.Helper()
 	db, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
@@ -55,7 +66,7 @@ func newIngestHarness(t *testing.T) *ingestHarness {
 	if err := store.Migrate(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
-	h := &ingestHarness{t: t, db: db, logDir: t.TempDir()}
+	h := &ingestHarness{t: t, db: db, logDir: t.TempDir(), configureSouthbound: configure}
 	h.start()
 	t.Cleanup(func() {
 		h.control.StopAll()
@@ -89,6 +100,9 @@ func (h *ingestHarness) start() {
 	server := httptest.NewUnstartedServer(control.SouthboundHandler())
 	server.TLS, server.EnableHTTP2 = tlsConfig, true
 	server.Config.ErrorLog = log.New(io.Discard, "", 0)
+	if h.configureSouthbound != nil {
+		h.configureSouthbound(server.Config)
+	}
 	server.StartTLS()
 	h.southbound = server
 
