@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { edgeColor, groupEdges, laneOffset, layoutTopology, primaryLayer } from './topologyLayout.js'
+import { curveControlPoint, edgeColor, groupEdges, laneOffset, layerColor, layoutTopology, primaryLayer } from './topologyLayout.js'
 
 test('primaryLayer picks the first pipeline role and falls back to a trailing idle layer', () => {
   assert.equal(primaryLayer(['entry']), 0)
@@ -79,4 +79,21 @@ test('edgeColor maps every known status and defaults unrecognized ones to the un
   assert.notEqual(edgeColor('up'), edgeColor('down'))
   assert.notEqual(edgeColor('dialing'), edgeColor('down'))
   assert.equal(edgeColor('something-new'), edgeColor('unknown'))
+})
+
+test('layerColor gives every column a distinct, deterministic color and falls back for anything past idle', () => {
+  const colors = [0, 1, 2, 3].map(layerColor)
+  assert.equal(new Set(colors).size, 4, 'entry/relay/exit/idle are all visually distinct')
+  assert.equal(layerColor(99), layerColor(3), 'an out-of-range layer reuses the idle color rather than crashing')
+})
+
+test('curveControlPoint offsets perpendicular to the line between two nodes, working for any orientation', () => {
+  const horizontal = curveControlPoint({ x: 0, y: 0 }, { x: 100, y: 0 }, 1, 10)
+  assert.deepEqual(horizontal, { x: 50, y: 10 })
+  const opposite = curveControlPoint({ x: 0, y: 0 }, { x: 100, y: 0 }, -1, 10)
+  assert.deepEqual(opposite, { x: 50, y: -10 })
+  const vertical = curveControlPoint({ x: 0, y: 0 }, { x: 0, y: 100 }, 1, 10)
+  assert.deepEqual(vertical, { x: -10, y: 50 })
+  const zeroOffset = curveControlPoint({ x: 0, y: 0 }, { x: 100, y: 0 }, 0, 10)
+  assert.deepEqual(zeroOffset, { x: 50, y: 0 }, 'lane 0 sits exactly on the straight line')
 })

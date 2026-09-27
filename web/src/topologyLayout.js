@@ -107,3 +107,25 @@ const EDGE_STATUS_COLOR = {
 export function edgeColor(status) {
   return EDGE_STATUS_COLOR[status] || EDGE_STATUS_COLOR.unknown
 }
+
+const LAYER_COLOR = ['var(--accent-blue)', 'var(--accent-purple)', 'var(--accent-teal)', 'var(--text-muted)']
+
+// layerColor gives each column (entry/relay/exit/idle) its own ring color, independent of edgeColor's health
+// palette so a node's role and its links' health never share (and so cannot be confused for) the same color.
+export function layerColor(layerIndex) {
+  return LAYER_COLOR[layerIndex] ?? LAYER_COLOR[LAYER_COLOR.length - 1]
+}
+
+// curveControlPoint returns the quadratic-Bezier control point for the edge between two positioned nodes
+// {x,y}, offset perpendicular to the straight line between them by `offset` lanes (see laneOffset) times
+// spacing pixels. Working from the actual perpendicular (rather than assuming a horizontal line) keeps multi-
+// edge fanning correct for edges within the same column too (e.g. a two-node relay cycle, which lands both
+// nodes on the same x).
+export function curveControlPoint(from, to, offset, spacing = 18) {
+  const dx = to.x - from.x
+  const dy = to.y - from.y
+  const length = Math.hypot(dx, dy) || 1
+  const perpX = -dy / length
+  const perpY = dx / length
+  return { x: (from.x + to.x) / 2 + perpX * offset * spacing, y: (from.y + to.y) / 2 + perpY * offset * spacing }
+}
