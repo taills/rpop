@@ -189,6 +189,33 @@ func (c *Control) southboundLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Bound how many segments the controller processes at once, across every node, before doing any of a
+	// segment's real work: each one may briefly hold tens of megabytes of decompressed NDJSON in memory (stage 5
+	// security review item 5). A full semaphore answers immediately rather than queuing the request, so a node
+	// backs off instead of piling up blocked connections.
+	select {
+	case c.logIngestSemaphore <- struct{}{}:
+	default:
+		w.Header().Set("Retry-After", "1")
+		writeJSON(w, http.StatusServiceUnavailable, apiError{"the controller is processing the maximum number of concurrent log segments; retry shortly"})
+		return
+	}
+	defer func() { <-c.logIngestSemaphore }()
+
+	// Bound how fast this node specifically may upload, independent of the concurrency cap above (item 5). The
+	// node always sets Content-Length to the segment's exact size (see internal/spool/upload.go); a request that
+	// somehow arrives without one is charged for the full southbound.MaxLogSegmentBytes, the worst case, rather
+	// than let an unknown size bypass the limiter.
+	segmentBytes := r.ContentLength
+	if segmentBytes <= 0 {
+		segmentBytes = southbound.MaxLogSegmentBytes
+	}
+	if !c.logIngestRate.allow(node.ID, segmentBytes) {
+		w.Header().Set("Retry-After", "1")
+		writeJSON(w, http.StatusTooManyRequests, apiError{"upload rate exceeded for this node; retry shortly"})
+		return
+	}
+
 	// Concurrent uploads from the same node must not race to read-then-advance its high-water mark; uploads from
 	// other nodes are unaffected (D24).
 	unlock := c.logIngestLocks.lock(node.ID)

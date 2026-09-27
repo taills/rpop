@@ -25,6 +25,13 @@ const (
 	maxStatusBody         = 4 << 20
 	// frameWriteTimeout bounds one watch frame write, so a node that stopped reading cannot pin the stream.
 	frameWriteTimeout = 30 * time.Second
+	// MaxConcurrentSouthboundStreamsPerConn bounds how many concurrent HTTP/2 streams the southbound listener
+	// accepts on one connection (stage 5 security review item 5), the same protection the relay port already
+	// applies to node-to-node links (see internal/overlay's maxStreamsPerConn). A node normally needs only a
+	// handful at once — one long-lived watch stream plus, occasionally, a register/renew/status/logs request —
+	// so this is far looser than that per-connection reality requires, while still refusing an unbounded number
+	// of streams from a single connection.
+	MaxConcurrentSouthboundStreamsPerConn = 100
 )
 
 var errNodeUnauthenticated = errors.New("node certificate is missing, unknown, or revoked")
@@ -91,6 +98,17 @@ func (c *Control) SouthboundHandler() http.Handler {
 	m.HandleFunc("POST "+southbound.StatusPath, c.southboundStatus)
 	m.HandleFunc("POST "+southbound.LogsPath, c.southboundLogs)
 	return m
+}
+
+// SouthboundHTTP2Config is the HTTP/2 tuning the southbound listener's *http.Server should use (stage 5
+// security review item 5): the caller is responsible for setting it as that Server's HTTP2 field (mirroring
+// how internal/overlay's relay port configures its own listener), since the *http.Server itself is constructed
+// outside this package (cmd/rpop's startSouthbound). Only concurrency is bounded here — no per-stream or
+// per-connection flow-control window, and no ping timeouts — so the long-lived watch stream (southboundWatch)
+// is never affected by anything this returns; that stream's own frameWriteTimeout is what bounds a stalled
+// reader.
+func SouthboundHTTP2Config() *http.HTTP2Config {
+	return &http.HTTP2Config{MaxConcurrentStreams: MaxConcurrentSouthboundStreamsPerConn}
 }
 
 // authenticateNode identifies the node behind a request by its client certificate. The TLS handshake already

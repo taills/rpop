@@ -433,6 +433,7 @@ func (c *Control) nodeAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		c.nodes.forget(id)
 		c.logIngestLocks.forget(id)
+		c.logIngestRate.forget(id)
 		c.publishLocked(r.Context(), publishScope{})
 		w.WriteHeader(http.StatusNoContent)
 	default:

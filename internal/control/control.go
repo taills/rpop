@@ -43,7 +43,13 @@ type Control struct {
 	// logIngestLocks serializes concurrent log segment uploads from the same node (D24), so two requests for the
 	// same node can never race to read-then-advance its high-water mark.
 	logIngestLocks *keyedMutex
-	proxies        proxyRegistry
+	// logIngestSemaphore bounds how many log segment uploads southboundLogs processes at once, across every
+	// node (stage 5 security review item 5); see DefaultMaxConcurrentLogIngests.
+	logIngestSemaphore chan struct{}
+	// logIngestRate bounds how fast southboundLogs accepts compressed bytes from any single node (item 5); see
+	// DefaultLogIngestRateBytesPerSecond.
+	logIngestRate *nodeRateLimiter
+	proxies       proxyRegistry
 	// overlay carries the embedded node's upstream paths across other nodes; it is created, under opMu, when a
 	// site on that node first needs it.
 	overlay *localOverlay
@@ -66,8 +72,24 @@ type apiError struct {
 func New(s *store.Store, l *zap.Logger) *Control {
 	return &Control{store: s, log: l, engine: dataplane.New(l), desired: make(map[string]bool), published: newPublication(),
 		embedded: true, nodes: newNodeRegistry(), registrations: newFailureLimiter(maxRegisterFailures, registerFailureWindow),
-		logIngestLocks: newKeyedMutex(), systemSettings: defaultSystemSettings(), sessions: make(map[string]time.Time), loginAttempts: make(map[string]loginAttempt)}
+		logIngestLocks: newKeyedMutex(), logIngestSemaphore: make(chan struct{}, DefaultMaxConcurrentLogIngests),
+		logIngestRate:  newNodeRateLimiter(DefaultLogIngestRateBytesPerSecond),
+		systemSettings: defaultSystemSettings(), sessions: make(map[string]time.Time), loginAttempts: make(map[string]loginAttempt)}
 }
+
+// SetLogIngestLimits overrides the default global concurrency cap and per-node upload rate cap for log segment
+// ingest (stage 5 security review item 5, see DefaultMaxConcurrentLogIngests and
+// DefaultLogIngestRateBytesPerSecond). Call before serving southbound traffic; maxConcurrent <= 0 or
+// rateBytesPerSecond <= 0 leaves the corresponding default in place.
+func (c *Control) SetLogIngestLimits(maxConcurrent int, rateBytesPerSecond int64) {
+	if maxConcurrent > 0 {
+		c.logIngestSemaphore = make(chan struct{}, maxConcurrent)
+	}
+	if rateBytesPerSecond > 0 {
+		c.logIngestRate = newNodeRateLimiter(rateBytesPerSecond)
+	}
+}
+
 func (c *Control) Handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("/api/health", c.health)

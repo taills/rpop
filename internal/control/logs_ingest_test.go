@@ -585,3 +585,98 @@ func TestSouthboundLogsRejectsOversizedSegmentBody(t *testing.T) {
 		t.Fatalf("LogHWM = %d, want 0 (the oversized segment must not advance it)", node.LogHWM)
 	}
 }
+
+// TestSouthboundLogsBoundsIngestConcurrencyAcrossNodes covers stage 5 security review item 5: with no global
+// cap, each in-flight upload can hold tens of megabytes of decompressed NDJSON in memory while it writes
+// records, so memory scales linearly with however many nodes happen to upload at once. edge-a's upload is held
+// open (its adapter blocks mid-write) to occupy the sole concurrency slot; edge-b's concurrent upload must be
+// refused immediately, not queued behind it, and edge-a's must still complete once released.
+func TestSouthboundLogsBoundsIngestConcurrencyAcrossNodes(t *testing.T) {
+	h := newIngestHarness(t)
+	h.control.SetLogIngestLimits(1, DefaultLogIngestRateBytesPerSecond)
+
+	started, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce, startedOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startedOnce.Do(func() { close(started) })
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	// A single Cleanup, not a plain defer: t.Cleanup callbacks run after every plain defer in this function has
+	// already unwound (a defer here would run slow.Close() before unblock had a chance to run at all), and this
+	// one is registered after newIngestHarness's own cleanup, so it still runs first (LIFO) and releases the
+	// slow handler before the harness's shutdown waits on the in-flight request it is blocking.
+	t.Cleanup(func() {
+		unblock()
+		slow.Close()
+	})
+	slowAdapterID := h.createAdapter("Slow", accesslog.Config{Adapter: "clickhouse", ClickHouse: accesslog.ClickHouseConfig{URL: slow.URL, Database: "default", Table: "access_logs"}})
+
+	tokenA := h.createNode("edge-a")
+	identityA := h.register(tokenA)
+	h.placeSite("site-a", "edge-a", slowAdapterID)
+	clientA := nodeClient(identityA)
+	slowLine := accessEnvelope(t, slowAdapterID, accesslog.Record{SiteID: "site-a", Method: "GET", Path: "/slow", Status: 200})
+
+	tokenB := h.createNode("edge-b")
+	identityB := h.register(tokenB)
+	clientB := nodeClient(identityB)
+
+	done := make(chan *http.Response, 1)
+	go func() { done <- h.uploadSegment(clientA, 1, []string{slowLine}) }()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for edge-a's upload to start")
+	}
+
+	second := h.uploadSegment(clientB, 1, nil)
+	defer second.Body.Close()
+	if second.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("edge-b status = %d, want 503 while the only ingest slot is held", second.StatusCode)
+	}
+	if second.Header.Get("Retry-After") == "" {
+		t.Fatal("expected a Retry-After header on the 503")
+	}
+	if node, err := h.control.store.GetNode(context.Background(), "edge-b"); err != nil || node.LogHWM != 0 {
+		t.Fatalf("edge-b LogHWM = %d, %v, want 0 (refused before any write)", node.LogHWM, err)
+	}
+
+	unblock()
+	first := <-done
+	defer first.Body.Close()
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("edge-a status = %d, want 200 once unblocked", first.StatusCode)
+	}
+}
+
+// TestSouthboundLogsThrottlesPerNodeUploadRateWithoutAdvancingHWM covers stage 5 security review item 5's
+// per-node byte-rate cap: a request whose compressed body exceeds the node's remaining budget is refused before
+// any of the segment's records are written, and its high-water mark must not move.
+func TestSouthboundLogsThrottlesPerNodeUploadRateWithoutAdvancingHWM(t *testing.T) {
+	h := newIngestHarness(t)
+	// 64 bytes/second is far below the compressed size of any real segment, so even the very first upload
+	// (which would otherwise spend a fresh, full bucket) exceeds its budget deterministically.
+	h.control.SetLogIngestLimits(DefaultMaxConcurrentLogIngests, 64)
+	token := h.createNode("edge-1")
+	identity := h.register(token)
+	client := nodeClient(identity)
+	line := accessEnvelope(t, "default", accesslog.Record{SiteID: "site-a", Method: "GET", Path: "/x", Status: 200})
+
+	response := h.uploadSegment(client, 1, []string{line})
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", response.StatusCode)
+	}
+	if response.Header.Get("Retry-After") == "" {
+		t.Fatal("expected a Retry-After header on the 429")
+	}
+	node, err := h.control.store.GetNode(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.LogHWM != 0 {
+		t.Fatalf("LogHWM = %d, want 0 (a rate-limited upload must not be written or acknowledged)", node.LogHWM)
+	}
+}
