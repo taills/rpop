@@ -338,6 +338,14 @@ func (c *Control) ingestLogLine(ctx context.Context, nodeID string, placement no
 			result.undecodableLines++
 			return nil
 		}
+		if !traceIDPattern.MatchString(event.TunnelID) {
+			// A node controls every field of an uploaded record, TunnelID included; without this it could write
+			// to an arbitrary key of the tunnel event store instead of one of internal/traceid.New()'s own IDs
+			// (stage 5 security review item 4). Dropped like any other undecodable line, not failed outright: one
+			// bad tunnel ID must not block the rest of the segment.
+			result.undecodableLines++
+			return nil
+		}
 		// The reporting node authenticated itself over mTLS; trust that identity over whatever nodeId the
 		// record claims, so a node cannot attribute an event to a hop it is not.
 		event.NodeID = nodeID

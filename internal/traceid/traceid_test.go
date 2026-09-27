@@ -96,6 +96,32 @@ func TestTimeRejectsIDsItCannotTrust(t *testing.T) {
 	}
 }
 
+// TestValidAcceptsAnyWellFormedUUIDRegardlessOfVersion covers stage 5 security review item 4: Valid checks only
+// the shape New's own IDs have, not the version 7 marker Time additionally requires, so an ID from an untrusted
+// source (a node's tunnel event, a relay header) that this package never minted is still accepted as a
+// well-formed identifier.
+func TestValidAcceptsAnyWellFormedUUIDRegardlessOfVersion(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+		want bool
+	}{
+		{"a freshly minted id", New(), true},
+		{"a random version 4 UUID", "3fa85f64-5717-4562-b3fc-2c963f66afa6", true},
+		{"empty string", "", false},
+		{"too short", "1234", false},
+		{"missing dashes", strings.ReplaceAll(New(), "-", ""), false},
+		{"non-hex characters", "zzzzzzzz-zzzz-7zzz-8zzz-zzzzzzzzzzzz", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Valid(tc.id); got != tc.want {
+				t.Fatalf("Valid(%q) = %v, want %v", tc.id, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNewNeverRepeatsUnderConcurrentUse(t *testing.T) {
 	const goroutines, perGoroutine = 50, 500
 	ids := make(chan string, goroutines*perGoroutine)

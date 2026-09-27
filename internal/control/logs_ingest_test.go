@@ -20,6 +20,7 @@ import (
 	"github.com/rpop-project/rpop/internal/pki"
 	"github.com/rpop-project/rpop/internal/southbound"
 	"github.com/rpop-project/rpop/internal/store"
+	"github.com/rpop-project/rpop/internal/traceid"
 )
 
 func TestSouthboundLogsBasicUploadAcksAndWrites(t *testing.T) {
@@ -250,8 +251,9 @@ func TestSouthboundLogsHWMIdempotencyAndSkipAhead(t *testing.T) {
 	client := nodeClient(identity)
 
 	accessLine := accessEnvelope(t, "default", accesslog.Record{SiteID: "site-a", Method: "GET", Path: "/one", Status: 200})
+	tunnelID := traceid.New()
 	tunnelLine := tunnelEnvelope(t, overlay.TunnelEvent{
-		Timestamp: time.Now(), TunnelID: "tunnel-1", NodeID: "someone-else", Role: overlay.RoleEntry, Stage: overlay.StageArrived,
+		Timestamp: time.Now(), TunnelID: tunnelID, NodeID: "someone-else", Role: overlay.RoleEntry, Stage: overlay.StageArrived,
 	})
 
 	first := h.uploadSegment(client, 1, []string{accessLine, tunnelLine})
@@ -265,7 +267,7 @@ func TestSouthboundLogsHWMIdempotencyAndSkipAhead(t *testing.T) {
 	if result.Total != 1 {
 		t.Fatalf("access log total = %d, want 1", result.Total)
 	}
-	events, err := h.control.tunnelEvents.Query(context.Background(), "tunnel-1", time.Time{})
+	events, err := h.control.tunnelEvents.Query(context.Background(), tunnelID, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,6 +309,44 @@ func TestSouthboundLogsHWMIdempotencyAndSkipAhead(t *testing.T) {
 	old := h.uploadSegment(client, 3, []string{})
 	if ack := decodeAck(t, old); ack.Ack != 5 {
 		t.Fatalf("old segment ack = %#v, want 5 (the current HWM)", ack)
+	}
+}
+
+// TestSouthboundLogsDropsTunnelEventsWithAMalformedTunnelID covers stage 5 security review item 4: a node
+// controls the TunnelID it reports the same way it controls every other field of an uploaded record, so an
+// unvalidated one lets it write to an arbitrary key of the tunnel event store, not just a genuine tunnel ID
+// minted by internal/traceid.New(). A malformed one is dropped like any other undecodable line: the rest of the
+// segment, including a well-formed tunnel event, is still ingested and acknowledged.
+func TestSouthboundLogsDropsTunnelEventsWithAMalformedTunnelID(t *testing.T) {
+	h := newIngestHarness(t)
+	token := h.createNode("edge-1")
+	identity := h.register(token)
+	client := nodeClient(identity)
+
+	validID := traceid.New()
+	valid := tunnelEnvelope(t, overlay.TunnelEvent{Timestamp: time.Now(), TunnelID: validID, Role: overlay.RoleEntry, Stage: overlay.StageArrived})
+	malformed := tunnelEnvelope(t, overlay.TunnelEvent{Timestamp: time.Now(), TunnelID: "../../etc/passwd", Role: overlay.RoleEntry, Stage: overlay.StageArrived})
+
+	response := h.uploadSegment(client, 1, []string{valid, malformed})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("upload status = %d, want 200 despite the malformed tunnel id", response.StatusCode)
+	}
+	if ack := decodeAck(t, response); ack.Ack != 1 {
+		t.Fatalf("ack = %#v, want 1", ack)
+	}
+	events, err := h.control.tunnelEvents.Query(context.Background(), validID, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events for the valid tunnel id = %#v, want exactly 1", events)
+	}
+	events, err = h.control.tunnelEvents.Query(context.Background(), "../../etc/passwd", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("events for the malformed tunnel id = %#v, want none (it must never have been written)", events)
 	}
 }
 

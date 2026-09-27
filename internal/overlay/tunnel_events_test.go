@@ -128,6 +128,39 @@ func TestTunnelEventsCarryOneTunnelIDAcrossEveryHop(t *testing.T) {
 	}
 }
 
+// TestTunnelEventsIgnoreAMalformedTunnelIDButStillForward covers stage 5 security review item 4: a CONNECT
+// request's Rpop-Tunnel-Id header comes from whichever peer opened the stream (relay.go trusts it as-is), so a
+// buggy or compromised peer can send one that is not shaped like a UUID. Relaying the tunnel must not depend on
+// it (only RouteHeader does), and neither hop past the malformed header may record an event keyed by it.
+func TestTunnelEventsIgnoreAMalformedTunnelIDButStillForward(t *testing.T) {
+	target := startLineEcho(t)
+	c := newChain(t, target)
+	relaySink, exitSink := &recordingSink{}, &recordingSink{}
+	c.relay.SetTunnelEventSink(relaySink)
+	c.exit.SetTunnelEventSink(exitSink)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// Calling tunnel directly, instead of DialPath (which always mints a valid ID itself), simulates a peer that
+	// does not go through this package's own honest header construction.
+	conn, err := c.ingress.tunnel(ctx, c.path.FirstNode, c.path.LinkProxies, c.path.Key, tunnelOpen{tunnelID: "../../etc/passwd", logEvents: true, reportOwnEnd: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.WriteString(conn, "ping\n")
+	if got := readLine(t, bufio.NewReader(conn)); got != "echo: ping" {
+		t.Fatalf("got %q, want the tunnel to keep forwarding despite the malformed tunnel id", got)
+	}
+	conn.Close()
+	time.Sleep(100 * time.Millisecond)
+
+	for name, sink := range map[string]*recordingSink{"relay": relaySink, "exit": exitSink} {
+		if got := sink.snapshot(); len(got) != 0 {
+			t.Fatalf("%s recorded tunnel events %#v for a malformed tunnel id, want none", name, got)
+		}
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

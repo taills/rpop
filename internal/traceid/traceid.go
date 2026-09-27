@@ -100,6 +100,17 @@ func Time(id string) (time.Time, bool) {
 	return time.UnixMilli(ms).UTC(), true
 }
 
+// Valid reports whether id is a well-formed UUID: the canonical 8-4-4-4-12 hex shape, with no requirement on
+// the version or variant bits. This is the check to apply to a track or tunnel ID from an untrusted source (a
+// node's log upload, a peer's relay header) that need not have come from New — accepting any well-formed UUID,
+// not just one this package minted, is enough to use the value safely as an opaque key or lookup partition
+// (stage 5 security review item 4); Time is the stricter check for when the caller specifically needs the
+// timestamp New encodes.
+func Valid(id string) bool {
+	_, ok := decode(id)
+	return ok
+}
+
 // decode parses a canonical 8-4-4-4-12 hex UUID string (the shape format produces) into its 16 raw bytes.
 func decode(id string) ([16]byte, bool) {
 	var b [16]byte

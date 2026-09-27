@@ -16,6 +16,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/rpop-project/rpop/internal/pki"
+	"github.com/rpop-project/rpop/internal/traceid"
 )
 
 const (
@@ -105,6 +106,19 @@ func (l tunedListener) Accept() (net.Conn, error) {
 	return conn, err
 }
 
+// tunnelOpenFromRequest derives the tunnelOpen a CONNECT request carries. TunnelIDHeader comes from whichever
+// peer opened the stream — a relay link is mutually authenticated (see authorizedPeer), but that only vouches
+// for the peer's identity, not for the header's shape. An untrusted value that is not shaped like a UUID
+// (traceid.Valid) is treated the same as a request that never asked for tunnel event logging at all: the
+// connection is still relayed exactly the same way (only RouteHeader governs that), but this hop, and every hop
+// past it (since a malformed ID is never forwarded either, see tunnel's header.Set(TunnelIDHeader, ...) guard),
+// records no lifecycle event for it (stage 5 security review item 4). Factored out of serveRelay so this
+// decision is unit-testable without a real HTTP/2 round trip.
+func tunnelOpenFromRequest(r *http.Request) tunnelOpen {
+	tunnelID := r.Header.Get(TunnelIDHeader)
+	return tunnelOpen{tunnelID: tunnelID, logEvents: r.Header.Get(TunnelLogHeader) != "" && traceid.Valid(tunnelID)}
+}
+
 // serveRelay forwards one tunnel along the route the controller rendered for it. A peer can only use routes
 // that list it as a previous hop, so no request can steer a relay anywhere the controller did not configure.
 func (o *Overlay) serveRelay(w http.ResponseWriter, r *http.Request) {
@@ -128,7 +142,7 @@ func (o *Overlay) serveRelay(w http.ResponseWriter, r *http.Request) {
 	}
 	// The tunnel's opener decides whether it logs events (TunnelLogHeader): this relay's own route table cannot
 	// tell, because one route can be shared by sites with different access-log settings (P7).
-	open := tunnelOpen{tunnelID: r.Header.Get(TunnelIDHeader), logEvents: r.Header.Get(TunnelLogHeader) != ""}
+	open := tunnelOpenFromRequest(r)
 	role := RoleRelay
 	if route.Next == "" {
 		role = RoleExit
