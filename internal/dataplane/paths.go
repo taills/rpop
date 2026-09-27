@@ -158,6 +158,10 @@ func (f *failoverTransport) RoundTrip(req *http.Request) (*http.Response, error)
 		}
 		p.failed(time.Now())
 		lastErr = err
+		// Defense in depth: our own DialContext never touches the body, but net/http's own internal retry
+		// (reusing an idle connection that turns out to be dead) can still open a second, real connection and
+		// start writing the body to it before surfacing the dial error from that attempt to us. Once any byte
+		// has gone out, the upstream may have acted on this request, so it must not be replayed on another path.
 		if body != nil && body.read.Load() {
 			break
 		}
