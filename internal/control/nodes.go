@@ -432,7 +432,8 @@ func (c *Control) nodeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		c.nodes.forget(id)
-		c.logIngestLocks.forget(id)
+		// logIngestLocks needs no forget: its entries are reference-counted and self-remove once unused (see
+		// keyedMutex's doc comment) rather than requiring one racing this deletion.
 		c.logIngestRate.forget(id)
 		c.publishLocked(r.Context(), publishScope{})
 		w.WriteHeader(http.StatusNoContent)

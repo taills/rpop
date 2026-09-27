@@ -69,33 +69,48 @@ const (
 var traceIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // keyedMutex serializes operations that share a key without a single lock across every key: log segment uploads
-// from two different nodes proceed concurrently, but two uploads from the same node never race (D24).
+// from two different nodes proceed concurrently, but two uploads from the same node never race (D24). Each
+// entry is reference-counted and removed from the map the instant its last caller releases it, rather than
+// waiting for an explicit forget(key) once the node it belongs to is deleted (stage 5 low-priority finding item
+// 3): forget(key) and lock(key) racing each other for the same key — a node deleted and immediately
+// re-registered under the same ID, for instance — could otherwise create a second, independent *sync.Mutex for
+// key while a caller already held (or was still waiting on) the first one, so the two entries would never
+// exclude each other and two "serialized" operations on the same key could run concurrently after all.
 type keyedMutex struct {
 	mu    sync.Mutex
-	locks map[string]*sync.Mutex
+	locks map[string]*refCountedMutex
 }
 
-func newKeyedMutex() *keyedMutex { return &keyedMutex{locks: make(map[string]*sync.Mutex)} }
+// refCountedMutex is one keyedMutex entry. refs is guarded by keyedMutex.mu, not mu itself: every read or write
+// of it happens while holding that lock, in lock and the func lock returns.
+type refCountedMutex struct {
+	mu   sync.Mutex
+	refs int
+}
+
+func newKeyedMutex() *keyedMutex { return &keyedMutex{locks: make(map[string]*refCountedMutex)} }
 
 // lock blocks until key is free and returns a function that releases it.
 func (k *keyedMutex) lock(key string) func() {
 	k.mu.Lock()
-	l, ok := k.locks[key]
+	entry, ok := k.locks[key]
 	if !ok {
-		l = &sync.Mutex{}
-		k.locks[key] = l
+		entry = &refCountedMutex{}
+		k.locks[key] = entry
 	}
+	entry.refs++
 	k.mu.Unlock()
-	l.Lock()
-	return l.Unlock
-}
 
-// forget drops a key's lock once its node is deleted, so a long-lived controller does not keep one mutex per
-// node ID that ever existed.
-func (k *keyedMutex) forget(key string) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	delete(k.locks, key)
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+		k.mu.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(k.locks, key)
+		}
+		k.mu.Unlock()
+	}
 }
 
 // logIngestResult counts the lines a segment could not place, for a single summary warning per segment (see
