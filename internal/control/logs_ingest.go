@@ -21,6 +21,7 @@ import (
 	"github.com/rpop-project/rpop/internal/accesslog"
 	"github.com/rpop-project/rpop/internal/overlay"
 	"github.com/rpop-project/rpop/internal/southbound"
+	"github.com/rpop-project/rpop/internal/store"
 	"github.com/rpop-project/rpop/internal/traceid"
 )
 
@@ -143,6 +144,19 @@ func (c *Control) southboundLogs(w http.ResponseWriter, r *http.Request) {
 	segment, err := strconv.ParseUint(r.Header.Get(southbound.LogSegmentHeader), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiError{"missing or invalid " + southbound.LogSegmentHeader + " header"})
+		return
+	}
+	if segment < 1 || segment > store.MaxLogHWM {
+		// Reject before any write happens (stage 5 security review item 1): a segment this large could never be
+		// persisted as this node's high-water mark (see store.MaxLogHWM's doc comment for why), and segment
+		// numbers are 1-based (the node's spool never emits 0), so that end of the range is invalid too. Checking
+		// this immediately after parsing the header, before touching the store or decompressing anything, means
+		// the controller can never durably write a segment's records and then fail to acknowledge them: without
+		// this check, a node (or an attacker holding its certificate) could force exactly that by claiming a
+		// segment number of 1<<63 or above, permanently wedging its own upload retries and, since each attempt
+		// still fully decompresses and writes the segment before failing, amplifying its resource cost on the
+		// controller.
+		writeJSON(w, http.StatusBadRequest, apiError{fmt.Sprintf("%s must be between 1 and %d", southbound.LogSegmentHeader, uint64(store.MaxLogHWM))})
 		return
 	}
 	if r.Header.Get("Content-Encoding") != "gzip" {

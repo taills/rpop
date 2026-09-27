@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +17,7 @@ import (
 	"github.com/rpop-project/rpop/internal/overlay"
 	"github.com/rpop-project/rpop/internal/pki"
 	"github.com/rpop-project/rpop/internal/southbound"
+	"github.com/rpop-project/rpop/internal/store"
 )
 
 func TestSouthboundLogsBasicUploadAcksAndWrites(t *testing.T) {
@@ -76,6 +79,52 @@ func TestSouthboundLogsRejectsMalformedRequests(t *testing.T) {
 			defer response.Body.Close()
 			if response.StatusCode != tc.wantStatus {
 				t.Fatalf("status = %d, want %d", response.StatusCode, tc.wantStatus)
+			}
+		})
+	}
+}
+
+// TestSouthboundLogsRejectsOutOfRangeSegmentNumbers covers stage 5 security review item 1: a segment number the
+// store could never persist as a high-water mark must be rejected before the controller does any of a segment's
+// real work (decompressing or writing its records), not after. Each case uses its own node so an out-of-range
+// attempt in one case can never be mistaken for an idempotent replay against another case's high-water mark.
+func TestSouthboundLogsRejectsOutOfRangeSegmentNumbers(t *testing.T) {
+	h := newIngestHarness(t)
+	tests := []struct {
+		name       string
+		segment    uint64
+		wantStatus int
+	}{
+		{"zero is below the 1-based valid range", 0, http.StatusBadRequest},
+		{"one is the lowest valid segment", 1, http.StatusOK},
+		{"store.MaxLogHWM is the highest valid segment", store.MaxLogHWM, http.StatusOK},
+		{"store.MaxLogHWM plus one has the high bit set", uint64(math.MaxInt64) + 1, http.StatusBadRequest},
+		{"MaxUint64 has the high bit set", math.MaxUint64, http.StatusBadRequest},
+	}
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			nodeID := fmt.Sprintf("edge-bounds-%d", i)
+			token := h.createNode(nodeID)
+			identity := h.register(token)
+			client := nodeClient(identity)
+
+			response := h.uploadSegment(client, tc.segment, nil)
+			defer response.Body.Close()
+			if response.StatusCode != tc.wantStatus {
+				t.Fatalf("segment %d: status = %d, want %d", tc.segment, response.StatusCode, tc.wantStatus)
+			}
+			node, err := h.control.store.GetNode(context.Background(), nodeID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantStatus == http.StatusOK {
+				if node.LogHWM != tc.segment {
+					t.Fatalf("LogHWM = %d, want %d", node.LogHWM, tc.segment)
+				}
+				return
+			}
+			if node.LogHWM != 0 {
+				t.Fatalf("LogHWM = %d, want 0 (an out-of-range segment must not be written or acknowledged)", node.LogHWM)
 			}
 		})
 	}

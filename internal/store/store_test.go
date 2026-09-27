@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"math"
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -131,6 +132,57 @@ func TestNodeLogHWMSurvivesUnrelatedSaves(t *testing.T) {
 
 	if err := s.UpdateNodeLogHWM(ctx, "missing", 1); !errors.Is(err, ErrNodeNotFound) {
 		t.Fatalf("UpdateNodeLogHWM on a missing node = %v, want ErrNodeNotFound", err)
+	}
+}
+
+// TestUpdateNodeLogHWMRejectsValuesSQLiteCannotStore checks the store-level backstop for stage 5's security
+// review item 1: nodes.log_hwm is a SQLite INTEGER (signed 64-bit), and the mattn/go-sqlite3 driver refuses to
+// bind a uint64 argument with its high bit set. Without this check, a segment number at or above 1<<63 would
+// make it all the way to this call (after internal/control has already durably written every record of the
+// segment) before failing, which is exactly the "write, then fail to persist the mark" bug this guards against;
+// see MaxLogHWM's doc comment.
+func TestUpdateNodeLogHWMRejectsValuesSQLiteCannotStore(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := Migrate(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	s := New(db)
+	ctx := context.Background()
+	if err := s.SaveNode(ctx, Node{ID: "edge-1", Name: "Edge 1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		hwm     uint64
+		wantErr bool
+	}{
+		{"one is comfortably in range", 1, false},
+		{"MaxLogHWM is the highest value that fits", MaxLogHWM, false},
+		{"MaxLogHWM plus one has the high bit set", MaxLogHWM + 1, true},
+		{"MaxUint64 has the high bit set", math.MaxUint64, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := s.UpdateNodeLogHWM(ctx, "edge-1", tc.hwm)
+			if tc.wantErr {
+				if !errors.Is(err, ErrLogSegmentOutOfRange) {
+					t.Fatalf("UpdateNodeLogHWM(%d) = %v, want ErrLogSegmentOutOfRange", tc.hwm, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("UpdateNodeLogHWM(%d) = %v, want nil", tc.hwm, err)
+			}
+			got, err := s.GetNode(ctx, "edge-1")
+			if err != nil || got.LogHWM != tc.hwm {
+				t.Fatalf("LogHWM after UpdateNodeLogHWM(%d) = %d, %v", tc.hwm, got.LogHWM, err)
+			}
+		})
 	}
 }
 

@@ -4,8 +4,21 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"math"
 	"time"
 )
+
+// MaxLogHWM is the largest value nodes.log_hwm can hold. The column is a SQLite INTEGER, a signed 64-bit type,
+// and the mattn/go-sqlite3 driver refuses to bind a Go uint64 argument whose high bit is set ("uint64 values
+// with high bit set are not supported"), rather than silently truncating or wrapping it. UpdateNodeLogHWM
+// rejects anything above this so that failure mode is caught before it can happen, not after: see
+// internal/control's southboundLogs, which validates a segment number against this before writing any of the
+// segment's records, so the write-then-persist-the-mark order (D24) never leaves a segment durably written with
+// no way to ever acknowledge it.
+const MaxLogHWM = math.MaxInt64
+
+// ErrLogSegmentOutOfRange is returned by UpdateNodeLogHWM for an hwm above MaxLogHWM.
+var ErrLogSegmentOutOfRange = errors.New("log segment number is out of range")
 
 // Node is a registered or pre-provisioned data-plane node.
 type Node struct {
@@ -93,6 +106,9 @@ func (s *Store) SaveNode(ctx context.Context, n Node) error {
 // race with SaveNode (see SaveNode's doc comment); its two call sites still serialize with each other through
 // the per-node lock in internal/control (logIngestLocks), since this function alone does not.
 func (s *Store) UpdateNodeLogHWM(ctx context.Context, id string, hwm uint64) error {
+	if hwm > MaxLogHWM {
+		return ErrLogSegmentOutOfRange
+	}
 	result, err := s.db.ExecContext(ctx, `UPDATE nodes SET log_hwm=? WHERE id=?`, hwm, id)
 	if err != nil {
 		return err
