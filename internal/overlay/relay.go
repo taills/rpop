@@ -26,8 +26,12 @@ const (
 
 // relayServer is a node's relay port: an HTTP/2 mutual-TLS listener that forwards CONNECT streams.
 type relayServer struct {
-	address string
-	server  *http.Server
+	address  string
+	server   *http.Server
+	listener net.Listener
+	// draining is set before drain closes listener directly (see drain's doc comment), so the accept loop
+	// below can tell that error apart from one server.Shutdown would have reported as http.ErrServerClosed.
+	draining atomic.Bool
 }
 
 func (o *Overlay) startRelay(address string) (*relayServer, error) {
@@ -46,18 +50,24 @@ func (o *Overlay) startRelay(address string) (*relayServer, error) {
 			MaxReceiveBufferPerStream: streamWindow, MaxReceiveBufferPerConnection: connectionWindow,
 		},
 	}
+	r := &relayServer{address: address, server: server, listener: listener}
 	go func() {
 		err := server.ServeTLS(tunedListener{listener}, "", "")
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) && !r.draining.Load() {
 			o.log.Error("relay port stopped", zap.String("address", address), zap.Error(err))
 		}
 	}()
 	o.log.Info("relay port listening", zap.String("address", address))
-	return &relayServer{address: address, server: server}, nil
+	return r, nil
 }
 
-// drain stops accepting tunnels and lets open ones finish in the background.
+// drain stops accepting tunnels and lets open ones finish in the background. It closes the listener itself
+// synchronously, rather than through server.Shutdown (which only closes it after some unbounded delay for
+// whichever goroutine actually runs the call), so a new relay port at the same address can always start right
+// after drain returns: the address is never held open waiting for tunnels that are still draining.
 func (r *relayServer) drain() {
+	r.draining.Store(true)
+	_ = r.listener.Close()
 	go func() { _ = r.server.Shutdown(context.Background()) }()
 }
 
