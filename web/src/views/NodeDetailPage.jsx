@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '@/api.js'
 import {
@@ -36,14 +36,22 @@ export default function NodeDetailPage() {
   const [editing, setEditing] = useState(false)
   const [tokenDialog, setTokenDialog] = useState({ open: false, node: null, token: '', expiresAt: '' })
   const [busy, setBusy] = useState(false)
+  // requestRef guards against a stale response overwriting a newer one: the 5s poll timer, plus id changing
+  // while a request is still in flight (e.g. clicking a different node in NodesPage while this page is
+  // navigating), can both leave an older api() call resolving after a newer one already set state (see
+  // TracePage.jsx's useTraceQuery, which the same pattern is copied from).
+  const requestRef = useRef(0)
 
   const refresh = useCallback(async () => {
+    const requestId = ++requestRef.current
     try {
       const current = await api(`/nodes/${encodeURIComponent(id)}`)
+      if (requestRef.current !== requestId) return
       setNode(current)
       setNotFound(false)
       setError('')
     } catch (e) {
+      if (requestRef.current !== requestId) return
       if (e.status === 404) {
         setNode(null)
         setNotFound(true)
@@ -53,6 +61,9 @@ export default function NodeDetailPage() {
     }
   }, [id])
   useEffect(() => {
+    setNode(null)
+    setNotFound(false)
+    setError('')
     refresh()
     const timer = setInterval(refresh, 5000)
     return () => clearInterval(timer)
