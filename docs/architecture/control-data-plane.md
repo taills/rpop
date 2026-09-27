@@ -125,6 +125,11 @@
 
 **阶段 5(日志与追踪)端到端测试**:`internal/agent/e2e_*_test.go` 用真实 `*control.Control`(`NewWithLogDir`)+ 真实 `*agent.Agent`、真实 mTLS 与真实 spool 目录跑通节点到控制器的完整链路,覆盖:基本上传与查询(`e2e_basic_test.go`,含 track id 防伪造、trace 查询、节点 `LogStats` 上报);跨入口/中继/出口三节点的隧道全路径时间线(`e2e_overlay_trace_test.go`);控制器不可达时的 spool 积压与恢复、不丢不重(`e2e_backlog_test.go`);ACK 丢失后的幂等重传(`e2e_ack_idempotency_test.go`,用一个只包一层 `POST /southbound/v1/logs` 的测试网关模拟“已写入但响应丢失”);节点吊销重新注册后新 spool 从段号 1 起不被当重传丢弃(`e2e_reregister_test.go`);spool 配额丢段与控制器接受跳号(`e2e_quota_test.go`)。这批测试还发现并修复了一个真实缺陷:`agent.Run()` 原先的 `defer` 顺序让日志 spool 先于 `engine.StopAll()`/`closeOverlay()` 关闭,导致节点优雅关闭时刚产生的最后一批隧道事件(如入口自身的 `ended`)进了一个已经没有协程在读的 channel,静默丢失且从未落盘;修复后改为先停站点、关 overlay,最后才关 spool(`e2e_shutdown_test.go` 为回归测试,直接读 spool 磁盘文件断言)。
 
+**阶段 5 审查修复(accesslog/overlay/agent)** 的落地要点:
+
+- **file 适配器的写入与归档策略**(`internal/accesslog/file.go`):活跃文件(`access.jsonl`)的轮转只由真实时钟驱动(`writePeriodicLocked`/`rotateActiveLocked`),不再比较记录自身的时间戳——ingest 回放旧 spool 段时,一条延迟记录不会再把一份当前数据错误地归档到自己的旧日期下(这正是它替换掉的那个"最新数据被当最旧数据删除"的严重缺陷)。记录所属周期与活跃文件不一致时(几乎总是延迟记录),直接写入该周期自己的文件,该文件已被归档时则改开一个 `.lateN` 分片(`chooseSlotLocked`),永远不会重命名或误改活跃文件。压缩(gzip)与按配额清理都改为在后台 goroutine 执行(`launchArchive`,由 `sweepWG` 跟踪、`Close` 等待其退出),不再在持锁的写路径上同步进行,避免这类操作拖慢每一次 ingest ACK;压缩现在先写到一个不以 `access-` 开头的隐藏临时文件、成功后才原子改名为最终的 `.gz` 名(`gzipFileTo`),防止并发的 `Search`/清理扫到一份尚未写完、无法解压的压缩文件,进程若在压缩中途崩溃,临时文件在下次启动时会被清除而不是永久卡住该名字(`resumeInterruptedArchives`)。保留策略(`KeepFiles`)按文件名解出的周期分组裁剪(`prunePeriodicArchives`),一个周期的主文件、迟到分片和压缩产物作为整体一起保留或删除,不再按写入顺序裁剪;`parseFilePeriod` 同时认得新的按周期命名和审查修复之前的按时间戳命名,升级节点上的旧归档文件不受影响。
+- **overlay 关闭语义**(`internal/overlay`):中继端口 `drain()` 现在同步关闭底层监听器(`relayServer.listener.Close()`),端口地址立刻可被下一次 `startRelay` 复用,不再依赖后台 goroutine 某个不确定的时刻才真正调用 `server.Shutdown`;已经建立的隧道仍通过 `server.Shutdown` 在后台继续排空,不受影响。链路(`link`)的后台重拨(`maintain`)在被 `retire` 时会取消其正在进行中的拨号,而不是等一次完整的拨号+握手超时,`Overlay.Close` 因此能在近乎恒定的时间内返回。事件队列(`eventQueue`)的投递协程在 `Overlay.Close` 时被显式停止并等待退出,不再是常驻到进程结束的孤儿 goroutine。`agent.Agent.use()` 在节点重新注册、换上新 overlay 后,把旧 overlay 的 `Close()`(可能因等待链路重拨协程退出而耗时)放到持有 `a.mu` 之外执行,避免例如 `agentPaths.DialPath`、状态上报等其他需要这把锁的调用被一次重新注册顺带阻塞。
+
 ## 6. 非目标
 
 多路径负载均衡/加权分流;请求级透明重试;中继节点完全无入站(NAT 反向建链)。
