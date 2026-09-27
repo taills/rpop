@@ -88,19 +88,40 @@ func TestCARoundTripAndNodeCertificates(t *testing.T) {
 func TestRelayMutualTLSVerifiesPeerIdentity(t *testing.T) {
 	ca, _ := NewCA("rpop test CA")
 	relay, dialer := newNode(t, ca, "relay"), newNode(t, ca, "ingress")
-	state, serverErr, clientErr := handshake(relay.RelayServerConfig(), dialer.PeerClientConfig("relay"))
+	generation1 := func() (int64, bool) { return 1, true }
+	state, serverErr, clientErr := handshake(relay.RelayServerConfig(), dialer.PeerClientConfig("relay", generation1))
 	if serverErr != nil || clientErr != nil {
 		t.Fatalf("handshake failed: server %v client %v", serverErr, clientErr)
 	}
 	if peer, ok := PeerNodeID(&state); !ok || peer != "ingress" {
 		t.Fatalf("relay saw peer %q", peer)
 	}
-	if _, _, clientErr := handshake(relay.RelayServerConfig(), dialer.PeerClientConfig("someone-else")); clientErr == nil {
+	if _, _, clientErr := handshake(relay.RelayServerConfig(), dialer.PeerClientConfig("someone-else", generation1)); clientErr == nil {
 		t.Fatal("dialer accepted a relay certificate for another node")
 	}
 	outsider := newNode(t, mustCA(t), "ingress")
-	if _, serverErr, _ := handshake(relay.RelayServerConfig(), outsider.PeerClientConfig("relay")); serverErr == nil {
+	if _, serverErr, _ := handshake(relay.RelayServerConfig(), outsider.PeerClientConfig("relay", generation1)); serverErr == nil {
 		t.Fatal("relay accepted a client certificate from another CA")
+	}
+}
+
+// TestPeerClientConfigVerifiesTheServersRegistrationGeneration covers D26: a node that re-registers gets a new
+// certificate generation, and every node dialing it must reject its previous one, even if the process holding
+// the old key is still listening and otherwise a valid, CA-signed peer.
+func TestPeerClientConfigVerifiesTheServersRegistrationGeneration(t *testing.T) {
+	ca, _ := NewCA("rpop test CA")
+	relay, dialer := newNode(t, ca, "relay"), newNode(t, ca, "ingress")
+	matching := func() (int64, bool) { return 1, true }
+	if _, _, clientErr := handshake(relay.RelayServerConfig(), dialer.PeerClientConfig("relay", matching)); clientErr != nil {
+		t.Fatalf("dial at the matching generation failed: %v", clientErr)
+	}
+	revoked := func() (int64, bool) { return 2, true }
+	if _, _, clientErr := handshake(relay.RelayServerConfig(), dialer.PeerClientConfig("relay", revoked)); clientErr == nil {
+		t.Fatal("dialer accepted a relay certificate from an earlier, now-revoked generation")
+	}
+	unknown := func() (int64, bool) { return 0, false }
+	if _, _, clientErr := handshake(relay.RelayServerConfig(), dialer.PeerClientConfig("relay", unknown)); clientErr == nil {
+		t.Fatal("dialer accepted a relay certificate for a peer that is not in its current snapshot")
 	}
 }
 

@@ -83,9 +83,26 @@ func (id *Identity) ControllerClientConfig() *tls.Config {
 	return &tls.Config{MinVersion: tls.VersionTLS13, GetClientCertificate: id.clientCertificate, RootCAs: id.pool, ServerName: ControllerName}
 }
 
-// PeerClientConfig authenticates the node to the relay port of peer and verifies that it is that node.
-func (id *Identity) PeerClientConfig(peer string) *tls.Config {
-	return &tls.Config{MinVersion: tls.VersionTLS13, GetClientCertificate: id.clientCertificate, RootCAs: id.pool, ServerName: NodeName(peer), NextProtos: []string{"h2"}}
+// PeerClientConfig authenticates the node to the relay port of peer and verifies that it is that node, at the
+// registration generation currentGeneration reports. currentGeneration is called on every handshake, including
+// one over a link dialed long before, so a peer revoked and re-registered after the link came up is rejected
+// on its next handshake rather than trusted for as long as the connection happens to stay open; it must report
+// (0, false) once peer is no longer in the caller's current snapshot.
+func (id *Identity) PeerClientConfig(peer string, currentGeneration func() (int64, bool)) *tls.Config {
+	return &tls.Config{
+		MinVersion: tls.VersionTLS13, GetClientCertificate: id.clientCertificate, RootCAs: id.pool, ServerName: NodeName(peer),
+		NextProtos: []string{"h2"},
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			generation, known := currentGeneration()
+			if !known {
+				return fmt.Errorf("%s is not a peer in the current snapshot", peer)
+			}
+			if len(cs.PeerCertificates) == 0 || !NodeGenerationMatches(cs.PeerCertificates[0], generation) {
+				return fmt.Errorf("%s did not present a certificate for its current registration generation", peer)
+			}
+			return nil
+		},
+	}
 }
 
 // RelayServerConfig serves the node's relay port to peers holding certificates from the same CA.

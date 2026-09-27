@@ -19,12 +19,13 @@ import (
 // goroutine, so a test fully controls who dials and when: maintain would otherwise race a test's own acquire
 // call for the leader slot on a brand new link, exactly as it may in production, which is what makes the fix
 // matter but also makes an isolated test of it nondeterministic unless maintain is kept out of the way.
-func newLinkWithoutMaintain(identity *pki.Identity, peer, address string, proxies []snapshot.Proxy, log *zap.Logger) *link {
+func newLinkWithoutMaintain(identity *pki.Identity, peer, address string, proxies []snapshot.Proxy, currentGeneration func() (int64, bool), log *zap.Logger) *link {
+	generation, _ := currentGeneration()
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
 			return DialChain(ctx, proxies, addr)
 		},
-		TLSClientConfig:     identity.PeerClientConfig(peer),
+		TLSClientConfig:     identity.PeerClientConfig(peer, currentGeneration),
 		TLSHandshakeTimeout: handshakeTimeout,
 		HTTP2: &http.HTTP2Config{
 			SendPingTimeout: linkPingAfter, PingTimeout: linkPingTimeout,
@@ -34,7 +35,7 @@ func newLinkWithoutMaintain(identity *pki.Identity, peer, address string, proxie
 	transport.Protocols = new(http.Protocols)
 	transport.Protocols.SetHTTP2(true)
 	return &link{
-		key: linkKey(peer, address, proxies), peer: peer, address: address, transport: transport,
+		key: linkKey(peer, generation, address, proxies), peer: peer, address: address, transport: transport,
 		log:  log.With(zap.String("peer", peer), zap.String("address", address)),
 		wake: make(chan struct{}, 1), done: make(chan struct{}),
 	}
@@ -87,7 +88,7 @@ func TestLinkDialDoesNotFailTheLinkOnTheLeadersCanceledContext(t *testing.T) {
 		}
 	}()
 
-	l := newLinkWithoutMaintain(identityFor(t, ca, "client", 1), "peer", blackHoleAddr, nil, zap.NewNop())
+	l := newLinkWithoutMaintain(identityFor(t, ca, "client", 1), "peer", blackHoleAddr, nil, func() (int64, bool) { return 1, true }, zap.NewNop())
 
 	leaderCtx, cancelLeader := context.WithCancel(context.Background())
 	leaderDone := make(chan error, 1)

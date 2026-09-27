@@ -32,12 +32,16 @@ const (
 	maxStreamsPerConn = 1000
 )
 
-// linkKey identifies a link: one peer, reached at one address through one proxy chain.
-func linkKey(peer, address string, proxies []snapshot.Proxy) string {
+// linkKey identifies a link: one peer at one registration generation, reached at one address through one proxy
+// chain. Generation is part of the key so a peer that re-registers gets a brand new link, forcing a fresh,
+// freshly-verified handshake instead of continuing to trust a connection opened under its previous generation.
+func linkKey(peer string, generation int64, address string, proxies []snapshot.Proxy) string {
 	data, _ := json.Marshal(struct {
-		Peer, Address string
-		Proxies       []snapshot.Proxy
-	}{peer, address, proxies})
+		Peer       string
+		Generation int64
+		Address    string
+		Proxies    []snapshot.Proxy
+	}{peer, generation, address, proxies})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:16])
 }
@@ -61,12 +65,16 @@ type link struct {
 	done    chan struct{}
 }
 
-func newLink(identity *pki.Identity, peer, address string, proxies []snapshot.Proxy, log *zap.Logger) *link {
+// newLink builds a link to peer, verifying on every handshake that it still presents a certificate for the
+// generation currentGeneration currently reports, so a peer revoked and re-registered after this link was
+// created is rejected rather than trusted for as long as the connection happens to stay open.
+func newLink(identity *pki.Identity, peer, address string, proxies []snapshot.Proxy, currentGeneration func() (int64, bool), log *zap.Logger) *link {
+	generation, _ := currentGeneration()
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
 			return DialChain(ctx, proxies, addr)
 		},
-		TLSClientConfig:     identity.PeerClientConfig(peer),
+		TLSClientConfig:     identity.PeerClientConfig(peer, currentGeneration),
 		TLSHandshakeTimeout: handshakeTimeout,
 		HTTP2: &http.HTTP2Config{
 			SendPingTimeout: linkPingAfter, PingTimeout: linkPingTimeout,
@@ -76,7 +84,7 @@ func newLink(identity *pki.Identity, peer, address string, proxies []snapshot.Pr
 	transport.Protocols = new(http.Protocols)
 	transport.Protocols.SetHTTP2(true)
 	l := &link{
-		key: linkKey(peer, address, proxies), peer: peer, address: address, transport: transport,
+		key: linkKey(peer, generation, address, proxies), peer: peer, address: address, transport: transport,
 		log:  log.With(zap.String("peer", peer), zap.String("address", address)),
 		wake: make(chan struct{}, 1), done: make(chan struct{}),
 	}

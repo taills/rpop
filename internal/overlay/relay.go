@@ -194,6 +194,5 @@ func (o *Overlay) authorizedPeer(state *tls.ConnectionState) (string, bool) {
 		return "", false
 	}
 	peer, known := (*o.peers.Load())[id]
-	generation, ok := pki.NodeGeneration(state.PeerCertificates[0])
-	return id, known && ok && generation == peer.Generation
+	return id, known && pki.NodeGenerationMatches(state.PeerCertificates[0], peer.Generation)
 }

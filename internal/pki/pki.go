@@ -143,6 +143,14 @@ func NodeGeneration(certificate *x509.Certificate) (int64, bool) {
 	return generation, err == nil && generation > 0
 }
 
+// NodeGenerationMatches reports whether certificate carries exactly generation. Both the relay side (checking
+// an inbound peer against its snapshot row) and the client side (checking the peer it dials) revoke every
+// certificate of an earlier generation the same way: by requiring an exact match to the current one.
+func NodeGenerationMatches(certificate *x509.Certificate, generation int64) bool {
+	got, ok := NodeGeneration(certificate)
+	return ok && got == generation
+}
+
 // IssueController creates the controller's southbound key pair.
 func (ca *CA) IssueController() (tls.Certificate, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

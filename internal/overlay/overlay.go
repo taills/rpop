@@ -87,14 +87,14 @@ func (o *Overlay) Apply(s snapshot.Snapshot) error {
 	}
 	keep := make(map[string]bool, len(wanted))
 	for _, spec := range wanted {
-		address := peers[spec.peer].Address
-		if address == "" {
+		info := peers[spec.peer]
+		if info.Address == "" {
 			continue
 		}
-		key := linkKey(spec.peer, address, spec.proxies)
+		key := linkKey(spec.peer, info.Generation, info.Address, spec.proxies)
 		keep[key] = true
 		if o.links[key] == nil {
-			o.links[key] = newLink(o.identity, spec.peer, address, spec.proxies, o.log)
+			o.links[key] = newLink(o.identity, spec.peer, info.Address, spec.proxies, o.peerGeneration(spec.peer), o.log)
 		}
 	}
 	for key, l := range o.links {
@@ -182,11 +182,11 @@ type tunnelOpen struct {
 }
 
 func (o *Overlay) tunnel(ctx context.Context, peer string, proxies []snapshot.Proxy, key string, open tunnelOpen) (net.Conn, error) {
-	address := (*o.peers.Load())[peer].Address
-	if address == "" {
+	info := (*o.peers.Load())[peer]
+	if info.Address == "" {
 		return nil, fmt.Errorf("node %s has no relay address", peer)
 	}
-	l, err := o.link(peer, address, proxies)
+	l, err := o.link(peer, info.Address, info.Generation, proxies)
 	if err != nil {
 		return nil, err
 	}
@@ -207,8 +207,8 @@ func (o *Overlay) tunnel(ctx context.Context, peer string, proxies []snapshot.Pr
 	return openTunnel(ctx, cc, peer, header, trace)
 }
 
-func (o *Overlay) link(peer, address string, proxies []snapshot.Proxy) (*link, error) {
-	key := linkKey(peer, address, proxies)
+func (o *Overlay) link(peer, address string, generation int64, proxies []snapshot.Proxy) (*link, error) {
+	key := linkKey(peer, generation, address, proxies)
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.closed {
@@ -216,10 +216,20 @@ func (o *Overlay) link(peer, address string, proxies []snapshot.Proxy) (*link, e
 	}
 	l := o.links[key]
 	if l == nil {
-		l = newLink(o.identity, peer, address, proxies, o.log)
+		l = newLink(o.identity, peer, address, proxies, o.peerGeneration(peer), o.log)
 		o.links[key] = l
 	}
 	return l, nil
+}
+
+// peerGeneration reads peer's current registration generation from the latest snapshot Apply installed. A
+// link calls it on every handshake, not just when the link is created, so a peer revoked and re-registered
+// after the link was dialed is rejected on its next handshake instead of trusted for the connection's life.
+func (o *Overlay) peerGeneration(peer string) func() (int64, bool) {
+	return func() (int64, bool) {
+		p, ok := (*o.peers.Load())[peer]
+		return p.Generation, ok
+	}
 }
 
 // Links reports the state of every link.
