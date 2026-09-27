@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -59,9 +60,13 @@ type Control struct {
 	// that guards overlay itself.
 	overlayConfig overlay.Config
 	// clockSkewWarnThresholdMillis is nodeView/topologyAPI's cutoff (D28, see SetClockSkewWarnThreshold and
-	// DefaultClockSkewWarnThresholdMillis) for marking a node's reported clock skew "warn" instead of "ok"; read
-	// under opMu, the same lock overlayConfig uses for the same kind of rarely-written, often-read setting.
-	clockSkewWarnThresholdMillis int64
+	// DefaultClockSkewWarnThresholdMillis) for marking a node's reported clock skew "warn" instead of "ok". It is
+	// its own atomic rather than another opMu-guarded setting like overlayConfig: clockSkewView reads it from
+	// nodeView/topologyNode/tunnelEventViews, which run both with and without opMu already held by their caller
+	// (nodeAPI holds opMu for the whole handler around GET/PUT/POST /api/nodes/{id}, then calls nodeView itself) —
+	// sync.Mutex is not reentrant, so a second Lock from inside that call would deadlock the request (and, since
+	// opMu also serializes every other control-plane operation, every other request as well). See stage 7 review.
+	clockSkewWarnThresholdMillis atomic.Int64
 
 	accessLogs *accesslog.Registry
 	// tunnelEvents stores overlay.TunnelEvent records reported by every node (D22); nil unless the controller
@@ -79,12 +84,13 @@ type apiError struct {
 }
 
 func New(s *store.Store, l *zap.Logger) *Control {
-	return &Control{store: s, log: l, engine: dataplane.New(l), desired: make(map[string]bool), published: newPublication(),
+	c := &Control{store: s, log: l, engine: dataplane.New(l), desired: make(map[string]bool), published: newPublication(),
 		embedded: true, nodes: newNodeRegistry(), registrations: newFailureLimiter(maxRegisterFailures, registerFailureWindow),
 		logIngestLocks: newKeyedMutex(), logIngestSemaphore: make(chan struct{}, DefaultMaxConcurrentLogIngests),
 		logIngestRate: newNodeRateLimiter(DefaultLogIngestRateBytesPerSecond), overlayConfig: overlay.DefaultConfig(),
-		clockSkewWarnThresholdMillis: DefaultClockSkewWarnThresholdMillis,
-		systemSettings:               defaultSystemSettings(), sessions: make(map[string]time.Time), loginAttempts: make(map[string]loginAttempt)}
+		systemSettings: defaultSystemSettings(), sessions: make(map[string]time.Time), loginAttempts: make(map[string]loginAttempt)}
+	c.clockSkewWarnThresholdMillis.Store(DefaultClockSkewWarnThresholdMillis)
+	return c
 }
 
 // SetOverlayConfig overrides the HTTP/2 window and per-connection stream limits the embedded node's overlay is
@@ -109,12 +115,11 @@ func (c *Control) SetPathActiveProbe(enabled bool) {
 
 // SetClockSkewWarnThreshold overrides nodeView/topologyAPI's cutoff (in milliseconds) for marking a node's
 // reported clock skew (D28) "warn" instead of "ok" (see DefaultClockSkewWarnThresholdMillis); ms <= 0 leaves the
-// default in place. Call before serving console traffic.
+// default in place. clockSkewWarnThresholdMillis is its own atomic (see its doc comment), so unlike
+// SetOverlayConfig this needs no opMu and is safe to call at any time, not just before serving console traffic.
 func (c *Control) SetClockSkewWarnThreshold(ms int64) {
-	c.opMu.Lock()
-	defer c.opMu.Unlock()
 	if ms > 0 {
-		c.clockSkewWarnThresholdMillis = ms
+		c.clockSkewWarnThresholdMillis.Store(ms)
 	}
 }
 

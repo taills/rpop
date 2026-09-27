@@ -304,14 +304,15 @@ func clockSkewZero() *int64 {
 }
 
 // clockSkewView turns a raw reported offset (nil if the node never reported one, or sanitizeStatus dropped an
-// out-of-range value) into nodeView/topologyNode's pair of exposed fields (D28).
+// out-of-range value) into nodeView/topologyNode's pair of exposed fields (D28). Deliberately lock-free (see
+// clockSkewWarnThresholdMillis's doc comment): nodeAPI already holds c.opMu for its whole handler around a single
+// node, and nodeView/tunnelEventViews are its (and the list/topology/tunnel-event handlers') only path to this
+// method, so taking opMu here would deadlock every one of those requests against itself.
 func (c *Control) clockSkewView(offsetMillis *int64) (*int64, string) {
 	if offsetMillis == nil {
 		return nil, ""
 	}
-	c.opMu.Lock()
-	threshold := c.clockSkewWarnThresholdMillis
-	c.opMu.Unlock()
+	threshold := c.clockSkewWarnThresholdMillis.Load()
 	status := "ok"
 	if *offsetMillis > threshold || *offsetMillis < -threshold {
 		status = "warn"

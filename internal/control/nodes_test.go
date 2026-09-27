@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rpop-project/rpop/internal/dataplane"
 	"github.com/rpop-project/rpop/internal/overlay"
@@ -206,4 +207,48 @@ func TestLocalNodeViewReportsEnginePathHealth(t *testing.T) {
 	if len(view.Paths) != 1 || view.Paths[0].SiteID != "s" || len(view.Paths[0].Paths) != 1 || view.Paths[0].Paths[0].Label != "direct" {
 		t.Fatalf("local node paths = %#v", view.Paths)
 	}
+}
+
+// TestNodeAPIDoesNotDeadlockOnReportedClockSkew is a regression test for the stage 7 review's CRITICAL finding:
+// clockSkewView used to take c.opMu itself, but nodeAPI already holds it for its whole handler around
+// GET/PUT/POST /api/nodes/{id} before calling c.nodeView (see nodeAPI's doc comment), and sync.Mutex is not
+// reentrant — so as soon as a node had ever reported a ClockOffsetMillis, all three of those requests hung
+// forever, and since opMu also serializes every other control-plane write, so did the rest of the controller.
+// Each call below must return well inside the timeout; timing out (not a wrong status code) is the deadlock
+// itself. Run against the pre-fix code, this test hangs until its own timeouts fire; against the fix, it is fast.
+func TestNodeAPIDoesNotDeadlockOnReportedClockSkew(t *testing.T) {
+	c := newTestControl(t)
+	handler := c.Handler()
+	cookie := setupAdminForTest(t, handler)
+
+	registered := store.Node{ID: "edge-1", Name: "Edge 1", CertGeneration: 1, CreatedAt: "2024-01-01T00:00:00Z"}
+	if err := c.store.SaveNode(t.Context(), registered); err != nil {
+		t.Fatal(err)
+	}
+	offset := int64(500)
+	c.nodes.report("edge-1", southbound.Status{ClockOffsetMillis: &offset})
+
+	callWithTimeout := func(method, path, body string) {
+		t.Helper()
+		done := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			request := httptest.NewRequest(method, path, strings.NewReader(body))
+			request.AddCookie(cookie)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			done <- response
+		}()
+		select {
+		case response := <-done:
+			if response.Code < 200 || response.Code >= 300 {
+				t.Fatalf("%s %s = %d, want 2xx: %s", method, path, response.Code, response.Body.String())
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s %s did not return within 5s (opMu self-deadlock)", method, path)
+		}
+	}
+
+	callWithTimeout(http.MethodGet, "/api/nodes/edge-1", "")
+	callWithTimeout(http.MethodPut, "/api/nodes/edge-1", `{"name":"Edge One"}`)
+	callWithTimeout(http.MethodPost, "/api/nodes/edge-1/token", "")
 }
