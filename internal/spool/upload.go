@@ -143,6 +143,7 @@ func (u *Uploader) uploadOne(ctx context.Context, seq uint64) error {
 		return err
 	}
 	request.Header.Set(southbound.LogSegmentHeader, strconv.FormatUint(seq, 10))
+	request.Header.Set(southbound.ProtocolVersionHeader, strconv.Itoa(southbound.ProtocolVersion))
 	request.Header.Set("Content-Encoding", "gzip")
 	request.Header.Set("Content-Type", "application/x-ndjson")
 	request.ContentLength = size

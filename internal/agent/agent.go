@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -261,6 +262,16 @@ func (a *Agent) registerUntilDone(ctx context.Context) error {
 		if isUnauthorized(err) {
 			return fmt.Errorf("the controller rejected the join token; create a new one: %w", err)
 		}
+		if isUpgradeRequired(err) {
+			// Retrying sooner cannot help: the controller will keep refusing until someone upgrades the node or
+			// the controller, so this backs off on authRetryInterval instead of the tight exponential backoff
+			// below, which exists for transient connectivity failures.
+			a.log.Error("the controller rejected this node's protocol version; registration cannot proceed until versions are compatible", zap.Error(err), zap.Duration("retry_in", authRetryInterval))
+			if !sleep(ctx, authRetryInterval) {
+				return ctx.Err()
+			}
+			continue
+		}
 		a.log.Warn("node registration failed; retrying", zap.Error(err), zap.Duration("retry_in", backoff))
 		if !sleep(ctx, jitter(backoff)) {
 			return ctx.Err()
@@ -282,7 +293,8 @@ func (a *Agent) watchLoop(ctx context.Context) {
 			backoff = minBackoff
 		}
 		wait := jitter(backoff)
-		if isUnauthorized(err) {
+		switch {
+		case isUnauthorized(err):
 			wait = authRetryInterval
 			if a.cfg.JoinToken != "" {
 				identity, regErr := register(ctx, a.base, a.cfg.DataDir, a.cfg.JoinToken)
@@ -294,7 +306,12 @@ func (a *Agent) watchLoop(ctx context.Context) {
 				err = fmt.Errorf("%w; registering again failed: %v", err, regErr)
 			}
 			a.log.Error("the controller no longer accepts this node's certificate; start the node with a new join token", zap.Error(err))
-		} else {
+		case isUpgradeRequired(err):
+			// Same reasoning as registerUntilDone: nothing short of an upgrade fixes this, so retry on
+			// authRetryInterval instead of hammering the controller on the tight reconnect backoff.
+			wait = authRetryInterval
+			a.log.Error("the controller rejected this node's protocol version; upgrade the node or the controller to reconnect", zap.Error(err))
+		default:
 			a.log.Warn("controller watch ended; reconnecting", zap.Error(err), zap.Duration("retry_in", wait))
 		}
 		if !sleep(ctx, wait) {
@@ -313,6 +330,7 @@ func (a *Agent) watch(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	request.Header.Set(southbound.ProtocolVersionHeader, strconv.Itoa(southbound.ProtocolVersion))
 	response, err := s.client.Do(request)
 	if err != nil {
 		return err

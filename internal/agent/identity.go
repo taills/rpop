@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"go.uber.org/zap"
@@ -45,6 +46,14 @@ func (e *statusError) Error() string {
 func isUnauthorized(err error) bool {
 	var status *statusError
 	return errors.As(err, &status) && (status.code == http.StatusUnauthorized || status.code == http.StatusForbidden)
+}
+
+// isUpgradeRequired reports whether the controller rejected a request over the southbound protocol version
+// window (D27): retrying it immediately cannot help, since nothing changes until the node or the controller is
+// upgraded, so callers back off longer than they would for a transient failure.
+func isUpgradeRequired(err error) bool {
+	var status *statusError
+	return errors.As(err, &status) && status.code == http.StatusUpgradeRequired
 }
 
 func responseError(response *http.Response) error {
@@ -87,6 +96,7 @@ func postJSON(ctx context.Context, client *http.Client, endpoint string, in, out
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(southbound.ProtocolVersionHeader, strconv.Itoa(southbound.ProtocolVersion))
 	response, err := client.Do(request)
 	if err != nil {
 		return err
