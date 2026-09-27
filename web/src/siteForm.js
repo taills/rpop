@@ -1,5 +1,6 @@
 import { normalizeRoute, remapRoutesAfterRemoval, remapRoutesForDefault, routeForEditing, validateRoutes } from './routing.js'
 import { normalizeUpstreamPaths, pathsProblem } from './pathsForm.js'
+import { blankFailover, editingFailover, failoverProblem, hasFailoverOverride, sanitizeFailover } from './failoverForm.js'
 
 // Optional parts of a site configuration. Each is shown only while its checkbox is on; values of a switched-off
 // section are kept while editing (so re-enabling restores them) and cleared by applySections when saving.
@@ -8,7 +9,7 @@ export function isHTTPSURL(url) {
 }
 
 export function blankUpstream() {
-  return { url: '', proxyUrl: '', proxyType: 'direct', serverName: '', dialAddress: '', insecureSkipVerify: false, rootCertificateIds: [], clientCertificateId: '', clientCertSecret: '', clientKeySecret: '' }
+  return { url: '', proxyUrl: '', proxyType: 'direct', serverName: '', dialAddress: '', insecureSkipVerify: false, rootCertificateIds: [], clientCertificateId: '', clientCertSecret: '', clientKeySecret: '', failover: blankFailover() }
 }
 
 export function sectionsForUpstream(upstream = {}) {
@@ -19,6 +20,7 @@ export function sectionsForUpstream(upstream = {}) {
     rootCertificates: (upstream.rootCertificateIds || []).length > 0,
     mtls: Boolean(upstream.clientCertificateId || upstream.clientCertSecret),
     paths: (upstream.paths || []).length > 0,
+    failover: hasFailoverOverride(upstream.failover),
   }
 }
 
@@ -30,10 +32,13 @@ export function sectionsForSite(site) {
 }
 
 // prepareSiteForEditing returns a copy whose routes use the editor shape (explicit header modes) and whose
-// upstreams always carry their candidate paths as the explicit `paths` array (see normalizeUpstreamPaths).
+// upstreams always carry their candidate paths as the explicit `paths` array (see normalizeUpstreamPaths) and
+// their optional failover override in the editor's blank-string shape (see editingFailover).
 export function prepareSiteForEditing(site) {
   const copy = structuredClone(site)
-  const upstreams = (copy.config.upstreams?.length ? copy.config.upstreams : [blankUpstream()]).map(normalizeUpstreamPaths)
+  const upstreams = (copy.config.upstreams?.length ? copy.config.upstreams : [blankUpstream()])
+    .map(normalizeUpstreamPaths)
+    .map((upstream) => ({ ...upstream, failover: editingFailover(upstream.failover) }))
   return { ...copy, config: { ...copy.config, upstreams, routes: (copy.config.routes || []).map(routeForEditing) } }
 }
 
@@ -55,6 +60,7 @@ function applyUpstreamSections(upstream, sections = {}) {
     // re-emitted once a upstream has gone through the editor (see normalizeUpstreamPaths).
     paths: sections.paths ? upstream.paths || [] : [],
     via: [],
+    failover: sections.failover ? sanitizeFailover(upstream.failover) : undefined,
   }
 }
 
@@ -86,6 +92,7 @@ function upstreamProblem(upstream, sections = {}, uploadingClientCertificate) {
   if (https && sections.mtls && !upstream.clientCertificateId && !upstream.clientCertSecret && !uploadingClientCertificate) return '已勾选“上游双向 TLS（mTLS）”，请选择系统 Client 证书或上传证书与私钥'
   if (sections.proxy && sections.paths) return '“通过代理连接上游”与“候选路径”不能同时启用，请二选一（可把该代理加入候选路径的某一跳）'
   if (sections.paths) { const problem = pathsProblem(upstream.paths || []); if (problem) return problem }
+  if (sections.failover) { const problem = failoverProblem(upstream.failover); if (problem) return problem }
   return ''
 }
 

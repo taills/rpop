@@ -1,6 +1,7 @@
 import { isHTTPSURL } from '../siteForm.js'
 import { OptionToggle, certificateLabel } from './FormParts.jsx'
 import PathsEditor from './PathsEditor.jsx'
+import FailoverFields from './FailoverFields.jsx'
 
 function ClientCertificateFields({ upstream, clientCertificates, setUpstream, setFile }) {
   return <>
@@ -64,6 +65,9 @@ export default function UpstreamFields({ index, count, upstream, sections, route
       </OptionToggle>
       <OptionToggle checked={sections.paths} onChange={toggle('paths')} label="候选路径（节点 / 具名代理链路降级）" hint="按优先级排列，建连失败自动切换下一条">
         <PathsEditor upstream={upstream} upstreamIndex={index} catalog={catalog} placementIds={placementIds} error={error} setUpstream={setUpstream}/>
+      </OptionToggle>
+      <OptionToggle checked={sections.failover} onChange={toggle('failover')} label="按此上游覆盖降级参数（D19/D30）" hint="建连超时、冷却时间与主动探测；留空使用节点全局默认">
+        <FailoverFields upstream={upstream} upstreamIndex={index} error={error} setUpstream={setUpstream}/>
       </OptionToggle>
       {isHTTPSURL(upstream.url)
         ? <TLSOptions upstream={upstream} sections={sections} toggle={toggle} catalog={catalog} setUpstream={setUpstream} setFile={setFile}/>

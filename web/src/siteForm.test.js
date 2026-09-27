@@ -50,6 +50,33 @@ test('applySections clears paths when the section is off and keeps them when on'
   assert.deepEqual(on.config.upstreams[0].paths, [{ via: [{ proxy: 'p1' }] }])
 })
 
+test('prepareSiteForEditing normalizes an upstream with no failover to the blank editor shape', () => {
+  const editing = prepareSiteForEditing(site([{ url: 'http://a' }]))
+  assert.deepEqual(editing.config.upstreams[0].failover, { dialTimeoutMs: '', minCooldownMs: '', maxCooldownMs: '', activeProbe: null })
+  assert.equal(sectionsForSite(editing).upstreams[0].failover, false)
+})
+
+test('prepareSiteForEditing fills in blanks for a saved failover override and its section starts on', () => {
+  const editing = prepareSiteForEditing(site([{ url: 'http://a', failover: { dialTimeoutMs: 5000 } }]))
+  assert.deepEqual(editing.config.upstreams[0].failover, { dialTimeoutMs: 5000, minCooldownMs: '', maxCooldownMs: '', activeProbe: null })
+  assert.equal(sectionsForSite(editing).upstreams[0].failover, true)
+})
+
+test('applySections drops the failover override when its section is off and sanitizes it when on', () => {
+  const editing = prepareSiteForEditing(site([{ url: 'http://a', failover: { dialTimeoutMs: 5000, activeProbe: false } }]))
+  const sections = sectionsForSite(editing)
+  const off = applySections(editing, { ...sections, upstreams: [{ ...sections.upstreams[0], failover: false }] })
+  assert.equal(off.config.upstreams[0].failover, undefined)
+  const on = applySections(editing, sections)
+  assert.deepEqual(on.config.upstreams[0].failover, { dialTimeoutMs: 5000, activeProbe: false })
+})
+
+test('validateSections rejects an out-of-range failover override', () => {
+  const editing = prepareSiteForEditing(site([{ url: 'http://a', failover: { dialTimeoutMs: 500 } }]))
+  const sections = sectionsForSite(editing)
+  assert.match(validateSections(editing, sections, {}), /建连超时/)
+})
+
 test('validateSections rejects combining a proxy upstream with candidate paths', () => {
   const editing = prepareSiteForEditing(site([{ url: 'http://a', proxyUrl: 'socks5://p', paths: [{ via: [] }] }]))
   const sections = sectionsForSite(editing)
