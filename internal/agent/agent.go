@@ -25,6 +25,7 @@ import (
 	"github.com/rpop-project/rpop/internal/pki"
 	"github.com/rpop-project/rpop/internal/snapshot"
 	"github.com/rpop-project/rpop/internal/southbound"
+	"github.com/rpop-project/rpop/internal/spool"
 )
 
 const (
@@ -50,6 +51,15 @@ type Config struct {
 	// is forwarded to a different local port. Empty binds the port of the relay address on every interface.
 	RelayListen string
 	Version     string
+	// LogDir holds the node's local log spool (<LogDir>/spool), which buffers access log records and tunnel
+	// events for upload to the controller (D23). Empty falls back to a "logs" directory under DataDir, so tests
+	// and other callers that only set DataDir still get a working spool location.
+	LogDir string
+	// LogSpoolQuotaBytes bounds the spool's disk usage; 0 uses spool.DefaultQuotaBytes (D25).
+	LogSpoolQuotaBytes int64
+	// LogUploadRateBytesPerSecond throttles how fast spooled segments are uploaded; 0 uses
+	// spool.DefaultUploadRateBytesPerSecond (D25).
+	LogUploadRateBytesPerSecond int64
 }
 
 // session is the identity the node authenticates with and the client that presents it.
@@ -67,6 +77,11 @@ type Agent struct {
 	started time.Time
 	current atomic.Pointer[session]
 	kick    chan struct{}
+	// spool and uploader are created once at the start of Run, before any goroutine that might read them
+	// starts, and never replaced afterward (unlike overlay, which re-registration does replace); reading them
+	// without a lock is therefore safe.
+	spool    *spool.Spool
+	uploader *spool.Uploader
 
 	mu       sync.Mutex
 	revision int64
@@ -123,6 +138,34 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err := os.MkdirAll(a.cfg.DataDir, 0o700); err != nil {
 		return fmt.Errorf("create node data directory: %w", err)
 	}
+	logDir := a.cfg.LogDir
+	if logDir == "" {
+		logDir = filepath.Join(a.cfg.DataDir, "logs")
+	}
+	sp, err := spool.NewSpool(spool.Config{
+		Dir: filepath.Join(logDir, "spool"), QuotaBytes: a.cfg.LogSpoolQuotaBytes, Log: a.log.Named("spool"),
+	})
+	if err != nil {
+		return fmt.Errorf("open log spool: %w", err)
+	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := sp.Close(closeCtx); err != nil {
+			a.log.Warn("close log spool", zap.Error(err))
+		}
+	}()
+	// a.spool must be set before the first call to use() below, so it (and the overlay it wires up) is in place
+	// by the time any site starts producing tunnel events; see use()'s doc comment.
+	a.spool = sp
+	a.engine.SetAccessLogWriter(sp)
+	a.uploader = spool.NewUploader(sp, spool.UploaderConfig{
+		Endpoint:           a.endpoint(southbound.LogsPath),
+		Client:             func() *http.Client { return a.current.Load().client },
+		RateBytesPerSecond: a.cfg.LogUploadRateBytesPerSecond,
+		Log:                a.log.Named("log-upload"),
+	})
+
 	identity, err := loadIdentity(a.cfg.DataDir)
 	switch {
 	case err == nil:
@@ -144,24 +187,31 @@ func (a *Agent) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 	wg.Go(func() { a.statusLoop(ctx) })
 	wg.Go(func() { a.renewLoop(ctx) })
+	wg.Go(func() { a.uploader.Run(ctx) })
 	a.watchLoop(ctx)
 	wg.Wait()
 	return nil
 }
 
+// use installs identity as the node's current one and gives it a fresh overlay (links and the relay port
+// authenticate with the node certificate, so a new registration needs a new overlay; the next snapshot
+// configures it, and the old one must release the relay port first). The overlay is wired to the node's log
+// spool here too, since a re-registration (see watchLoop) replaces the overlay instance without going through
+// Run again.
 func (a *Agent) use(identity *pki.Identity) {
 	previous := a.current.Swap(&session{identity: identity, client: newClient(identity.ControllerClientConfig())})
 	if previous != nil {
 		previous.client.CloseIdleConnections()
 	}
-	// Links and the relay port authenticate with the node certificate, so a new registration needs a new overlay;
-	// the next snapshot configures it. The old one must release the relay port first.
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.overlay != nil {
 		a.overlay.Close()
 	}
 	a.overlay = overlay.New(identity, a.log.Named("overlay"))
+	if a.spool != nil {
+		a.overlay.SetTunnelEventSink(a.spool)
+	}
 }
 
 func (a *Agent) closeOverlay() {
@@ -393,6 +443,19 @@ func (a *Agent) status() southbound.Status {
 	status.Metrics = make(map[string]dataplane.MetricsSnapshot, len(status.Running))
 	for _, id := range status.Running {
 		status.Metrics[id] = a.engine.Metrics(id)
+	}
+	if a.spool != nil {
+		stats := a.spool.Stats()
+		status.Logs = &southbound.LogStats{
+			AccessLogQueueDropped:   stats.AccessLogQueueDropped,
+			TunnelEventQueueDropped: stats.TunnelEventQueueDropped,
+			QuotaDroppedSegments:    stats.QuotaDroppedSegments,
+			QuotaDroppedBytes:       stats.QuotaDroppedBytes,
+			PendingSegments:         stats.PendingSegments,
+			PendingBytes:            stats.PendingBytes,
+			AckedSegment:            stats.AckedSegment,
+			LastUploadError:         a.uploader.LastError(),
+		}
 	}
 	return status
 }
