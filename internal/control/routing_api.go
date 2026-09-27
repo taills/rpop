@@ -18,15 +18,21 @@ type simulationHeader struct {
 	Value string `json:"value"`
 }
 
-// routeSimulationRequest carries unsaved routing settings so the editor can debug rules before saving.
+// routeSimulationRequest carries unsaved routing settings so the editor can debug rules before saving. SiteID
+// is optional and only used to correlate the matched upstream's candidate paths (if any) with that site's live
+// failover health on its entry node (docs/architecture/control-data-plane.md §5, "API 契约(6.5 定形)"); leaving
+// it empty (e.g. a site that has never been saved) just reports every path's health as "unknown".
 type routeSimulationRequest struct {
+	SiteID  string             `json:"siteId,omitempty"`
 	Config  store.Config       `json:"config"`
 	Method  string             `json:"method,omitempty"`
 	URL     string             `json:"url"`
 	Headers []simulationHeader `json:"headers,omitempty"`
 }
 
-// routeSimulationResult shows which rule matched and how the path changes on its way to the upstream.
+// routeSimulationResult shows which rule matched and how the path changes on its way to the upstream. Paths and
+// SelectedPath are only set when the matched upstream has candidate paths configured; older callers that never
+// send any get the original single-hop shape unchanged.
 type routeSimulationResult struct {
 	Matched      bool            `json:"matched"`
 	RouteIndex   int             `json:"routeIndex"`
@@ -40,6 +46,8 @@ type routeSimulationResult struct {
 	UpstreamURI  string          `json:"upstreamUri"`
 	FinalURL     string          `json:"finalUrl"`
 	Checks       []routing.Check `json:"checks"`
+	Paths        []simulatedPath `json:"paths,omitempty"`
+	SelectedPath *int            `json:"selectedPath,omitempty"`
 }
 
 func (c *Control) simulateRoute(w http.ResponseWriter, r *http.Request) {
@@ -57,6 +65,7 @@ func (c *Control) simulateRoute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	c.addPathSimulation(r.Context(), &result, input)
 	writeJSON(w, http.StatusOK, result)
 }
 
