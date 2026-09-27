@@ -693,6 +693,13 @@ func (s *fileSink) pruneSequentialArchives() error {
 	return errors.Join(errs...)
 }
 
+// searchGlobHook, when set (tests only), runs synchronously right after Search lists its candidate files and
+// before it opens or filters any of them. Tests use it to deterministically inject the effect of a concurrent
+// archive/prune step (both of which touch files outside s.mu; see archiveSlot and pruneArchives) exactly inside
+// the race window readRecordsTolerant exists to handle, instead of relying on goroutine scheduling to land inside
+// a window a few instructions wide.
+var searchGlobHook func(paths []string)
+
 func (s *fileSink) Search(ctx context.Context, query Query) (SearchResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -704,18 +711,52 @@ func (s *fileSink) Search(ctx context.Context, query Query) (SearchResult, error
 	if _, err := os.Stat(active); err == nil {
 		paths = append(paths, active)
 	}
+	if searchGlobHook != nil {
+		searchGlobHook(paths)
+	}
 	var records []Record
 	for _, path := range paths {
 		if err := ctx.Err(); err != nil {
 			return SearchResult{}, err
 		}
-		entries, err := readRecords(ctx, path, query)
+		entries, err := readRecordsTolerant(ctx, path, query)
 		if err != nil {
 			return SearchResult{}, err
 		}
 		records = append(records, entries...)
 	}
 	return paginate(records, query), nil
+}
+
+// readRecordsTolerant reads path for Search, tolerating the file having vanished after Search's directory
+// listing: archiveSlot and pruneArchives both touch files outside s.mu (so a slow gzip or prune never blocks the
+// write path — see rotateActiveLocked), so between Search's Glob and this call's Open, a file it listed can have
+// been renamed or removed by either one. A missing ".archiving" file (the fixed suffix archiveSlot renames a
+// period's primary/shard to while it compresses it) is followed to wherever the compression left it: its
+// finished ".gz" form in the common case, or back under its original plain name if the compression failed and
+// archiveSlot rolled it back (see archiveSlot's recovery branch). A missing file of any other shape was simply
+// removed by retention (see pruneArchives) and is left out of the result rather than failing the whole query.
+// Any other error — permission, a truncated/corrupt file, a JSON parse failure — is a real problem and is still
+// returned, matching Search's existing behavior for genuine I/O errors.
+func readRecordsTolerant(ctx context.Context, path string, query Query) ([]Record, error) {
+	records, err := readRecords(ctx, path, query)
+	if err == nil || !os.IsNotExist(err) {
+		return records, err
+	}
+	if !strings.HasSuffix(path, ".archiving") {
+		return nil, nil
+	}
+	base := strings.TrimSuffix(path, ".archiving")
+	for _, fallback := range []string{base + ".gz", base} {
+		records, err := readRecords(ctx, fallback, query)
+		if err == nil {
+			return records, nil
+		}
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+	}
+	return nil, nil
 }
 
 func readRecords(ctx context.Context, path string, query Query) ([]Record, error) {
