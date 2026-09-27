@@ -3,6 +3,7 @@
 package southbound
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/rpop-project/rpop/internal/dataplane"
@@ -16,6 +17,7 @@ const (
 	RenewPath    = "/southbound/v1/renew"
 	WatchPath    = "/southbound/v1/watch"
 	StatusPath   = "/southbound/v1/status"
+	LogsPath     = "/southbound/v1/logs"
 )
 
 // PingInterval is how often an idle watch stream carries a ping frame; nodes treat a stream silent for
@@ -68,4 +70,69 @@ type Status struct {
 	// Links are the node's overlay links to its peers; RelayError explains a relay port that could not bind.
 	Links      []overlay.LinkStatus `json:"links,omitempty"`
 	RelayError string               `json:"relayError,omitempty"`
+	// Logs summarizes the node's log spool and upload pipeline (D23/D24/D25); nil on nodes that have not
+	// initialized a spool (the embedded local node writes access logs directly and never sets this).
+	Logs *LogStats `json:"logs,omitempty"`
+}
+
+// LogSegmentHeader names the header carrying the segment number (decimal uint64) of a POST LogsPath request;
+// the request body is the segment file's bytes, unpacked from disk as-is (already gzip-compressed).
+const LogSegmentHeader = "Rpop-Log-Segment"
+
+// MaxLogSegmentBytes bounds how much of a POST LogsPath request body the controller reads. A segment closes at
+// spool.DefaultMaxSegmentBytes (8MiB) of uncompressed NDJSON, but one record can be larger by itself: an access
+// log record with request and response bodies captured at a site's maximum body-log limit (8MiB each, base64
+// encoded) reaches roughly 22MiB on its own and still becomes one (oversized) segment. Gzip never expands data
+// by more than a negligible margin, so the same bound also safely covers the compressed bytes actually read off
+// the wire, and guards the controller against inflating an oversized or hostile body without a limit.
+const MaxLogSegmentBytes = 32 << 20
+
+// Kinds of record multiplexed onto one log segment; LogEnvelope.Kind names which follows in Record.
+const (
+	LogKindAccess = "access"
+	LogKindTunnel = "tunnel"
+)
+
+// LogEnvelope is one line of a segment's NDJSON body (D23). For LogKindAccess, Record decodes as an
+// accesslog.Record and AdapterID is the adapter the site had selected when the node observed it: the node
+// carries this along instead of the controller re-resolving it from the site's current configuration, so a
+// record relayed after a delay (or after the site's adapter selection later changes) still lands in the
+// destination that was actually in effect when the record was produced. For LogKindTunnel, Record decodes as an
+// overlay.TunnelEvent and AdapterID is unused, since tunnel events have no per-site adapter (P7: a relay route
+// can be shared by several sites).
+type LogEnvelope struct {
+	Kind      string          `json:"kind"`
+	AdapterID string          `json:"adapterId,omitempty"`
+	Record    json.RawMessage `json:"record"`
+}
+
+// LogAck answers a segment upload with the highest segment number the controller has durably written and
+// persisted as this node's high-water mark (D24). A node treats every segment numbered at or below Ack as
+// delivered, whether or not it originally sent that exact segment: the controller's HWM can be ahead of what a
+// freshly reset spool would send after the node reinstalls, and the node must skip ahead rather than treat the
+// gap as still pending.
+type LogAck struct {
+	Ack uint64 `json:"ack"`
+}
+
+// LogStats summarizes a node's log spool and upload pipeline health, reported alongside Status.
+type LogStats struct {
+	// AccessLogQueueDropped/TunnelEventQueueDropped count records the spool's own bounded ingest queue could
+	// not accept and dropped (P8): dataplane's access log queue and overlay's tunnel event queue each call into
+	// the spool from a single dedicated goroutine, and a slow disk must not stall either of them.
+	AccessLogQueueDropped   uint64 `json:"accessLogQueueDropped"`
+	TunnelEventQueueDropped uint64 `json:"tunnelEventQueueDropped"`
+	// QuotaDroppedSegments/QuotaDroppedBytes count segments the spool deleted, oldest first, to stay under its
+	// disk quota (D25) before the controller acknowledged them.
+	QuotaDroppedSegments uint64 `json:"quotaDroppedSegments"`
+	QuotaDroppedBytes    uint64 `json:"quotaDroppedBytes"`
+	// PendingSegments/PendingBytes are what is on disk right now, acknowledged or not, including the segment
+	// still being written.
+	PendingSegments uint64 `json:"pendingSegments"`
+	PendingBytes    uint64 `json:"pendingBytes"`
+	// AckedSegment is the highest segment number the controller has acknowledged so far; 0 before any upload
+	// succeeds.
+	AckedSegment uint64 `json:"ackedSegment"`
+	// LastUploadError is the most recent upload failure the node saw; empty once an upload succeeds again.
+	LastUploadError string `json:"lastUploadError,omitempty"`
 }
