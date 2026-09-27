@@ -50,3 +50,15 @@ type protocolVersionState struct {
 	protocolWarned     sync.Map
 	protocolMismatches atomic.Uint64
 }
+
+// ForgetPeer discards peer's protocolWarned entry (D27's per-peer warn-once dedup for a tunnel handshake
+// mismatch), so a peer ID that later belongs to a different node (its old node was deleted and the ID reused, or
+// simply reappears once placed on a path again) gets its own one-time mismatch warning instead of silently
+// inheriting whatever the previous holder of that ID already triggered. Safe to call for a peer never warned
+// about, or one that was never a peer of this Overlay at all. Called by Apply (see forgetStalePeers) whenever a
+// peer disappears from the snapshot, and directly by the controller when it deletes a node from its embedded
+// overlay (internal/control/nodes.go's nodeAPIDelete) for immediate cleanup rather than waiting on the next
+// Apply — stage 7 review, LOW item 4.
+func (o *Overlay) ForgetPeer(id string) {
+	o.protocolWarned.Delete(id)
+}

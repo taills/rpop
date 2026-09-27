@@ -65,7 +65,8 @@ func (o *Overlay) Apply(s snapshot.Snapshot) error {
 	for _, route := range s.Relay {
 		routes[route.Key] = route
 	}
-	o.peers.Store(&peers)
+	previousPeers := o.peers.Swap(&peers)
+	o.forgetStalePeers(previousPeers, peers)
 	o.routes.Store(&routes)
 
 	type linkSpec struct {
@@ -112,6 +113,26 @@ func (o *Overlay) Apply(s snapshot.Snapshot) error {
 		}
 	}
 	return o.applyRelayLocked(s)
+}
+
+// forgetStalePeers drops checkTunnelProtocolVersion's per-peer warn-once bookkeeping (D27's protocolWarned, see
+// ForgetPeer) for any peer ID that was in previous but is missing from current — most commonly because the
+// controller deleted that node, so it no longer appears in any snapshot at all. Without this, a peer ID reused by
+// a different node later (or simply reappearing once it is placed on a path again, since the peer set here is
+// only "the peers this node's current snapshot mentions," not "every node that ever existed") would silently
+// inherit the deleted node's already-warned state and never log its own first mismatch. previous is nil only if
+// this is ever called before New's zero-value initialization, which does not happen in practice (New always
+// stores an empty map first), but is handled defensively anyway. Called with no lock held; sync.Map.Delete needs
+// none of its own.
+func (o *Overlay) forgetStalePeers(previous *map[string]snapshot.Peer, current map[string]snapshot.Peer) {
+	if previous == nil {
+		return
+	}
+	for id := range *previous {
+		if _, ok := current[id]; !ok {
+			o.ForgetPeer(id)
+		}
+	}
 }
 
 func (o *Overlay) applyRelayLocked(s snapshot.Snapshot) error {

@@ -252,3 +252,32 @@ func TestNodeAPIDoesNotDeadlockOnReportedClockSkew(t *testing.T) {
 	callWithTimeout(http.MethodPut, "/api/nodes/edge-1", `{"name":"Edge One"}`)
 	callWithTimeout(http.MethodPost, "/api/nodes/edge-1/token", "")
 }
+
+// TestNodeAPIDeleteForgetsThePeerFromTheEmbeddedOverlay covers the stage 7 review's LOW item 4 wiring:
+// nodeAPIDelete calls the embedded node's overlay.Overlay.ForgetPeer(id) when c.overlay is set, rather than
+// leaving that cleanup to whenever (if ever) the overlay's next Apply happens to run. The actual protocolWarned
+// bookkeeping this clears lives in package overlay and is covered there
+// (TestForgetPeerClearsWarnedState/TestApplyForgetsPeersRemovedFromTheSnapshot); this only exercises that a real
+// *localOverlay wired into c.overlay does not make deletion panic or fail.
+func TestNodeAPIDeleteForgetsThePeerFromTheEmbeddedOverlay(t *testing.T) {
+	c := newTestControl(t)
+	local, err := c.newLocalOverlay(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.overlay = local
+	t.Cleanup(local.Close)
+
+	if err := c.store.SaveNode(t.Context(), store.Node{ID: "edge-1", Name: "Edge 1"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := c.Handler()
+	cookie := setupAdminForTest(t, handler)
+	request := httptest.NewRequest(http.MethodDelete, "/api/nodes/edge-1", nil)
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("DELETE /api/nodes/edge-1 = %d, want 204: %s", response.Code, response.Body.String())
+	}
+}

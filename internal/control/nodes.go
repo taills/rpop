@@ -601,6 +601,12 @@ func (c *Control) nodeAPIDelete(w http.ResponseWriter, r *http.Request, id strin
 	// logIngestLocks needs no forget: its entries are reference-counted and self-remove once unused (see
 	// keyedMutex's doc comment) rather than requiring one racing this deletion.
 	c.logIngestRate.forget(id)
+	if c.overlay != nil {
+		// Immediate cleanup of D27's per-peer warn-once bookkeeping (overlay.Overlay.ForgetPeer), rather than
+		// waiting for the embedded node's overlay to notice id missing from its next Apply (it eventually would,
+		// see forgetStalePeers) — stage 7 review, LOW item 4.
+		c.overlay.ForgetPeer(id)
+	}
 	c.publishLocked(r.Context(), publishScope{})
 	w.WriteHeader(http.StatusNoContent)
 }

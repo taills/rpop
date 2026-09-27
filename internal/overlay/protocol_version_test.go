@@ -12,6 +12,9 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
+
+	"github.com/rpop-project/rpop/internal/pki"
+	"github.com/rpop-project/rpop/internal/snapshot"
 )
 
 // TestCheckTunnelProtocolVersionWarnsOncePerPeerAndCounts covers D27's overlay-side bookkeeping in isolation:
@@ -72,5 +75,53 @@ func TestOverlayTunnelHandshakeNeverRejectsOnProtocolVersionMismatch(t *testing.
 	}
 	if got := c.relay.protocolMismatches.Load(); got != 1 {
 		t.Fatalf("relay recorded %d protocol mismatches, want 1", got)
+	}
+}
+
+// TestForgetPeerClearsWarnedState covers the stage 7 review's LOW item 4 in isolation: ForgetPeer removes exactly
+// the named peer's entry, leaving every other peer's untouched, and is a no-op for a peer never warned about.
+func TestForgetPeerClearsWarnedState(t *testing.T) {
+	o := &Overlay{log: zap.NewNop()}
+	o.checkTunnelProtocolVersion("peer-a", "999")
+	o.checkTunnelProtocolVersion("peer-b", "999")
+	if _, warned := o.protocolWarned.Load("peer-a"); !warned {
+		t.Fatal("expected peer-a to be warned before ForgetPeer")
+	}
+
+	o.ForgetPeer("peer-a")
+	if _, warned := o.protocolWarned.Load("peer-a"); warned {
+		t.Fatal("ForgetPeer did not clear peer-a")
+	}
+	if _, warned := o.protocolWarned.Load("peer-b"); !warned {
+		t.Fatal("ForgetPeer cleared an unrelated peer")
+	}
+	o.ForgetPeer("never-warned") // must not panic
+}
+
+// TestApplyForgetsPeersRemovedFromTheSnapshot covers Apply's half of the same LOW item: a peer that disappears
+// from one Apply call to the next (most commonly because the controller deleted that node) has its protocolWarned
+// entry cleared, so protocolWarned cannot grow forever across a long-running node's lifetime, and a peer ID later
+// reused by a different node gets its own fresh warning instead of silently inheriting the old one's state. A
+// peer that is merely re-sent unchanged keeps its warned state (no spurious re-warning).
+func TestApplyForgetsPeersRemovedFromTheSnapshot(t *testing.T) {
+	ca, err := pki.NewCA("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := newOverlay(t, identityFor(t, ca, "node1", 1))
+	apply(t, o, snapshot.Snapshot{Peers: []snapshot.Peer{
+		{ID: "node2", Address: "127.0.0.1:1", Generation: 1},
+		{ID: "node3", Address: "127.0.0.1:2", Generation: 1},
+	}})
+	o.checkTunnelProtocolVersion("node2", "999")
+	o.checkTunnelProtocolVersion("node3", "999")
+
+	// node2 stays in the next snapshot; node3 is gone (e.g. the controller deleted it).
+	apply(t, o, snapshot.Snapshot{Peers: []snapshot.Peer{{ID: "node2", Address: "127.0.0.1:1", Generation: 1}}})
+	if _, warned := o.protocolWarned.Load("node2"); !warned {
+		t.Fatal("protocolWarned lost node2, which is still a peer")
+	}
+	if _, warned := o.protocolWarned.Load("node3"); warned {
+		t.Fatal("protocolWarned still holds node3 after it was removed from the snapshot")
 	}
 }
