@@ -82,6 +82,17 @@
 - 降级参数暂为常量:单路径建连预算 10s、路径冷却 1s→1min 指数退避;已知 down 的链路立即失败(不等待后台重拨)。
 - 尚未实现:D19 的可选主动探测(回切依赖冷却到期后的真实请求)、按上游配置降级参数、链路/路径健康的控制台展示(阶段 6)。
 
+**阶段 5(日志与追踪)第 1 步** 定下以下契约,第 2 步(spool/回传)与第 3 步(控制器 ingest/配额/查询)据此实施:
+
+- **日志模型**:访问日志沿用 `accesslog.Record`,新增 `trackId`、`tunnelId` 两个可选字段(空表示不适用)。隧道事件是新的独立记录 `overlay.TunnelEvent`:`timestamp`、`tunnelId`、`nodeId`、`role`(`entry`/`relay`/`exit`)、`stage`(`arrived`/`established`/`ended`)、`peer`、`bytesIn`/`bytesOut`(尽力而为,`ended` 事件采样时不等待另一方向收尾)、`duration`(到上一阶段的耗时)、`error`。两者不合并成一张表:访问日志按站点选择的适配器落盘;隧道事件是连接粒度、无站点概念(同一中继路由可能被多个站点共用),独立成事件流。第 2 步落盘 spool 时,用一个 `kind: "access"|"tunnel"` 的包装信封承载两者,写入同一 NDJSON 段文件,保持单一上传通道。
+- **Track ID**:入口节点(站点监听所在节点)在 `dataplane.observeSite` 为每个请求生成 `Rpop-Track-Id`(UUIDv7,`internal/traceid.New()`,非加密随机源、无系统调用),无条件覆盖客户端携带的同名请求头再转发给上游——不信任、不透传客户端值,防止伪造轨迹或跨请求关联注入;只在 access log 中记下 `trackId`。
+- **Tunnel ID**:仅当发起隧道的站点开启了访问日志(`AccessLog.AdapterID != ""`)才生成,由 `overlay.Overlay.tunnel()` 在打开 CONNECT 流时随 `Rpop-Tunnel-Id`/`Rpop-Tunnel-Log` 请求头下发。中继/出口(`serveRelay`,按 `route.Next==""` 区分二者)只信任这两个头,不查自己的静态路由表——同一路由 `Key` 可能被多个站点共用,能否记事件是逐次隧道决定的,不是路由的静态属性。请求头只在节点间 mTLS 链路上传递,不经过任何未认证的公网入口,不存在客户端伪造问题。数据面通过 `httptrace.ClientTrace.GotConn` 从 `net.Conn`(必要时先 `*tls.Conn.NetConn()` 解一层端到端 TLS)取回隧道实现的 `TunnelID() string`,写入 access log 的 `tunnelId`,从而把一次请求和它经过的隧道关联起来;一个隧道连接可承载多个请求(连接池化,P6),因此隧道事件本身不带 `trackId`。
+- **有界异步队列**:`dataplane.logQueue`(已存在,访问日志)和新增的 `overlay` 隧道事件队列结构一致——channel 容量固定、`atomic` 计数已排队字节/丢弃数,满了直接丢弃并计数,从不阻塞转发(P8)。两者都以"写入接口"解耦落盘位置:`dataplane.AccessLogWriter` / `overlay.TunnelEventSink`,通过 `Engine.SetAccessLogWriter` / `Overlay.SetTunnelEventSink` 注入,不设置时退化为写本地 zap 日志。第 2 步新增 `internal/spool` 包,提供同时实现这两个接口的 writer,序列化为 spool 记录后落盘;不需要改动第 1 步的调用点。
+- **spool 段文件**(第 2 步实施):目录 `<log-dir>/spool/`,文件名 `%020d.jsonl.gz`(段号,零填充,单调递增,一个 gzip NDJSON 文件一段);另有 `state.json` 记录 `nextSegment` 与本地已确认的 `ackedUpTo`,重启后据此续传。封段条件:当前段达到 8MiB 或已打开超过 30s(先到者),没有事件时不建段、不上传。每行是 `{"kind":"access"|"tunnel","record":...}` 信封。
+- **南向 `logs` 协议**(第 2 步实施):节点按段号严格递增、逐段等待上一段 ACK 后再发下一段(简单的停等流控,足够,因为回传本就要限速,不追求管道化)。`POST /southbound/v1/logs`,请求头 `Rpop-Log-Segment: <uint64>`、`Content-Encoding: gzip`,body 为该段的 NDJSON;响应 `{"ack": <uint64>}`。控制器收到一段后:①若段号 ≤ 该节点已持久化的高水位(HWM),直接回 ACK(幂等重传,不重复写入);②否则按顺序把 `kind:"access"` 记录写入该站点选择的适配器、把 `kind:"tunnel"` 记录写入隧道事件存储;③写入成功后把 HWM 更新为该段号并持久化;④最后才 ACK。HWM 存在控制器 SQLite 的 `nodes` 表新增列 `log_hwm`(第 2 步加迁移),而不是内存,保证控制器重启后不重复写入也不遗漏。
+- **配额与限速**(第 2 步实施,默认值先在此定下):spool 配额默认 2GiB(`RPOP_LOG_SPOOL_QUOTA_BYTES` 可配),超过时丢弃最旧的未上传段并计数告警(不是丢新段,新事件更有时效性);回传默认限速 4MiB/s(`RPOP_LOG_UPLOAD_RATE_BYTES` 可配),用令牌桶节流上传的读取,转发路径的带宽永远优先。
+- **全路径时间线查询**(第 3 步实施,接口先在此定形):控制器新增 `GET /api/logging/trace/{trackId}` 返回该请求的 access log 记录(唯一一条)及其 `tunnelId`;再用 `GET /api/logging/tunnels/{tunnelId}` 返回该隧道 ID 在所有节点上报的全部 `TunnelEvent`,按 `timestamp` 排序即为入口→中继…→出口的完整时间线。查询直接扫已入库的隧道事件存储(第 2 步选型,复用 access log 适配器的按时间分区能力);控制台 UI 是阶段 6 的事。
+
 ## 6. 非目标
 
 多路径负载均衡/加权分流;请求级透明重试;中继节点完全无入站(NAT 反向建链)。
