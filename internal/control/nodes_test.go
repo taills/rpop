@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -73,6 +74,72 @@ func TestNodesAPIManagesNodes(t *testing.T) {
 	call(http.MethodDelete, "/api/sites/edge", "", http.StatusNoContent)
 	call(http.MethodDelete, "/api/nodes/edge-1", "", http.StatusNoContent)
 	call(http.MethodDelete, "/api/nodes/edge-1", "", http.StatusNotFound)
+}
+
+// TestNodeAPIGetSingleNode covers GET /api/nodes/{id}: the shape it returns must match the corresponding entry
+// in GET /api/nodes (including the embedded node and health fields), and an unknown id must 404 like every
+// other node endpoint does.
+func TestNodeAPIGetSingleNode(t *testing.T) {
+	c := newTestControl(t)
+	handler := c.Handler()
+	cookie := setupAdminForTest(t, handler)
+	get := func(path string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.AddCookie(cookie)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+
+	registered := store.Node{ID: "edge-1", Name: "Edge 1", CertGeneration: 3, CreatedAt: "2024-01-01T00:00:00Z"}
+	if err := c.store.SaveNode(t.Context(), registered); err != nil {
+		t.Fatal(err)
+	}
+	c.nodes.report("edge-1", southbound.Status{Links: []overlay.LinkStatus{{Peer: "edge-2", Status: "up"}}})
+
+	cases := []struct {
+		name       string
+		path       string
+		embedded   bool
+		wantStatus int
+	}{
+		{name: "embedded node", path: "/api/nodes/local", embedded: true, wantStatus: http.StatusOK},
+		{name: "embedded node disabled", path: "/api/nodes/local", embedded: false, wantStatus: http.StatusNotFound},
+		{name: "registered node", path: "/api/nodes/edge-1", embedded: true, wantStatus: http.StatusOK},
+		{name: "unknown node", path: "/api/nodes/missing", embedded: true, wantStatus: http.StatusNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c.SetEmbeddedNode(tc.embedded)
+			t.Cleanup(func() { c.SetEmbeddedNode(true) })
+			response := get(tc.path)
+			if response.Code != tc.wantStatus {
+				t.Fatalf("GET %s = %d, want %d: %s", tc.path, response.Code, tc.wantStatus, response.Body.String())
+			}
+			if tc.wantStatus != http.StatusOK {
+				return
+			}
+			var got nodeView
+			if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+
+			var list []nodeView
+			if err := json.Unmarshal(get("/api/nodes").Body.Bytes(), &list); err != nil {
+				t.Fatal(err)
+			}
+			index := slices.IndexFunc(list, func(v nodeView) bool { return v.ID == got.ID })
+			if index < 0 {
+				t.Fatalf("node %q not present in list view", got.ID)
+			}
+			want := list[index]
+			if got.CertGeneration != want.CertGeneration || got.Embedded != want.Embedded ||
+				got.Online != want.Online || len(got.Links) != len(want.Links) {
+				t.Fatalf("single node view = %#v, want %#v", got, want)
+			}
+		})
+	}
 }
 
 func TestSiteMetricsAddUpNodes(t *testing.T) {

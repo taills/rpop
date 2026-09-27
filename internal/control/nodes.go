@@ -200,8 +200,14 @@ func (c *Control) validatePlacementReferences(ctx context.Context, site store.Si
 
 type nodeView struct {
 	store.Node
-	Embedded          bool                 `json:"embedded,omitempty"`
-	Registered        bool                 `json:"registered"`
+	Embedded   bool `json:"embedded,omitempty"`
+	Registered bool `json:"registered"`
+	// CertGeneration mirrors store.Node.CertGeneration, which is tagged `json:"-"` so that nodeMutation (the PUT
+	// body) can never carry it back in and clobber it: nodeMutation only has Name/RelayAddress fields, but a
+	// naive `json:"certGeneration"` on the store type would still round-trip through any future code path that
+	// decodes a store.Node directly. Exposing a read-only copy here keeps that guarantee while still letting the
+	// console show it (see nodesPage's cert generation column).
+	CertGeneration    int64                `json:"certGeneration"`
 	Online            bool                 `json:"online"`
 	LastSeen          string               `json:"lastSeen,omitempty"`
 	Version           string               `json:"version,omitempty"`
@@ -221,7 +227,8 @@ type nodeView struct {
 }
 
 func (c *Control) nodeView(node store.Node) nodeView {
-	view := nodeView{Node: node, Registered: node.CertGeneration > 0, Running: []string{}, Links: []overlay.LinkStatus{}}
+	view := nodeView{Node: node, Registered: node.CertGeneration > 0, CertGeneration: node.CertGeneration,
+		Running: []string{}, Links: []overlay.LinkStatus{}}
 	if published, ok := c.published.Snapshot(node.ID); ok {
 		view.PublishedRevision = published.Revision
 	}
@@ -253,7 +260,8 @@ func (c *Control) localNodeView() nodeView {
 		links = c.overlay.Links()
 	}
 	c.opMu.Unlock()
-	view := nodeView{Node: store.Node{ID: LocalNodeID, Name: "Embedded node"}, Embedded: true, Registered: true, Online: true,
+	view := nodeView{Node: store.Node{ID: LocalNodeID, Name: "Embedded node"}, Embedded: true, Registered: true,
+		CertGeneration: localGeneration, Online: true,
 		AppliedRevision: revision, Running: c.engine.RunningSites(), Errors: errs, Links: links, Paths: c.engine.PathHealth()}
 	if published, ok := c.published.Snapshot(LocalNodeID); ok {
 		view.PublishedRevision = published.Revision
@@ -381,6 +389,17 @@ func (c *Control) nodesAPI(w http.ResponseWriter, r *http.Request) {
 func (c *Control) nodeAPI(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/nodes/"), "/"), "/")
 	id := parts[0]
+	// The embedded node never lives in the store (see knownNodesLocked), so GET /api/nodes/local has to be
+	// special-cased here rather than falling into the store.GetNode lookup below like every other id does.
+	// embeddedNode/localNodeView each take c.opMu themselves, so this branch must return before the lock below.
+	if len(parts) == 1 && r.Method == http.MethodGet && id == LocalNodeID {
+		if !c.embeddedNode() {
+			writeError(w, store.ErrNodeNotFound)
+			return
+		}
+		writeJSON(w, http.StatusOK, c.localNodeView())
+		return
+	}
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
 	node, err := c.store.GetNode(r.Context(), id)
@@ -389,6 +408,8 @@ func (c *Control) nodeAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case len(parts) == 1 && r.Method == http.MethodGet:
+		writeJSON(w, http.StatusOK, c.nodeView(node))
 	case len(parts) == 2 && parts[1] == "token" && r.Method == http.MethodPost:
 		token, err := c.issueJoinToken(r.Context(), &node)
 		if err != nil {
