@@ -33,7 +33,7 @@ func TestTunnelEventStoreWriteAndQuery(t *testing.T) {
 		}
 	}
 
-	got, err := store.Query(ctx, "tunnel-a")
+	got, err := store.Query(ctx, "tunnel-a", time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestTunnelEventStoreWriteAndQuery(t *testing.T) {
 		}
 	}
 
-	got, err = store.Query(ctx, "tunnel-missing")
+	got, err = store.Query(ctx, "tunnel-missing", time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestTunnelEventStorePartitionsByDayAndPrunesOldOnes(t *testing.T) {
 		t.Fatalf("expected the expired partition to be pruned, stat err = %v", err)
 	}
 
-	got, err := store.Query(ctx, "ancient")
+	got, err := store.Query(ctx, "ancient", time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,6 +89,55 @@ func TestTunnelEventStorePartitionsByDayAndPrunesOldOnes(t *testing.T) {
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestTunnelEventStoreQueryWithAStartLimitsToItsWindow covers the query-narrowing this step adds: with a
+// non-zero start, Query must only look at tunnelQueryWindowDays partitions from start's UTC day, even though the
+// tunnel ID is the same in every partition and an unbounded scan would find all of them.
+func TestTunnelEventStoreQueryWithAStartLimitsToItsWindow(t *testing.T) {
+	store, err := newTunnelEventStore(t.TempDir(), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+
+	// Far enough in the future that none of these partitions can ever fall inside the retention window's
+	// "older than tunnelEventRetentionDays" cutoff and get pruned out from under the test, regardless of when it
+	// actually runs.
+	start := time.Date(2035, 6, 1, 0, 0, 0, 0, time.UTC)
+	inWindow := []time.Time{start, start.AddDate(0, 0, tunnelQueryWindowDays-1).Add(2 * time.Hour)}
+	outOfWindow := start.AddDate(0, 0, tunnelQueryWindowDays).Add(2 * time.Hour)
+	for _, ts := range inWindow {
+		if err := store.Write(ctx, overlay.TunnelEvent{Timestamp: ts, TunnelID: "tunnel-window", NodeID: "in-window"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Write(ctx, overlay.TunnelEvent{Timestamp: outOfWindow, TunnelID: "tunnel-window", NodeID: "out-of-window"}); err != nil {
+		t.Fatal(err)
+	}
+
+	windowed, err := store.Query(ctx, "tunnel-window", start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(windowed) != len(inWindow) {
+		t.Fatalf("windowed Query returned %d events, want %d (the partition beyond tunnelQueryWindowDays must not be scanned): %#v",
+			len(windowed), len(inWindow), windowed)
+	}
+	for _, event := range windowed {
+		if event.NodeID == "out-of-window" {
+			t.Fatalf("windowed Query must not return an event from beyond tunnelQueryWindowDays: %#v", windowed)
+		}
+	}
+
+	full, err := store.Query(ctx, "tunnel-window", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full) != len(inWindow)+1 {
+		t.Fatalf("full scan (zero start) returned %d events, want %d (every partition)", len(full), len(inWindow)+1)
 	}
 }
 
@@ -123,7 +172,7 @@ func TestLocalTunnelEventWriterWritesThrough(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	writer := localTunnelEventWriter{store: store, log: zap.NewNop()}
 	writer.RecordTunnelEvent(overlay.TunnelEvent{Timestamp: time.Now(), TunnelID: "local-tunnel", NodeID: "local"})
-	got, err := store.Query(context.Background(), "local-tunnel")
+	got, err := store.Query(context.Background(), "local-tunnel", time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}

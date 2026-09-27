@@ -137,7 +137,7 @@ func TestSouthboundLogsHWMIdempotencyAndSkipAhead(t *testing.T) {
 	if result.Total != 1 {
 		t.Fatalf("access log total = %d, want 1", result.Total)
 	}
-	events, err := h.control.tunnelEvents.Query(context.Background(), "tunnel-1")
+	events, err := h.control.tunnelEvents.Query(context.Background(), "tunnel-1", time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}

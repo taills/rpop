@@ -30,15 +30,25 @@ const (
 	// request/response bodies, so a generous static ceiling (rather than a configurable limit) is enough to
 	// reject a corrupt or truncated line without failing the whole query.
 	maxTunnelEventLineBytes = 64 << 10
+	// tunnelQueryWindowDays bounds how many UTC day partitions Query scans once it has a starting day to work
+	// from (loggingTunnelEvents derives it from the tunnel ID's own UUIDv7 timestamp, D22): the day the tunnel
+	// started, plus one more to cover a tunnel that keeps running past midnight or is simply long-lived. A tunnel
+	// whose events span more than that still has its earlier events found (they are in the first partition
+	// scanned); only events reported more than a day after the tunnel opened would be missed. That is preferred
+	// over scanning the full tunnelEventRetentionDays window on every query; widen this constant if it proves too
+	// tight in practice.
+	tunnelQueryWindowDays = 2
 )
 
 // tunnelEventStore persists overlay.TunnelEvent records so GET /api/logging/tunnels/{tunnelId} (D22) can
 // reconstruct a tunnel's full path after the fact. It reuses the technique the access log file adapter uses
-// (see internal/accesslog/file.go): one NDJSON file per UTC day, scanned in full on query. A bespoke store,
-// rather than plugging into the accesslog.Registry adapters, because tunnel events have no per-site adapter
-// selection to begin with (P7: a relay route can be shared by many sites, so "which site's adapter" is not a
-// meaningful question for them) — there is nothing for an operator to configure, so a self-contained store with
-// a fixed retention is simpler than threading a new record type through every accesslog Sink implementation.
+// (see internal/accesslog/file.go): one NDJSON file per UTC day, scanned by Query — every partition still on
+// disk when the caller has no starting day to work from, or just the few nearest one when it does (see Query and
+// tunnelQueryWindowDays). A bespoke store, rather than plugging into the accesslog.Registry adapters, because
+// tunnel events have no per-site adapter selection to begin with (P7: a relay route can be shared by many sites,
+// so "which site's adapter" is not a meaningful question for them) — there is nothing for an operator to
+// configure, so a self-contained store with a fixed retention is simpler than threading a new record type
+// through every accesslog Sink implementation.
 type tunnelEventStore struct {
 	mu   sync.Mutex
 	dir  string
@@ -127,15 +137,17 @@ func (s *tunnelEventStore) pruneLocked() {
 }
 
 // Query returns every stored event for tunnelID, across every node that reported one, sorted by timestamp: that
-// is the tunnel's timeline from the hop that opened it through to the hop that closed it (D22).
-func (s *tunnelEventStore) Query(ctx context.Context, tunnelID string) ([]overlay.TunnelEvent, error) {
+// is the tunnel's timeline from the hop that opened it through to the hop that closed it (D22). A non-zero start
+// narrows the scan to its UTC day partition plus tunnelQueryWindowDays-1 more (see that constant); the zero
+// value scans every partition still on disk, for callers that could not derive a starting day (e.g. tunnelID is
+// not a UUIDv7).
+func (s *tunnelEventStore) Query(ctx context.Context, tunnelID string, start time.Time) ([]overlay.TunnelEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	paths, err := filepath.Glob(filepath.Join(s.dir, "events-*.jsonl"))
+	paths, err := s.candidatePathsLocked(start)
 	if err != nil {
 		return nil, err
 	}
-	sort.Strings(paths)
 	events := []overlay.TunnelEvent{}
 	for _, path := range paths {
 		if err := ctx.Err(); err != nil {
@@ -149,6 +161,27 @@ func (s *tunnelEventStore) Query(ctx context.Context, tunnelID string) ([]overla
 	}
 	sort.Slice(events, func(i, j int) bool { return events[i].Timestamp.Before(events[j].Timestamp) })
 	return events, nil
+}
+
+// candidatePathsLocked lists the partition files Query should read: every one on disk for a zero start, or
+// exactly the tunnelQueryWindowDays day-partition paths starting at start's UTC day otherwise — computed by name
+// rather than another glob, since most of those files will not exist for a tunnel that only ran on one of them
+// (readTunnelEvents already treats a missing file as "no events" rather than an error).
+func (s *tunnelEventStore) candidatePathsLocked(start time.Time) ([]string, error) {
+	if start.IsZero() {
+		paths, err := filepath.Glob(filepath.Join(s.dir, "events-*.jsonl"))
+		if err != nil {
+			return nil, err
+		}
+		sort.Strings(paths)
+		return paths, nil
+	}
+	paths := make([]string, tunnelQueryWindowDays)
+	for i := range paths {
+		day := start.UTC().AddDate(0, 0, i).Format("20060102")
+		paths[i] = tunnelEventPath(s.dir, day)
+	}
+	return paths, nil
 }
 
 func readTunnelEvents(path, tunnelID string) ([]overlay.TunnelEvent, error) {

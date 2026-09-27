@@ -21,6 +21,7 @@ import (
 	"github.com/rpop-project/rpop/internal/accesslog"
 	"github.com/rpop-project/rpop/internal/overlay"
 	"github.com/rpop-project/rpop/internal/southbound"
+	"github.com/rpop-project/rpop/internal/traceid"
 )
 
 const (
@@ -36,6 +37,12 @@ const (
 	// southbound.MaxLogSegmentBytes (see its doc comment), so the per-line cap matches it; a longer line is
 	// treated as corrupt or hostile and the line is dropped rather than failing the whole segment.
 	maxLogRecordLineBytes = southbound.MaxLogSegmentBytes
+	// traceQueryWindow bounds the [from, to] window loggingTrace builds around a trackId's own UUIDv7 timestamp.
+	// The entry node mints the track ID and timestamps its access log record from the same time.Now() call (see
+	// dataplane.observeSite and requestRecord), so in practice the two are the same instant; a full minute on
+	// each side is far more margin than that ever needs while still letting a time-partitioned adapter
+	// (ClickHouse, S3, Elasticsearch) skip almost all of its history instead of scanning it end to end.
+	traceQueryWindow = time.Minute
 )
 
 // traceIDPattern validates a trackId/tunnelId path parameter: both are UUIDs minted by internal/traceid.New()
@@ -322,9 +329,17 @@ func (c *Control) loggingTrace(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
+	query := accesslog.Query{TrackID: trackID, Page: 1, PageSize: 1}
+	// A trackId that fails to parse as a UUIDv7 (traceIDPattern above does not check the version bits, see its
+	// doc comment) leaves query.From/To zero, which every adapter treats as "no bound" — fall back to searching
+	// each adapter's full history rather than rejecting the request outright, the same as any other ID this
+	// generator never actually minted.
+	if generated, ok := traceid.Time(trackID); ok {
+		query.From, query.To = generated.Add(-traceQueryWindow), generated.Add(traceQueryWindow)
+	}
 	var searchErr error
 	for _, adapter := range c.accessLogs.List() {
-		result, err := c.accessLogs.Search(ctx, adapter.ID, accesslog.Query{TrackID: trackID, Page: 1, PageSize: 1})
+		result, err := c.accessLogs.Search(ctx, adapter.ID, query)
 		if err != nil {
 			searchErr = err
 			c.log.Warn("search access log adapter for a trace", zap.String("adapter_id", adapter.ID), zap.Error(err))
@@ -361,7 +376,13 @@ func (c *Control) loggingTunnelEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	events, err := c.tunnelEvents.Query(ctx, tunnelID)
+	// A tunnelId that fails to parse as a UUIDv7 leaves start zero, which Query treats as "scan every partition"
+	// (see its doc comment) — the same fallback loggingTrace uses above, for the same reason.
+	var start time.Time
+	if generated, ok := traceid.Time(tunnelID); ok {
+		start = generated
+	}
+	events, err := c.tunnelEvents.Query(ctx, tunnelID, start)
 	if err != nil {
 		writeError(w, err)
 		return

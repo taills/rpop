@@ -84,3 +84,36 @@ func format(b [16]byte) string {
 	hex.Encode(out[24:36], b[10:16])
 	return string(out[:])
 }
+
+// Time extracts the millisecond timestamp a UUIDv7 minted by New encodes in its leading 48 bits (RFC 9562 §5.7),
+// truncated to millisecond precision like the ID itself. It reports ok=false for anything that is not shaped
+// like a UUID (wrong length, missing dashes, non-hex digits) or does not carry New's version 7 marker, so
+// callers with an ID from an untrusted or unknown source (a path parameter someone typed by hand, a future
+// generator that stops using UUIDv7) can fall back to treating it as opaque instead of deriving a meaningless
+// timestamp from bytes New never put one in.
+func Time(id string) (time.Time, bool) {
+	b, ok := decode(id)
+	if !ok || b[6]&0xf0 != 0x70 {
+		return time.Time{}, false
+	}
+	ms := int64(b[0])<<40 | int64(b[1])<<32 | int64(b[2])<<24 | int64(b[3])<<16 | int64(b[4])<<8 | int64(b[5])
+	return time.UnixMilli(ms).UTC(), true
+}
+
+// decode parses a canonical 8-4-4-4-12 hex UUID string (the shape format produces) into its 16 raw bytes.
+func decode(id string) ([16]byte, bool) {
+	var b [16]byte
+	if len(id) != 36 || id[8] != '-' || id[13] != '-' || id[18] != '-' || id[23] != '-' {
+		return b, false
+	}
+	var packed [32]byte
+	copy(packed[0:8], id[0:8])
+	copy(packed[8:12], id[9:13])
+	copy(packed[12:16], id[14:18])
+	copy(packed[16:20], id[19:23])
+	copy(packed[20:32], id[24:36])
+	if _, err := hex.Decode(b[:], packed[:]); err != nil {
+		return [16]byte{}, false
+	}
+	return b, true
+}
