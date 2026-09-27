@@ -36,9 +36,10 @@ func newLinkWithoutMaintain(identity *pki.Identity, peer, address string, proxie
 	transport.Protocols.SetHTTP2(true)
 	ctx, cancel := context.WithCancel(context.Background())
 	return &link{
-		key: linkKey(peer, generation, address, proxies), peer: peer, address: address, transport: transport,
-		log: log.With(zap.String("peer", peer), zap.String("address", address)),
-		ctx: ctx, cancel: cancel,
+		key: linkKey(peer, generation, address, proxies), peer: peer, address: address, proxies: ProxyChainLabels(proxies),
+		transport: transport,
+		log:       log.With(zap.String("peer", peer), zap.String("address", address)),
+		ctx:       ctx, cancel: cancel,
 		wake: make(chan struct{}, 1), done: make(chan struct{}),
 	}
 }

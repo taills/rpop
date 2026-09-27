@@ -51,8 +51,10 @@ func linkKey(peer string, generation int64, address string, proxies []snapshot.P
 // and opens more when every connection is at its stream limit.
 type link struct {
 	key, peer, address string
-	log                *zap.Logger
-	transport          *http.Transport
+	// proxies is the link's proxy chain, rendered once for status reports (D15); immutable after construction.
+	proxies   []string
+	log       *zap.Logger
+	transport *http.Transport
 
 	// ctx is canceled by retire, so a dial already in flight in maintain aborts immediately instead of running
 	// to its full dialTimeout+handshakeTimeout (up to 20s): a caller retiring or closing every link (see
@@ -64,7 +66,11 @@ type link struct {
 	conns     []*http.ClientConn
 	failures  int
 	downUntil time.Time
-	retired   bool
+	// lastErr is the most recent dial failure (D19); cleared on the next successful dial. lastSuccess is when a
+	// connection was last established; both are for status reports only and never gate dialing decisions.
+	lastErr     string
+	lastSuccess time.Time
+	retired     bool
 	// dialing is closed when the dial in progress finishes; tunnels wait for it instead of dialing in parallel.
 	dialing chan struct{}
 	wake    chan struct{}
@@ -91,9 +97,10 @@ func newLink(identity *pki.Identity, peer, address string, proxies []snapshot.Pr
 	transport.Protocols.SetHTTP2(true)
 	ctx, cancel := context.WithCancel(context.Background())
 	l := &link{
-		key: linkKey(peer, generation, address, proxies), peer: peer, address: address, transport: transport,
-		log: log.With(zap.String("peer", peer), zap.String("address", address)),
-		ctx: ctx, cancel: cancel,
+		key: linkKey(peer, generation, address, proxies), peer: peer, address: address, proxies: ProxyChainLabels(proxies),
+		transport: transport,
+		log:       log.With(zap.String("peer", peer), zap.String("address", address)),
+		ctx:       ctx, cancel: cancel,
 		wake: make(chan struct{}, 1), done: make(chan struct{}),
 	}
 	go l.maintain()
@@ -175,13 +182,15 @@ func (l *link) dial(ctx context.Context, finished chan struct{}) (*http.ClientCo
 		}
 		l.failures++
 		l.downUntil = time.Now().Add(backoff(l.failures))
+		l.lastErr = err.Error()
 		return nil, err
 	}
 	if l.retired {
 		cc.Close()
 		return nil, errLinkDown
 	}
-	l.failures, l.downUntil = 0, time.Time{}
+	l.failures, l.downUntil, l.lastErr = 0, time.Time{}, ""
+	l.lastSuccess = time.Now()
 	l.conns = append(l.conns, cc)
 	cc.SetStateHook(l.changed)
 	return cc, nil
@@ -287,22 +296,56 @@ func (l *link) retire() {
 	l.changed(nil)
 }
 
-// LinkStatus describes one overlay link for status reports.
+// LinkStatus describes one overlay link for status reports (D15/D19, stage 6).
 type LinkStatus struct {
-	Peer        string `json:"peer"`
-	Address     string `json:"address"`
+	Peer    string `json:"peer"`
+	Address string `json:"address"`
+	// Proxies names the link's proxy chain in dial order, as "type://address" (see ProxyChainLabels); nil for a
+	// direct node-to-node link with no intermediate proxies. Never carries credentials.
+	Proxies []string `json:"proxies,omitempty"`
+	// Status is "up" (at least one live connection), "dialing" (a dial is in flight and none has succeeded
+	// yet), or "down" (backing off, or idle with no connection and no dial in flight).
+	Status      string `json:"status"`
 	Connections int    `json:"connections"`
 	Tunnels     int    `json:"tunnels"`
 	Failures    int    `json:"failures,omitempty"`
+	// DownUntil is when the link's exponential backoff ends (RFC3339, UTC); empty when it is not backing off.
+	DownUntil string `json:"downUntil,omitempty"`
+	// LastError is the most recent dial failure; it never carries proxy credentials (see ProxyChainLabels and
+	// throughProxy's own error formatting, which only ever wrap addresses and response status text). Cleared
+	// once a dial succeeds again.
+	LastError string `json:"lastError,omitempty"`
+	// LastSuccess is when a connection to this peer was last established (RFC3339, UTC); empty if never.
+	LastSuccess string `json:"lastSuccess,omitempty"`
 }
 
 func (l *link) status() LinkStatus {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.pruneLocked()
-	status := LinkStatus{Peer: l.peer, Address: l.address, Connections: len(l.conns), Failures: l.failures}
+	state := "down"
+	switch {
+	case len(l.conns) > 0:
+		state = "up"
+	case l.dialing != nil:
+		state = "dialing"
+	}
+	status := LinkStatus{
+		Peer: l.peer, Address: l.address, Proxies: l.proxies, Status: state,
+		Connections: len(l.conns), Failures: l.failures,
+		DownUntil: formatLinkTime(l.downUntil), LastError: l.lastErr, LastSuccess: formatLinkTime(l.lastSuccess),
+	}
 	for _, cc := range l.conns {
 		status.Tunnels += cc.InFlight()
 	}
 	return status
+}
+
+// formatLinkTime renders a status timestamp as RFC3339 UTC, or "" for the zero value, so a link that never
+// backed off or never succeeded omits the field entirely instead of reporting "0001-01-01T00:00:00Z".
+func formatLinkTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }

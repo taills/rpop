@@ -28,6 +28,21 @@ const (
 
 var tcpDialer = &net.Dialer{Timeout: dialTimeout, KeepAlive: tcpKeepAlive, Control: tuneSocket}
 
+// ProxyChainLabels renders a proxy chain for status reporting, as "type://address" per hop in dial order; it
+// never includes credentials (see throughProxy's own error formatting below, which only ever wraps addresses
+// and response status text). nil for a direct link with no proxies, so callers can compare it against another
+// chain's labels with slices.Equal without normalizing nil against an empty slice.
+func ProxyChainLabels(proxies []snapshot.Proxy) []string {
+	if len(proxies) == 0 {
+		return nil
+	}
+	labels := make([]string, len(proxies))
+	for i, p := range proxies {
+		labels[i] = p.Type + "://" + p.Address
+	}
+	return labels
+}
+
 // DialChain connects to target through proxies in order; with no proxies it dials target directly.
 func DialChain(ctx context.Context, proxies []snapshot.Proxy, target string) (net.Conn, error) {
 	if len(proxies) == 0 {
