@@ -24,6 +24,26 @@ const (
 // several intervals as dead and reconnect.
 const PingInterval = 15 * time.Second
 
+// ProtocolVersionHeader and ProtocolVersion mirror overlay's (D27): the whole rpop wire protocol, southbound
+// control channel and overlay data-plane channel alike, shares one version number, carried on this one header.
+// The canonical values live in package overlay, which southbound already imports for LinkStatus; overlay cannot
+// import southbound back without a cycle, so it cannot alias these instead. Every southbound request
+// (register/renew/watch/status/logs) carries this header, and the controller echoes it on every response, so a
+// single round trip reveals a mismatch in either direction. Bump ProtocolVersion only for a breaking change; see
+// overlay.ProtocolVersion's doc comment.
+const (
+	ProtocolVersionHeader = overlay.ProtocolVersionHeader
+	ProtocolVersion       = overlay.ProtocolVersion
+)
+
+// MinSupportedProtocolVersion is the oldest node protocol version this controller still accepts (D27); a node
+// below it is refused with a prompt to upgrade the node, and one above ProtocolVersion is refused with a prompt
+// to upgrade the controller first (rolling upgrades go control-plane before nodes, mirroring how Kubernetes
+// bounds its own node/control-plane version skew). Only the southbound control channel enforces this window —
+// overlay CONNECT tunnel handshakes never reject over a version mismatch, only log one (see
+// Overlay.checkTunnelProtocolVersion).
+const MinSupportedProtocolVersion = 1
+
 // RegisterRequest exchanges a single-use join token and a CSR for a node certificate.
 type RegisterRequest struct {
 	Token  string `json:"token"`

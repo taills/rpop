@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -135,6 +136,8 @@ func (o *Overlay) serveRelay(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusMethodNotAllowed, "only CONNECT is relayed")
 		return
 	}
+	w.Header().Set(ProtocolVersionHeader, strconv.Itoa(ProtocolVersion))
+	o.checkTunnelProtocolVersion(peer, r.Header.Get(ProtocolVersionHeader))
 	route, ok := (*o.routes.Load())[r.Header.Get(RouteHeader)]
 	if !ok || !slices.Contains(route.From, peer) {
 		refuse(w, http.StatusForbidden, "route is not allowed from this peer")

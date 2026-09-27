@@ -45,8 +45,10 @@ type tunnelTrace struct {
 }
 
 // openTunnel opens a CONNECT stream on a connection the caller reserved. The stream outlives ctx, which only
-// bounds how long the relay may take to connect the next hop.
-func openTunnel(ctx context.Context, cc *http.ClientConn, peer string, header http.Header, trace tunnelTrace) (net.Conn, error) {
+// bounds how long the relay may take to connect the next hop. On success it also returns the relay's
+// Rpop-Protocol-Version response header (D27), or "" if the relay predates it, so the caller can compare it
+// against its own version without a second round trip.
+func openTunnel(ctx context.Context, cc *http.ClientConn, peer string, header http.Header, trace tunnelTrace) (net.Conn, string, error) {
 	reader, writer := io.Pipe()
 	streamCtx, cancel := context.WithCancel(context.Background())
 	name := pki.NodeName(peer)
@@ -68,16 +70,17 @@ func openTunnel(ctx context.Context, cc *http.ClientConn, peer string, header ht
 		if r.err != nil {
 			cancel()
 			writer.CloseWithError(r.err)
-			return nil, r.err
+			return nil, "", r.err
 		}
 		if r.response.StatusCode != http.StatusOK {
 			reason := r.response.Header.Get(ErrorHeader)
 			r.response.Body.Close()
 			cancel()
 			writer.Close()
-			return nil, &RelayError{Peer: peer, Status: r.response.StatusCode, Reason: reason}
+			return nil, "", &RelayError{Peer: peer, Status: r.response.StatusCode, Reason: reason}
 		}
-		return &tunnelConn{body: r.response.Body, writer: writer, cancel: cancel, peer: peer, trace: trace}, nil
+		peerVersion := r.response.Header.Get(ProtocolVersionHeader)
+		return &tunnelConn{body: r.response.Body, writer: writer, cancel: cancel, peer: peer, trace: trace}, peerVersion, nil
 	case <-ctx.Done():
 		cancel()
 		writer.CloseWithError(ctx.Err())
@@ -86,7 +89,7 @@ func openTunnel(ctx context.Context, cc *http.ClientConn, peer string, header ht
 				r.response.Body.Close()
 			}
 		}()
-		return nil, ctx.Err()
+		return nil, "", ctx.Err()
 	}
 }
 

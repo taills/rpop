@@ -38,6 +38,11 @@ type nodeRuntime struct {
 	status   southbound.Status
 	lastSeen time.Time
 	streams  int
+	// protocolVersion/protocolStatus are the rpop protocol version the node reported on its most recent
+	// authenticated southbound call and whether that is "current" or "outdated" relative to
+	// southbound.ProtocolVersion (D27); both are zero/empty before the node's first such call.
+	protocolVersion int
+	protocolStatus  string
 }
 
 // nodeRegistry tracks live node connections and reports.
@@ -93,6 +98,24 @@ func (r *nodeRegistry) snapshot(id string) (nodeRuntime, bool) {
 		return nodeRuntime{}, false
 	}
 	return *runtime, true
+}
+
+// reportProtocolVersion records the protocol version a node reported on an authenticated southbound call
+// (D27) and reports whether this call is the one that first noticed the node fell behind
+// southbound.ProtocolVersion, so checkProtocolVersion (internal/control/southbound.go) can log a Warn once per
+// transition into "outdated" rather than once per call — the same rate-limiting discipline as
+// warnOnLogStatsRegressions.
+func (r *nodeRegistry) reportProtocolVersion(id string, version int) (status string, changed bool) {
+	status = "current"
+	if version < southbound.ProtocolVersion {
+		status = "outdated"
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	runtime := r.get(id)
+	changed = runtime.protocolStatus != status
+	runtime.protocolVersion, runtime.protocolStatus = version, status
+	return status, changed
 }
 
 func (r *nodeRegistry) forget(id string) {
@@ -224,6 +247,12 @@ type nodeView struct {
 	// Logs summarizes the node's log spool and upload pipeline health (D23/D24/D25); nil until the node reports
 	// a status carrying it, and always nil on the embedded node (see southbound.LogStats's doc comment).
 	Logs *southbound.LogStats `json:"logs,omitempty"`
+	// ProtocolVersion/ProtocolStatus report the rpop wire protocol version the node last spoke on an
+	// authenticated southbound call and whether that is "current" or "outdated" relative to this controller's
+	// southbound.ProtocolVersion (D27); both are zero/empty until the node's first such call. The embedded node
+	// (see localNodeView) always reports the controller's own version, since it runs in the same process.
+	ProtocolVersion int    `json:"protocolVersion,omitempty"`
+	ProtocolStatus  string `json:"protocolStatus,omitempty"`
 }
 
 func (c *Control) nodeView(node store.Node) nodeView {
@@ -247,6 +276,7 @@ func (c *Control) nodeView(node store.Node) nodeView {
 		}
 		view.Paths = runtime.status.Paths
 		view.Logs = runtime.status.Logs
+		view.ProtocolVersion, view.ProtocolStatus = runtime.protocolVersion, runtime.protocolStatus
 	}
 	view.InSync = view.Online && view.AppliedRevision == view.PublishedRevision
 	return view
@@ -262,7 +292,8 @@ func (c *Control) localNodeView() nodeView {
 	c.opMu.Unlock()
 	view := nodeView{Node: store.Node{ID: LocalNodeID, Name: "Embedded node"}, Embedded: true, Registered: true,
 		CertGeneration: localGeneration, Online: true,
-		AppliedRevision: revision, Running: c.engine.RunningSites(), Errors: errs, Links: links, Paths: c.engine.PathHealth()}
+		AppliedRevision: revision, Running: c.engine.RunningSites(), Errors: errs, Links: links, Paths: c.engine.PathHealth(),
+		ProtocolVersion: southbound.ProtocolVersion, ProtocolStatus: "current"}
 	if published, ok := c.published.Snapshot(LocalNodeID); ok {
 		view.PublishedRevision = published.Revision
 	}

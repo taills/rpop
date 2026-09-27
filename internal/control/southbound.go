@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -158,6 +159,49 @@ func writeNodeAuthError(w http.ResponseWriter, err error) {
 	writeJSON(w, http.StatusServiceUnavailable, apiError{"node authentication is unavailable"})
 }
 
+// checkProtocolVersion enforces D27's version compatibility window on a southbound request, next to
+// authenticateNode; every one of the five southbound handlers calls it once nodeID is known to be a real,
+// already-provisioned node (authenticateNode's result, or — for registration, which authenticates by token
+// rather than certificate — the node the token was already confirmed to match). It always sets the response's
+// own Rpop-Protocol-Version header, whether or not it goes on to accept the request, so a single round trip
+// reveals a mismatch in either direction. A node outside [MinSupportedProtocolVersion, ProtocolVersion] is
+// refused with 426 Upgrade Required, naming which side needs upgrading first: the controller when the node is
+// ahead (rolling upgrades go control-plane first, mirroring Kubernetes' own version-skew policy), the node when
+// it is behind the floor. A node inside the window but behind ProtocolVersion is accepted; nodeRegistry marks it
+// "outdated" and this logs one Warn per transition into that state, not on every call (see
+// nodeRegistry.reportProtocolVersion). A missing header means the node predates D27 — before nodes started
+// sending one at all — so it is treated the same as MinSupportedProtocolVersion rather than rejected, which
+// keeps every already-deployed node working the moment the controller starts checking.
+func (c *Control) checkProtocolVersion(w http.ResponseWriter, r *http.Request, nodeID string) bool {
+	w.Header().Set(southbound.ProtocolVersionHeader, strconv.Itoa(southbound.ProtocolVersion))
+	version := southbound.MinSupportedProtocolVersion
+	if raw := r.Header.Get(southbound.ProtocolVersionHeader); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, apiError{"invalid " + southbound.ProtocolVersionHeader + " header"})
+			return false
+		}
+		version = parsed
+	}
+	switch {
+	case version > southbound.ProtocolVersion:
+		writeJSON(w, http.StatusUpgradeRequired, apiError{fmt.Sprintf(
+			"node speaks protocol version %d, this controller supports up to %d; upgrade the controller before the node (rolling upgrades go control-plane first)",
+			version, southbound.ProtocolVersion)})
+		return false
+	case version < southbound.MinSupportedProtocolVersion:
+		writeJSON(w, http.StatusUpgradeRequired, apiError{fmt.Sprintf(
+			"node speaks protocol version %d, this controller requires at least %d; upgrade the node",
+			version, southbound.MinSupportedProtocolVersion)})
+		return false
+	}
+	if status, changed := c.nodes.reportProtocolVersion(nodeID, version); status == "outdated" && changed {
+		c.log.Warn("node speaks an outdated protocol version", zap.String("node", nodeID),
+			zap.Int("node_version", version), zap.Int("controller_version", southbound.ProtocolVersion))
+	}
+	return true
+}
+
 // decodeSouthbound reads a JSON body. Unknown fields are accepted so newer nodes can talk to older controllers.
 func decodeSouthbound(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
 	defer r.Body.Close()
@@ -209,6 +253,9 @@ func (c *Control) southboundRegister(w http.ResponseWriter, r *http.Request) {
 	node, err := c.store.GetNode(r.Context(), token.NodeID)
 	if err != nil || !tokenMatches(node, token.Secret) {
 		reject("unknown node or token mismatch")
+		return
+	}
+	if !c.checkProtocolVersion(w, r, node.ID) {
 		return
 	}
 	certificate, certificatePEM, err := ca.SignNode(request.CSRPEM, node.ID, node.CertGeneration+1)
@@ -265,6 +312,9 @@ func (c *Control) southboundRenew(w http.ResponseWriter, r *http.Request) {
 		writeNodeAuthError(w, err)
 		return
 	}
+	if !c.checkProtocolVersion(w, r, node.ID) {
+		return
+	}
 	certificate, certificatePEM, err := ca.SignNode(request.CSRPEM, node.ID, node.CertGeneration)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiError{err.Error()})
@@ -285,6 +335,9 @@ func (c *Control) southboundWatch(w http.ResponseWriter, r *http.Request) {
 	node, err := c.authenticateNode(r)
 	if err != nil {
 		writeNodeAuthError(w, err)
+		return
+	}
+	if !c.checkProtocolVersion(w, r, node.ID) {
 		return
 	}
 	controller := http.NewResponseController(w)
@@ -337,6 +390,9 @@ func (c *Control) southboundStatus(w http.ResponseWriter, r *http.Request) {
 	node, err := c.authenticateNode(r)
 	if err != nil {
 		writeNodeAuthError(w, err)
+		return
+	}
+	if !c.checkProtocolVersion(w, r, node.ID) {
 		return
 	}
 	var status southbound.Status

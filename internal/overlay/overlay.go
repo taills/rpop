@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,6 +40,9 @@ type Overlay struct {
 	// events queues tunnel lifecycle events for asynchronous delivery; see SetTunnelEventSink.
 	events *eventQueue
 	closed bool
+
+	// protocolVersionState backs checkTunnelProtocolVersion (D27).
+	protocolVersionState
 }
 
 // New creates the overlay of the node identity names, tuned with cfg's HTTP/2 window and stream settings (D31;
@@ -198,8 +202,9 @@ func (o *Overlay) tunnel(ctx context.Context, peer string, proxies []snapshot.Pr
 	if err != nil {
 		return nil, fmt.Errorf("link to %s: %w", peer, err)
 	}
-	header := make(http.Header, 3)
+	header := make(http.Header, 4)
 	header.Set(RouteHeader, key)
+	header.Set(ProtocolVersionHeader, strconv.Itoa(ProtocolVersion))
 	if open.logEvents {
 		header.Set(TunnelIDHeader, open.tunnelID)
 		header.Set(TunnelLogHeader, "1")
@@ -208,7 +213,12 @@ func (o *Overlay) tunnel(ctx context.Context, peer string, proxies []snapshot.Pr
 	if open.logEvents && open.reportOwnEnd {
 		trace = tunnelTrace{tunnelID: open.tunnelID, nodeID: o.identity.NodeID, role: RoleEntry, events: o.events, opened: time.Now()}
 	}
-	return openTunnel(ctx, cc, peer, header, trace)
+	conn, peerVersion, err := openTunnel(ctx, cc, peer, header, trace)
+	if err != nil {
+		return nil, err
+	}
+	o.checkTunnelProtocolVersion(peer, peerVersion)
+	return conn, nil
 }
 
 func (o *Overlay) link(peer, address string, generation int64, proxies []snapshot.Proxy) (*link, error) {

@@ -169,6 +169,9 @@ func (c *Control) southboundLogs(w http.ResponseWriter, r *http.Request) {
 		writeNodeAuthError(w, err)
 		return
 	}
+	if !c.checkProtocolVersion(w, r, node.ID) {
+		return
+	}
 	if node.ID == LocalNodeID {
 		// In practice authenticateNode above already refuses this: the embedded node has no row in the nodes
 		// table, so its certificate never resolves to one. This is a defense-in-depth backstop in case that ever
