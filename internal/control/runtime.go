@@ -2,7 +2,6 @@ package control
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -113,36 +112,6 @@ func (c *Control) resolveUpstream(ctx context.Context, siteID string, upstream s
 	return resolved, nil
 }
 
-// applyLocked hands the engine the resolved spec of every site that should run. A site that cannot be resolved
-// keeps the spec it is currently serving. Sites named in rebuild get fresh runtimes even when unchanged.
-func (c *Control) applyLocked(ctx context.Context, rebuild ...string) map[string]error {
-	errs := make(map[string]error)
-	specs := make([]snapshot.Site, 0, len(c.desired))
-	for id := range c.desired {
-		site, err := c.store.Get(ctx, id)
-		if errors.Is(err, store.ErrNotFound) {
-			delete(c.desired, id)
-			continue
-		}
-		var spec snapshot.Site
-		if err == nil {
-			spec, err = c.resolveSite(ctx, site)
-		}
-		if err != nil {
-			errs[id] = err
-			if current, ok := c.engine.Spec(id); ok {
-				specs = append(specs, current)
-			}
-			continue
-		}
-		specs = append(specs, spec)
-	}
-	for id, err := range c.engine.Apply(specs, rebuild...) {
-		errs[id] = err
-	}
-	return errs
-}
-
 // startLocked starts a site, or rebuilds it from the stored configuration when it already runs.
 func (c *Control) startLocked(ctx context.Context, id string) error {
 	if _, err := c.store.Get(ctx, id); err != nil {
@@ -150,9 +119,10 @@ func (c *Control) startLocked(ctx context.Context, id string) error {
 	}
 	wasDesired := c.desired[id]
 	c.desired[id] = true
-	if err := c.applyLocked(ctx, id)[id]; err != nil {
+	if err := c.publishLocked(ctx, id)[id]; err != nil {
 		if !wasDesired && !c.engine.Running(id) {
 			delete(c.desired, id)
+			c.publishLocked(ctx)
 		}
 		return err
 	}
@@ -165,21 +135,23 @@ func (c *Control) start(ctx context.Context, id string) error {
 	return c.startLocked(ctx, id)
 }
 
-func (c *Control) stopLocked(id string) {
+func (c *Control) stopLocked(ctx context.Context, id string) {
 	delete(c.desired, id)
-	c.engine.Stop(id)
+	for siteID, err := range c.publishLocked(ctx) {
+		c.log.Warn("site did not apply while stopping another", zap.String("site_id", siteID), zap.Error(err))
+	}
 }
 
-func (c *Control) stop(id string) error {
+func (c *Control) stop(ctx context.Context, id string) error {
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
-	c.stopLocked(id)
+	c.stopLocked(ctx, id)
 	return nil
 }
 
 // reapplyLocked pushes changed shared settings, such as renewed certificates, to the running sites.
 func (c *Control) reapplyLocked(ctx context.Context) {
-	for id, err := range c.applyLocked(ctx) {
+	for id, err := range c.publishLocked(ctx) {
 		c.log.Warn("could not apply updated settings to site", zap.String("site_id", id), zap.Error(err))
 	}
 }
@@ -195,11 +167,16 @@ func (c *Control) StartAutoSites(ctx context.Context) error {
 	for _, site := range sites {
 		c.desired[site.ID] = true
 	}
-	for id, err := range c.applyLocked(ctx) {
+	failed := false
+	for id, err := range c.publishLocked(ctx) {
 		c.log.Error("auto-start site failed", zap.String("site", id), zap.Error(err))
-		if !c.engine.Running(id) {
+		if !c.engine.Running(id) && c.placedOnLocal(ctx, id) {
 			delete(c.desired, id)
+			failed = true
 		}
+	}
+	if failed {
+		c.publishLocked(ctx)
 	}
 	return nil
 }
@@ -209,7 +186,26 @@ func (c *Control) StopAll() {
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
 	clear(c.desired)
+	c.publishLocked(context.Background())
 	c.engine.StopAll()
+}
+
+// placedOnLocal reports whether a stored site runs on the embedded node.
+func (c *Control) placedOnLocal(ctx context.Context, id string) bool {
+	site, err := c.store.Get(ctx, id)
+	return err == nil && slices.Contains(siteNodes(site.Config), LocalNodeID)
+}
+
+// siteRunning reports whether a site is started: on the embedded node it must be serving, elsewhere it is
+// running once it has been published.
+func (c *Control) siteRunning(site store.Site) bool {
+	if !c.desired[site.ID] {
+		return false
+	}
+	if slices.Contains(siteNodes(site.Config), LocalNodeID) {
+		return c.engine.Running(site.ID)
+	}
+	return true
 }
 
 // DrainAccessLogs waits until every access log produced so far has been written.

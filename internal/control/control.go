@@ -29,6 +29,7 @@ type Control struct {
 	// opMu serializes configuration changes; desired is the set of sites that should run and is guarded by it.
 	opMu             sync.Mutex
 	desired          map[string]bool
+	published        *publication
 	accessLogs       *accesslog.Registry
 	systemSettingsMu sync.RWMutex
 	systemSettings   systemSettings
@@ -42,7 +43,7 @@ type apiError struct {
 }
 
 func New(s *store.Store, l *zap.Logger) *Control {
-	return &Control{store: s, log: l, engine: dataplane.New(l), desired: make(map[string]bool), systemSettings: defaultSystemSettings(), sessions: make(map[string]time.Time), loginAttempts: make(map[string]loginAttempt)}
+	return &Control{store: s, log: l, engine: dataplane.New(l), desired: make(map[string]bool), published: newPublication(), systemSettings: defaultSystemSettings(), sessions: make(map[string]time.Time), loginAttempts: make(map[string]loginAttempt)}
 }
 func (c *Control) Handler() http.Handler {
 	m := http.NewServeMux()
@@ -76,9 +77,11 @@ func (c *Control) yamlConfig(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
+		c.opMu.Lock()
 		for i := range sites {
-			sites[i].Running = c.engine.Running(sites[i].ID)
+			sites[i].Running = c.siteRunning(sites[i])
 		}
+		c.opMu.Unlock()
 		data, err := yaml.Marshal(yamlConfig{Sites: sites})
 		if err != nil {
 			writeError(w, err)
@@ -142,9 +145,11 @@ func (c *Control) sites(w http.ResponseWriter, r *http.Request) {
 			writeError(w, e)
 			return
 		}
+		c.opMu.Lock()
 		for i := range xs {
-			xs[i].Running = c.engine.Running(xs[i].ID)
+			xs[i].Running = c.siteRunning(xs[i])
 		}
+		c.opMu.Unlock()
 		writeJSON(w, 200, xs)
 	case http.MethodPost:
 		var x store.Site
@@ -254,7 +259,7 @@ func (c *Control) site(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 3 && r.Method == http.MethodDelete {
-		_ = c.stop(id)
+		_ = c.stop(r.Context(), id)
 		if err := c.store.Delete(r.Context(), id); err != nil {
 			writeError(w, err)
 			return
@@ -269,7 +274,7 @@ func (c *Control) site(w http.ResponseWriter, r *http.Request) {
 		case "start", "reload", "restart":
 			err = c.start(r.Context(), id)
 		case "stop":
-			err = c.stop(id)
+			err = c.stop(r.Context(), id)
 		default:
 			http.NotFound(w, r)
 			return
@@ -321,6 +326,9 @@ func validate(x store.Site) error {
 	}
 	if x.Config.AccessLog.MaxBodyBytes < -1 {
 		return fmt.Errorf("accessLog.maxBodyBytes must be -1 or a non-negative byte limit")
+	}
+	if err := validatePlacement(x.Config.Nodes); err != nil {
+		return err
 	}
 	if _, err := dataplane.NormalizeHostnames(x.Config.Hostnames); err != nil {
 		return err

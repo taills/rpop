@@ -29,6 +29,8 @@ type AccessLogConfig struct {
 	MaxBodyBytes            int64  `json:"maxBodyBytes,omitempty" yaml:"maxBodyBytes,omitempty"`
 }
 type Config struct {
+	// Nodes places the site on data-plane nodes; empty means the node embedded in the controller.
+	Nodes             []string        `json:"nodes,omitempty" yaml:"nodes,omitempty"`
 	Hostnames         []string        `json:"hostnames,omitempty" yaml:"hostnames,omitempty"`
 	ListenAddress     string          `json:"listenAddress" yaml:"listenAddress"`
 	ListenPort        int             `json:"listenPort" yaml:"listenPort"`

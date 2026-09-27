@@ -679,7 +679,7 @@ func TestSharedListenerRoutesByHostname(t *testing.T) {
 			t.Fatalf("host %s routed to %q (status %d), want %q", host, body, resp.StatusCode, want)
 		}
 	}
-	if err := c.stop("a"); err != nil {
+	if err := c.stop(context.Background(), "a"); err != nil {
 		t.Fatal(err)
 	}
 	if !c.engine.Running("b") {

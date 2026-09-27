@@ -60,6 +60,10 @@ func NewWithLogDir(s *store.Store, logger *zap.Logger, logDir string) (*Control,
 	}
 	registry.SetTimeZone(location)
 	c := New(s, logger)
+	if err := c.loadRevision(context.Background()); err != nil {
+		_ = registry.Close()
+		return nil, err
+	}
 	c.systemSettings = settings
 	c.accessLogs = registry
 	c.engine.SetAccessLogWriter(registryWriter{registry: registry})
