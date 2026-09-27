@@ -2,9 +2,11 @@ package spool
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -80,6 +82,14 @@ func (s *Spool) hasOpenSegment() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.open != nil
+}
+
+// hasUnflushedRecords reports whether the open segment (if any) has records written since its last persist;
+// tests use it to wait for a batch-limit- or interval-triggered persist to actually run before asserting on it.
+func (s *Spool) hasUnflushedRecords() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.open != nil && s.open.unflushedRecords > 0
 }
 
 func testRecord(siteID string) accesslog.Record {
@@ -324,8 +334,9 @@ func TestSpoolRecoversTruncatedSegmentKeepingCompleteLines(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Segment 2: two lines flushed to disk (each write fsyncs), then abandoned without ever calling close, so
-	// the gzip stream on disk has no final trailer - exactly what a crash mid-segment leaves behind.
+	// Segment 2: two lines written and persisted (Flush+fsync, as the write goroutine does once per batch),
+	// then abandoned without ever calling close, so the gzip stream on disk has no final trailer - exactly what
+	// a crash right after a batch's persist, but before the segment closes, leaves behind.
 	crashed, err := createSegmentWriter(dir, 2, time.Now())
 	if err != nil {
 		t.Fatal(err)
@@ -336,6 +347,9 @@ func TestSpoolRecoversTruncatedSegmentKeepingCompleteLines(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := crashed.write(line2b); err != nil {
+		t.Fatal(err)
+	}
+	if err := crashed.persist(); err != nil {
 		t.Fatal(err)
 	}
 	// crashed.file is intentionally left open and never closed/finalized: simulating the process dying here.
@@ -428,4 +442,219 @@ func mustEnvelopeLine(t *testing.T, kind, adapterID string, record any) []byte {
 		t.Fatal(err)
 	}
 	return append(line, '\n')
+}
+
+// TestSpoolBatchedWritesPreserveOrderAndCompleteness writes a run of records - some counts under the batch
+// limit, some crossing it one or more times - and checks that batching (drainBatch persisting every
+// maxBatchRecords/maxBatchBytes instead of every line) never drops, duplicates, or reorders a record. Each
+// record's Path carries its own index so a mismatch anywhere points straight at which record went missing or
+// moved.
+func TestSpoolBatchedWritesPreserveOrderAndCompleteness(t *testing.T) {
+	tests := []struct {
+		name  string
+		count int
+	}{
+		{"singleRecord", 1},
+		{"underBatchLimit", 10},
+		{"exactlyOneBatchLimit", maxBatchRecords},
+		{"justOverOneBatchLimit", maxBatchRecords + 1},
+		{"severalBatchLimitsWorth", 3*maxBatchRecords + 7},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			// MaxSegmentBytes/MaxSegmentAge are both large enough that nothing rotates mid-test: every record
+			// must land in the single segment Flush closes at the end, so completeness/order is easy to check.
+			cfg := Config{Dir: dir, MaxSegmentBytes: 1 << 30, MaxSegmentAge: time.Hour, Log: zap.NewNop()}
+			s, err := newSpool(cfg, realClock{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close(context.Background())
+
+			for i := 0; i < tc.count; i++ {
+				record := testRecord("site-a")
+				record.Path = fmt.Sprintf("/%d", i)
+				for s.WriteAccessLog(context.Background(), "adapter-a", record) != nil {
+					// The queue is momentarily full while the write goroutine catches up; retry rather than
+					// treat this as a real drop, since the test's whole point is that nothing gets dropped.
+				}
+			}
+			if err := s.Flush(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+
+			pending := s.Pending()
+			if len(pending) != 1 {
+				t.Fatalf("expected everything in a single segment, got %+v", pending)
+			}
+			envelopes := readSegmentEnvelopes(t, segmentPath(dir, pending[0].Seq))
+			if len(envelopes) != tc.count {
+				t.Fatalf("expected %d records, got %d", tc.count, len(envelopes))
+			}
+			for i, envelope := range envelopes {
+				var record accesslog.Record
+				if err := json.Unmarshal(envelope.Record, &record); err != nil {
+					t.Fatal(err)
+				}
+				if want := fmt.Sprintf("/%d", i); record.Path != want {
+					t.Fatalf("record %d out of order, duplicated, or missing: want path %q, got %q", i, want, record.Path)
+				}
+			}
+		})
+	}
+}
+
+// TestSpoolPersistIntervalFlushesWithoutClosingSegment checks the second trigger for a persist (alongside the
+// batch-size limits): MaxPersistInterval, which bounds how long a slow trickle of records - never enough to
+// fill a batch - can sit unflushed. It reads the segment file directly (independently of the Spool, which still
+// considers the segment open) to confirm the record actually reached disk, the same way a real crash
+// immediately afterwards would leave it: decodable up to that point, with no gzip trailer since the segment
+// was never closed.
+func TestSpoolPersistIntervalFlushesWithoutClosingSegment(t *testing.T) {
+	dir := t.TempDir()
+	clk := newFakeClock(time.Unix(1_700_000_000, 0))
+	cfg := Config{Dir: dir, MaxSegmentBytes: 1 << 30, MaxSegmentAge: time.Hour, MaxPersistInterval: 2 * time.Second, Log: zap.NewNop()}
+	s, err := newSpool(cfg, clk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close(context.Background())
+
+	record := testRecord("site-a")
+	if err := s.WriteAccessLog(context.Background(), "adapter-a", record); err != nil {
+		t.Fatal(err)
+	}
+	// Wait for the write goroutine to fully account for the line (not just open the segment - hasOpenSegment
+	// can turn true a moment before the record's own byte/record counters are updated) before moving the fake
+	// clock forward, so the persist timer below is armed against the correct lastPersist.
+	waitFor(t, time.Second, s.hasUnflushedRecords)
+
+	path := segmentPath(dir, 1)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decompressBestEffort(before); err == nil {
+		t.Fatal("expected the unpersisted record to not even decode yet")
+	}
+
+	clk.Advance(2*time.Second + time.Millisecond)
+	waitFor(t, time.Second, func() bool { return !s.hasUnflushedRecords() })
+
+	// Still open (persist does not close), but the bytes must now be durably on disk: decodable up to the one
+	// line written, with an error only because the gzip stream has no trailer yet (recoverSegment's normal
+	// "truncated" case).
+	if len(s.Pending()) != 0 {
+		t.Fatalf("expected the persist to not close the segment, got %+v", s.Pending())
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, decodeErr := decompressBestEffort(after)
+	if decodeErr == nil {
+		t.Fatal("expected a still-open segment to lack a gzip trailer")
+	}
+	lines := completeLines(data)
+	if len(lines) == 0 {
+		t.Fatal("expected the interval-triggered persist to have flushed the record's complete line to disk")
+	}
+	var envelope southbound.LogEnvelope
+	if err := json.Unmarshal(bytes.TrimRight(lines, "\n"), &envelope); err != nil {
+		t.Fatalf("recovered line does not parse: %v", err)
+	}
+	if envelope.Kind != southbound.LogKindAccess || envelope.AdapterID != "adapter-a" {
+		t.Fatalf("unexpected envelope persisted by the interval timer: %+v", envelope)
+	}
+}
+
+// TestSpoolRecoversOnlyThePersistedBatchAtCrash simulates a crash that lands between two batches: the first
+// batch was written and persisted (Flush+fsync), the second was written but never persisted before the
+// process died. Recovery must keep exactly the first batch and lose the second one whole - not a truncated
+// remainder of it - since unpersisted bytes never reached disk in the first place (docs/architecture/
+// control-data-plane.md §5, "阶段 5 第 2 步").
+func TestSpoolRecoversOnlyThePersistedBatchAtCrash(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := createSegmentWriter(dir, 1, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedLines := []string{"persisted-1", "persisted-2", "persisted-3"}
+	for _, id := range persistedLines {
+		if err := writer.write(mustEnvelopeLine(t, southbound.LogKindTunnel, "", overlay.TunnelEvent{TunnelID: id})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.persist(); err != nil {
+		t.Fatal(err)
+	}
+	// The crash lands here: a second batch is written to the same still-open segment but never persisted, and
+	// the process (this test) abandons the writer without ever calling close.
+	lostLines := []string{"lost-1", "lost-2"}
+	for _, id := range lostLines {
+		if err := writer.write(mustEnvelopeLine(t, southbound.LogKindTunnel, "", overlay.TunnelEvent{TunnelID: id})); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := saveState(dir, spoolState{NextSegment: 2}); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := newSpool(Config{Dir: dir, MaxSegmentAge: time.Hour, Log: zap.NewNop()}, realClock{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close(context.Background())
+
+	pending := s.Pending()
+	if len(pending) != 1 || pending[0].Seq != 1 {
+		t.Fatalf("expected the salvaged segment 1, got %+v", pending)
+	}
+	recovered := readSegmentEnvelopes(t, segmentPath(dir, 1))
+	if len(recovered) != len(persistedLines) {
+		t.Fatalf("expected exactly the %d persisted lines, got %d", len(persistedLines), len(recovered))
+	}
+	for i, envelope := range recovered {
+		var event overlay.TunnelEvent
+		if err := json.Unmarshal(envelope.Record, &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.TunnelID != persistedLines[i] {
+			t.Fatalf("recovered line %d = %q, want %q (batch reordered or corrupted)", i, event.TunnelID, persistedLines[i])
+		}
+	}
+}
+
+// BenchmarkSpoolWrite measures sustained WriteAccessLog throughput end to end: enqueue plus the write
+// goroutine's actual disk-bound drain (retrying past a momentarily full queue keeps the loop paced by the
+// drain rate instead of just measuring how fast records can be dropped once the queue saturates). Compare
+// against the pre-batching implementation (fsync per line) to quantify the effect of the batch persistence
+// change (docs/architecture/control-data-plane.md §5, "阶段 5 第 2 步").
+func BenchmarkSpoolWrite(b *testing.B) {
+	dir := b.TempDir()
+	cfg := Config{Dir: dir, MaxSegmentBytes: 1 << 30, MaxSegmentAge: time.Hour, Log: zap.NewNop()}
+	s, err := newSpool(cfg, realClock{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	record := testRecord("site-a")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for s.WriteAccessLog(context.Background(), "adapter-a", record) != nil {
+			// The queue is momentarily full; the write goroutine is the bottleneck, so retry instead of
+			// counting a dropped attempt as an iteration (P8 never blocks WriteAccessLog itself).
+		}
+	}
+	if err := s.Flush(context.Background()); err != nil {
+		b.Fatal(err)
+	}
+	b.StopTimer()
+	if err := s.Close(context.Background()); err != nil {
+		b.Fatal(err)
+	}
 }

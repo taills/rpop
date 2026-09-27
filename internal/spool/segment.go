@@ -58,11 +58,20 @@ func listSegmentFiles(dir string) ([]uint64, error) {
 // plain NDJSON and compressing on close, so a crash mid-segment leaves a truncated *gzip* file on disk for
 // recoverSegment to salvage or drop, matching what the architecture doc calls out as the recovery case.
 type segmentWriter struct {
-	seq      uint64
-	file     *os.File
-	gz       *gzip.Writer
-	opened   time.Time
-	rawBytes int64 // uncompressed NDJSON bytes written so far; drives the size-based rotation threshold.
+	seq    uint64
+	file   *os.File
+	gz     *gzip.Writer
+	opened time.Time
+
+	// rawBytes, unflushedRecords, and lastPersist are bookkeeping for the segment currently being written.
+	// Only Spool.loop's goroutine ever calls write/persist/close below, so it is the only one that ever needs
+	// to change these three fields - but Spool.Stats, test helpers, and loop's own next-iteration timer setup
+	// all read them from whichever goroutine happens to call them. Spool holds its own mu around every read
+	// and write of these three fields (never around the gz.Write/Flush/file.Sync calls themselves, so a slow
+	// disk never blocks Pending/Stats/Ack); see Spool.writeRecord and Spool.persistOpen.
+	rawBytes         int64
+	unflushedRecords int
+	lastPersist      time.Time
 }
 
 func createSegmentWriter(dir string, seq uint64, opened time.Time) (*segmentWriter, error) {
@@ -70,24 +79,29 @@ func createSegmentWriter(dir string, seq uint64, opened time.Time) (*segmentWrit
 	if err != nil {
 		return nil, err
 	}
-	return &segmentWriter{seq: seq, file: file, gz: gzip.NewWriter(file), opened: opened}, nil
+	return &segmentWriter{seq: seq, file: file, gz: gzip.NewWriter(file), opened: opened, lastPersist: opened}, nil
 }
 
-// write appends one already-newline-terminated NDJSON line and flushes it to disk immediately. Flushing per
-// line bounds how much a crash can lose to at most the line currently being written; the spool's own queue (not
-// this write) is what keeps that off the hot forwarding path (P8), so the extra fsync cost here is acceptable.
+// write appends one already-newline-terminated NDJSON line to the segment's gzip stream. It only buffers the
+// line in gzip's own internal buffers (and, once those fill, in the OS's page cache via ordinary unsynced
+// Write calls) - it does not flush the gzip stream or fsync the file, so the line is not yet durable. Batching
+// many lines between calls to persist is what turns an fsync-per-record write pattern into a bounded number of
+// fsyncs per batch or per MaxPersistInterval; see persist and Spool.drainBatch. write does not touch rawBytes
+// or unflushedRecords itself - see the segmentWriter doc comment for why the caller (under Spool.mu) does.
 func (w *segmentWriter) write(line []byte) error {
-	if _, err := w.gz.Write(line); err != nil {
-		return err
-	}
+	_, err := w.gz.Write(line)
+	return err
+}
+
+// persist unconditionally flushes every line written since the last persist (or since the segment was opened)
+// out of gzip's internal buffers and fsyncs the underlying file, making them durable. The caller (Spool,
+// holding mu) is responsible for checking unflushedRecords first and for resetting unflushedRecords/lastPersist
+// afterwards - see the segmentWriter doc comment for why persist itself does not touch either field.
+func (w *segmentWriter) persist() error {
 	if err := w.gz.Flush(); err != nil {
 		return err
 	}
-	if err := w.file.Sync(); err != nil {
-		return err
-	}
-	w.rawBytes += int64(len(line))
-	return nil
+	return w.file.Sync()
 }
 
 // close finalizes the gzip stream (trailer and checksum) and fsyncs it, so what recoverSegment sees after a

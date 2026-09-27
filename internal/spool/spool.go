@@ -35,10 +35,31 @@ const (
 	DefaultMaxSegmentBytes int64 = 8 << 20
 	// DefaultMaxSegmentAge closes a segment once it has been open this long, even under DefaultMaxSegmentBytes.
 	DefaultMaxSegmentAge = 30 * time.Second
+	// DefaultMaxPersistInterval bounds how long a written-but-unflushed record can sit in the open segment
+	// before the write goroutine forces a gzip Flush + fsync on its own, even without a full batch (see
+	// maxBatchRecords/maxBatchBytes): a quiet node still gets its buffered records durable within one interval,
+	// rather than waiting on a batch that a trickle of traffic may never fill. 1s keeps that worst-case
+	// exposure small while still amortizing fsync cost by orders of magnitude once traffic is high enough to
+	// hit the batch limits first.
+	DefaultMaxPersistInterval = time.Second
 
 	// queueLength is the ingest queue's capacity; it mirrors dataplane.accessLogQueueLength and
 	// overlay.tunnelEventQueueLength, the two bounded queues that feed a Spool.
 	queueLength = 256
+	// maxBatchRecords bounds how many records the write goroutine appends to the open segment between two
+	// persist (Flush+fsync) calls. It is set well above queueLength: a single "drain whatever's already
+	// queued" pass can never collect more than queueLength records anyway, but a sustained burst keeps
+	// refilling the channel while drainBatch is still draining it, so without an independent cap a busy node
+	// could go arbitrarily long between fsyncs (unbounded loss on crash, and an ever-growing gzip buffer).
+	// 4096 records is small enough to keep that worst case tight while still cutting the fsync rate by roughly
+	// three orders of magnitude relative to one fsync per line under sustained load.
+	maxBatchRecords = 4096
+	// maxBatchBytes bounds the same batch by uncompressed NDJSON bytes instead of record count, so a handful of
+	// very large records (access logs with captured bodies can run up to ~22MiB each, see MaxLogSegmentBytes's
+	// doc comment) can't hold a persist back far past MaxPersistInterval just because they are individually
+	// small in number. Half of DefaultMaxSegmentBytes keeps one batch from ever dominating memory even when a
+	// deployment configures larger segments.
+	maxBatchBytes = DefaultMaxSegmentBytes / 2
 	// quotaWarnInterval rate-limits the "over quota" warning log so a sustained backlog logs once per interval
 	// instead of once per evicted segment.
 	quotaWarnInterval = 10 * time.Second
@@ -58,6 +79,10 @@ type Config struct {
 	// MaxSegmentAge closes the current segment once it has been open this long, even under MaxSegmentBytes, so
 	// a quiet node still uploads its buffered logs promptly; 0 uses DefaultMaxSegmentAge.
 	MaxSegmentAge time.Duration
+	// MaxPersistInterval bounds how long a written record can sit unflushed in the open segment before the
+	// write goroutine fsyncs it on its own, even under maxBatchRecords/maxBatchBytes; 0 uses
+	// DefaultMaxPersistInterval.
+	MaxPersistInterval time.Duration
 	// Log receives diagnostics; a nil Log is replaced with zap.NewNop().
 	Log *zap.Logger
 }
@@ -71,6 +96,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.MaxSegmentAge <= 0 {
 		c.MaxSegmentAge = DefaultMaxSegmentAge
+	}
+	if c.MaxPersistInterval <= 0 {
+		c.MaxPersistInterval = DefaultMaxPersistInterval
 	}
 	if c.Log == nil {
 		c.Log = zap.NewNop()
@@ -95,12 +123,13 @@ type spoolEvent struct {
 // Spool implements dataplane.AccessLogWriter and overlay.TunnelEventSink by durably queuing every record to
 // disk for later upload. Use NewSpool to create one.
 type Spool struct {
-	dir             string
-	quotaBytes      int64
-	maxSegmentBytes int64
-	maxSegmentAge   time.Duration
-	log             *zap.Logger
-	clock           clock
+	dir                string
+	quotaBytes         int64
+	maxSegmentBytes    int64
+	maxSegmentAge      time.Duration
+	maxPersistInterval time.Duration
+	log                *zap.Logger
+	clock              clock
 
 	events chan spoolEvent
 
@@ -142,7 +171,8 @@ func newSpool(cfg Config, clk clock) (*Spool, error) {
 	}
 	s := &Spool{
 		dir: cfg.Dir, quotaBytes: cfg.QuotaBytes, maxSegmentBytes: cfg.MaxSegmentBytes, maxSegmentAge: cfg.MaxSegmentAge,
-		log: cfg.Log, clock: clk,
+		maxPersistInterval: cfg.MaxPersistInterval,
+		log:                cfg.Log, clock: clk,
 		events:      make(chan spoolEvent, queueLength),
 		nextSegment: state.NextSegment, ackedUpTo: state.AckedUpTo,
 		changed: make(chan struct{}, 1), stop: make(chan struct{}), stopped: make(chan struct{}),
@@ -268,26 +298,31 @@ func (s *Spool) loop() {
 	defer close(s.stopped)
 	for {
 		s.mu.Lock()
-		var timerC <-chan time.Time
+		var ageTimer, persistTimer <-chan time.Time
 		if s.open != nil {
-			remaining := s.maxSegmentAge - s.clock.Now().Sub(s.open.opened)
-			if remaining < 0 {
-				remaining = 0
+			ageRemaining := s.maxSegmentAge - s.clock.Now().Sub(s.open.opened)
+			if ageRemaining < 0 {
+				ageRemaining = 0
 			}
-			timerC = s.clock.After(remaining)
+			ageTimer = s.clock.After(ageRemaining)
+			// Only arm the persist timer while there is actually something unflushed to persist; a segment
+			// that just had a batch persisted (or was just opened) has nothing to gain from waking the loop
+			// again before the next record arrives.
+			if s.open.unflushedRecords > 0 {
+				persistRemaining := s.maxPersistInterval - s.clock.Now().Sub(s.open.lastPersist)
+				if persistRemaining < 0 {
+					persistRemaining = 0
+				}
+				persistTimer = s.clock.After(persistRemaining)
+			}
 		}
 		s.mu.Unlock()
 		select {
 		case e := <-s.events:
-			if e.flush != nil {
-				s.mu.Lock()
-				s.closeOpenLocked()
-				s.mu.Unlock()
-				close(e.flush)
-				continue
-			}
-			s.append(e)
-		case <-timerC:
+			s.drainBatch(e)
+		case <-persistTimer:
+			s.persistOpen()
+		case <-ageTimer:
 			s.mu.Lock()
 			if s.open != nil && s.clock.Now().Sub(s.open.opened) >= s.maxSegmentAge {
 				s.closeOpenLocked()
@@ -302,21 +337,88 @@ func (s *Spool) loop() {
 	}
 }
 
-// append serializes one queued record as a southbound.LogEnvelope line, opening a segment first if none is
-// open, then closes the segment if that line reached MaxSegmentBytes. Checking the size after writing (rather
-// than before) means a single oversized record - an access log with large captured bodies, for instance - still
-// lands whole in one segment instead of splitting a record across two; see MaxLogSegmentBytes's doc comment for
-// the resulting worst case.
-func (s *Spool) append(e spoolEvent) {
+// drainBatch handles first (already received from s.events) and then, without blocking, keeps pulling and
+// writing whatever records are already sitting in the channel - "取出队列中已到达的全部记录" - so a burst that
+// arrived while the loop was busy elsewhere is written together instead of one persist per record. It persists
+// (Flush+fsync) partway through whenever the batch reaches maxBatchRecords or maxBatchBytes, and again if a
+// segment happens to close along the way (closing already fsyncs as part of finalizing the segment). It does
+// *not* persist just because the channel ran dry: an idle moment with a small, still-unflushed batch is exactly
+// what MaxPersistInterval (handled by the caller's timer, not here) is for, so a slow trickle of records isn't
+// forced through an fsync for every single one of them either.
+func (s *Spool) drainBatch(first spoolEvent) {
+	e := first
+	var batchRecords int
+	var batchBytes int64
+	for {
+		if e.flush != nil {
+			s.mu.Lock()
+			s.closeOpenLocked() // Flush's contract: force-close the open segment now, which also fsyncs it.
+			s.mu.Unlock()
+			close(e.flush)
+			return
+		}
+		n, segmentClosed := s.writeRecord(e)
+		if segmentClosed {
+			// The old segment's data is already durable via close(); the new segment (if writeRecord opens
+			// one for a later record in this batch) starts its own fresh, unpersisted batch.
+			batchRecords, batchBytes = 0, 0
+		} else {
+			batchRecords++
+			batchBytes += n
+			if batchRecords >= maxBatchRecords || batchBytes >= maxBatchBytes {
+				s.persistOpen()
+				batchRecords, batchBytes = 0, 0
+			}
+		}
+		select {
+		case next := <-s.events:
+			e = next
+		default:
+			return
+		}
+	}
+}
+
+// persistOpen flushes and fsyncs the currently open segment, if any, without closing it, unless nothing has
+// been written to it since the last persist. The gz.Flush/file.Sync I/O itself happens without mu held (a slow
+// disk must never block Pending/Stats/Ack); only reading the s.open pointer beforehand and updating the
+// segment's unflushedRecords/lastPersist bookkeeping afterwards need it (see the segmentWriter doc comment).
+func (s *Spool) persistOpen() {
+	s.mu.Lock()
+	open := s.open
+	hasUnflushed := open != nil && open.unflushedRecords > 0
+	s.mu.Unlock()
+	if !hasUnflushed {
+		return
+	}
+	if err := open.persist(); err != nil {
+		s.log.Error("persist spool segment", zap.Uint64("segment", open.seq), zap.Error(err))
+		return
+	}
+	s.mu.Lock()
+	open.unflushedRecords = 0
+	open.lastPersist = s.clock.Now()
+	s.mu.Unlock()
+}
+
+// writeRecord serializes one queued record as a southbound.LogEnvelope line, opening a segment first if none is
+// open, then closes the segment if that line reached MaxSegmentBytes (reporting that via segmentClosed so
+// drainBatch can reset its own batch counters - the just-closed segment is already durable, and the next
+// segment, if any, starts a fresh batch). Checking the size after writing (rather than before) means a single
+// oversized record - an access log with large captured bodies, for instance - still lands whole in one segment
+// instead of splitting a record across two; see MaxLogSegmentBytes's doc comment for the resulting worst case.
+// bytesWritten is 0 and segmentClosed is false on any marshal or write error; the record is dropped and logged,
+// matching the pre-batching behavior.
+func (s *Spool) writeRecord(e spoolEvent) (bytesWritten int64, segmentClosed bool) {
 	raw, err := json.Marshal(e.record)
 	if err != nil {
 		s.log.Error("marshal log record for spool", zap.String("kind", e.kind), zap.Error(err))
-		return
+		return 0, false
 	}
 	line, err := json.Marshal(southbound.LogEnvelope{Kind: e.kind, AdapterID: e.adapterID, Record: raw})
 	if err != nil {
 		s.log.Error("marshal log envelope for spool", zap.String("kind", e.kind), zap.Error(err))
-		return
+		return 0, false
 	}
 	line = append(line, '\n')
 
@@ -325,21 +427,28 @@ func (s *Spool) append(e spoolEvent) {
 		if err := s.openNewSegmentLocked(); err != nil {
 			s.mu.Unlock()
 			s.log.Error("open spool segment", zap.Error(err))
-			return
+			return 0, false
 		}
 	}
 	open := s.open
 	s.mu.Unlock()
 
+	// The write itself (gz.Write, possibly pushing compressed bytes to the OS) happens without mu held; only
+	// the resulting bookkeeping does, matching persistOpen's split between I/O and state.
 	if err := open.write(line); err != nil {
 		s.log.Error("write spool segment", zap.Uint64("segment", open.seq), zap.Error(err))
+		return 0, false
 	}
 
-	if open.rawBytes >= s.maxSegmentBytes {
-		s.mu.Lock()
+	s.mu.Lock()
+	open.rawBytes += int64(len(line))
+	open.unflushedRecords++
+	closed := open.rawBytes >= s.maxSegmentBytes
+	if closed {
 		s.closeOpenLocked()
-		s.mu.Unlock()
 	}
+	s.mu.Unlock()
+	return int64(len(line)), closed
 }
 
 // openNewSegmentLocked allocates the next segment number and persists it before ever creating the segment's
