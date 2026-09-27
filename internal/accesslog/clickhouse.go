@@ -212,6 +212,9 @@ func (s *clickHouseSink) Search(ctx context.Context, query Query) (SearchResult,
 	if query.Status > 0 {
 		where = append(where, "JSONExtractInt(record, 'status')="+fmt.Sprint(query.Status))
 	}
+	if query.TrackID != "" {
+		where = append(where, "JSONExtractString(record, 'trackId')='"+sqlQuote(query.TrackID)+"'")
+	}
 	if !query.From.IsZero() {
 		where = append(where, "timestamp >= toDateTime64('"+query.From.UTC().Format("2006-01-02 15:04:05.000")+"',3,'UTC')")
 	}

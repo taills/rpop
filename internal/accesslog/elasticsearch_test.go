@@ -108,6 +108,30 @@ func TestElasticsearchAdapterBulkWritesAndSearchesRecords(t *testing.T) {
 	}
 }
 
+func TestElasticsearchSearchFiltersByTrackID(t *testing.T) {
+	var requestBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		requestBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(w, `{"hits":{"total":{"value":0,"relation":"eq"},"hits":[]}}`)
+	}))
+	defer server.Close()
+	sink, err := newElasticsearchSink(ElasticsearchConfig{URL: server.URL, Index: "rpop-access-logs", AuthType: "none"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+	if _, err := sink.Search(context.Background(), Query{TrackID: "0193f2a4-0000-7000-8000-000000000001", Page: 1, PageSize: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(requestBody), `"trackId.keyword":"0193f2a4-0000-7000-8000-000000000001"`) {
+		t.Fatalf("Elasticsearch query did not filter by trackId: %s", requestBody)
+	}
+}
+
 func TestElasticsearchAdapterUsesAPIKeyHeader(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "ApiKey dGVzdC1pZDpkZW1vLWtleQ==" {

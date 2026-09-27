@@ -60,6 +60,66 @@ func TestFileSizeRotationCompressionAndSearch(t *testing.T) {
 	_ = archive.Close()
 }
 
+// TestFileSearchFiltersByTrackID exercises the shared matches() helper (internal/accesslog/manager.go), which
+// the file and s3 sinks both call directly: covering it here covers both.
+func TestFileSearchFiltersByTrackID(t *testing.T) {
+	dir := t.TempDir()
+	manager, err := NewManager(dir, Config{Adapter: "file"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	base := time.Date(2026, 9, 25, 10, 0, 0, 0, time.UTC)
+	records := []Record{
+		{Timestamp: base, SiteID: "site-a", TrackID: "0193f2a4-0000-7000-8000-000000000001", Path: "/one", RequestHeaders: map[string][]string{}, ResponseHeaders: map[string][]string{}},
+		{Timestamp: base.Add(time.Second), SiteID: "site-a", TrackID: "0193f2a4-0000-7000-8000-000000000002", Path: "/two", RequestHeaders: map[string][]string{}, ResponseHeaders: map[string][]string{}},
+	}
+	for _, record := range records {
+		if err := manager.Write(context.Background(), record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := manager.Search(context.Background(), Query{TrackID: "0193f2a4-0000-7000-8000-000000000002", Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 1 || len(result.Records) != 1 || result.Records[0].Path != "/two" {
+		t.Fatalf("TrackID search = %#v, want exactly the record for /two", result)
+	}
+	if empty, err := manager.Search(context.Background(), Query{TrackID: "0193f2a4-0000-7000-8000-00000000ffff", Page: 1, PageSize: 10}); err != nil || empty.Total != 0 {
+		t.Fatalf("TrackID search for an unknown id = %#v, %v, want zero results", empty, err)
+	}
+}
+
+func TestClickHouseSearchFiltersByTrackID(t *testing.T) {
+	var lastQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query().Get("query")
+		switch {
+		case strings.HasPrefix(query, "SELECT name FROM system.tables"):
+			_, _ = io.WriteString(w, "access_logs\n")
+		case strings.Contains(query, "count()"):
+			lastQuery = query
+			_, _ = io.WriteString(w, "0\n")
+		case strings.Contains(query, "SELECT record"):
+			lastQuery = query
+		default:
+			t.Errorf("unexpected ClickHouse query: %q", query)
+		}
+	}))
+	defer server.Close()
+	sink, err := newClickHouseSink(ClickHouseConfig{URL: server.URL, Database: "default", Table: "access_logs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sink.Search(context.Background(), Query{TrackID: "0193f2a4-0000-7000-8000-000000000001", Page: 1, PageSize: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(lastQuery, "JSONExtractString(record, 'trackId')='0193f2a4-0000-7000-8000-000000000001'") {
+		t.Fatalf("ClickHouse query did not filter by trackId: %q", lastQuery)
+	}
+}
+
 func TestRemoteAdapterSplitModeValidation(t *testing.T) {
 	validClickHouse := Config{Adapter: "clickhouse", ClickHouse: ClickHouseConfig{URL: "http://localhost:8123", Database: "default", Table: "access_logs", SplitMode: "day"}}
 	validS3 := Config{Adapter: "s3", S3: S3Config{Region: "us-east-1", Bucket: "logs", AccessKeyID: "key", SecretAccessKey: "secret", SplitMode: "hour"}}

@@ -162,6 +162,9 @@ func (s *elasticsearchSink) Search(ctx context.Context, query Query) (SearchResu
 	if query.SiteID != "" {
 		filters = append(filters, map[string]any{"term": map[string]any{"siteId.keyword": query.SiteID}})
 	}
+	if query.TrackID != "" {
+		filters = append(filters, map[string]any{"term": map[string]any{"trackId.keyword": query.TrackID}})
+	}
 	if query.Status > 0 {
 		filters = append(filters, map[string]any{"term": map[string]any{"status": query.Status}})
 	}

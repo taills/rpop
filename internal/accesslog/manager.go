@@ -203,11 +203,15 @@ func normalizeQuery(q Query) Query {
 	}
 	q.Text = strings.TrimSpace(q.Text)
 	q.SiteID = strings.TrimSpace(q.SiteID)
+	q.TrackID = strings.TrimSpace(q.TrackID)
 	return q
 }
 
 func matches(record Record, query Query) bool {
 	if query.SiteID != "" && record.SiteID != query.SiteID {
+		return false
+	}
+	if query.TrackID != "" && record.TrackID != query.TrackID {
 		return false
 	}
 	if query.Status > 0 && record.Status != query.Status {
