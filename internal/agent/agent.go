@@ -459,6 +459,7 @@ func (a *Agent) status() southbound.Status {
 	for _, id := range status.Running {
 		status.Metrics[id] = a.engine.Metrics(id)
 	}
+	status.Paths = a.engine.PathHealth()
 	if a.spool != nil {
 		stats := a.spool.Stats()
 		status.Logs = &southbound.LogStats{

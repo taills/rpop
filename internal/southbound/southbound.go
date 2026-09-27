@@ -70,6 +70,9 @@ type Status struct {
 	// Links are the node's overlay links to its peers; RelayError explains a relay port that could not bind.
 	Links      []overlay.LinkStatus `json:"links,omitempty"`
 	RelayError string               `json:"relayError,omitempty"`
+	// Paths is the node's per-upstream candidate-path failover state (D18/D19/D20); empty on a node currently
+	// running no paths-based upstream.
+	Paths []dataplane.UpstreamPathHealth `json:"paths,omitempty"`
 	// Logs summarizes the node's log spool and upload pipeline (D23/D24/D25); nil on nodes that have not
 	// initialized a spool (the embedded local node writes access logs directly and never sets this).
 	Logs *LogStats `json:"logs,omitempty"`
