@@ -1,0 +1,90 @@
+.topology-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.topology-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+}
+.topology-legend__group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+.topology-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.topology-legend__swatch {
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+}
+.topology-legend__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  background: var(--bg-card);
+}
+.topology-legend__dot.is-offline {
+  background: var(--bg-tertiary);
+  opacity: 0.55;
+}
+.topology-legend__dot.is-embedded {
+  border-style: dashed;
+}
+
+.topology-scroll {
+  overflow: auto;
+  max-height: 70vh;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+}
+.topology-svg {
+  display: block;
+}
+.topology-svg__column-label {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  fill: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.topology-svg__edge {
+  transition: stroke-width 0.15s ease;
+}
+.topology-svg__node {
+  cursor: pointer;
+}
+.topology-svg__node:hover circle {
+  filter: brightness(1.08);
+}
+.topology-svg__label {
+  font-size: 11px;
+  font-weight: 600;
+  fill: var(--text-primary);
+}
+.topology-svg__sub {
+  font-size: 10px;
+  fill: var(--text-muted);
+}
+
+.topology-proxies {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
