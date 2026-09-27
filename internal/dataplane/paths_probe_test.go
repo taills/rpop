@@ -123,10 +123,15 @@ func TestActiveProbeRestoresAPathAsSoonAsItsCooldownExpires(t *testing.T) {
 	awaitPathHealth(t, engine, time.Second, func(h PathHealth) bool { return h.Status == "cooling" })
 	dialer.setFail(false) // the path "recovers" on its own; only the probe, not a client, will ever notice
 
-	health := awaitPathHealth(t, engine, 2*time.Second, func(h PathHealth) bool { return h.Status == "healthy" })
-	if health.Failures != 0 || health.LastError != "" {
-		t.Fatalf("path health after the probe succeeded = %#v", health)
-	}
+	// Status flips to "healthy" the instant p.until passes, purely from comparing it to the current time (see
+	// pathTransport.health) - the same instant the probe's timer fires, before its dial has even started. So a
+	// poll can catch a brief, legitimate window where Status already reads "healthy" but Failures/LastError
+	// still hold the prior failure, because only the probe's own success (recordSuccessLocked) clears them.
+	// Waiting for the full expected state, rather than Status alone, still fails (via awaitPathHealth's
+	// deadline) if the probe's success never lands, so it does not hide a real regression.
+	awaitPathHealth(t, engine, 2*time.Second, func(h PathHealth) bool {
+		return h.Status == "healthy" && h.Failures == 0 && h.LastError == ""
+	})
 }
 
 func TestActiveProbeReschedulesTheCooldownWhenItFailsToo(t *testing.T) {

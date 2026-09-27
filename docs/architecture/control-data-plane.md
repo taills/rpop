@@ -281,6 +281,7 @@
 - D19 主动探测竞态:`pathTransport` 新增 `cooldownEpoch`,每次 `failed`/`succeeded` 递增;`pathProbe.fire` 拨号前记下 epoch,拨号结果经新方法 `probeResult` 校验 epoch 未变才落地,否则视为过期结果丢弃,不再可能撤销并发真实请求刚记录的失败并取消其重试定时器。
 - ClickHouse 空 `dedup_key`:`Write` 在 `DedupKey()` 为空时用 `crypto/rand` 生成 16 字节随机十六进制串顶替,避免同毫秒、同 `site_id` 的两条空键记录被 `ReplacingMergeTree` 误合并;手工迁移 SQL 相应改为 `INSERT ... SELECT timestamp, site_id, record, if(JSONExtractString(record,'trackId')='',generateUUIDv4(),JSONExtractString(record,'trackId')) FROM 旧表`。
 - `internal/spool/upload_test.go` 的 `TestUploaderRetriesWithBackoffAfterFailuresThenSucceeds`(约 3/500 次在 `-race` 下失败):第二次迭代等待 `LastError()!=""` 时该条件已被上一次失败置真,未能确认 uploader 已重新调用 `clk.After` 便提前 `Advance`,新定时器因此错过推进而永久阻塞;`fakeClock` 新增 `notifyArmed` 通道,测试改为等它确认定时器已注册后再推进,500/500 次通过。
+- `internal/dataplane/paths_probe_test.go` 的 `TestActiveProbeRestoresAPathAsSoonAsItsCooldownExpires`(D19 引入时即存在,约 1%-4% 在 `-race` 下失败,与 D19 竞态修复无关):`pathTransport.health` 的 `Status` 只比较 `until` 与当前时间,在 `until` 到期(定时器触发探测拨号)与探测拨号完成后调用 `recordSuccessLocked` 清空 `failures`/`lastErr` 之间存在一段合法的瞬时窗口——`Status` 已读作 `"healthy"`,但 `Failures`/`LastError` 仍是上一次失败的残留;测试原先轮询到 `Status=="healthy"` 就断言 `Failures==0`,可能落在该窗口内。改为将三者合并进 `awaitPathHealth` 的轮询条件一起等待,若探测真的从未清零(生产回归)仍会在 2s 超时后正确失败,不会掩盖问题;同时给 `PathHealth.Status` 的文档注释补充这一瞬时窗口的说明。500/500 次通过。
 - `TracePage.css` 的 `.trace-gantt__row` 新增 `@media (max-width: 640px)`,窄屏下拆成两行(标签+偏差徽标一行,耗时条+数值一行)。
 
 **已知遗留项**:

@@ -247,7 +247,10 @@ type PathHealth struct {
 	// tries them when none are cooling down.
 	Index int    `json:"index"`
 	Label string `json:"label"`
-	// Status is "healthy" (ready to be tried first) or "cooling" (backing off after a connection failure).
+	// Status is "healthy" (ready to be tried first) or "cooling" (backing off after a connection failure); it
+	// flips to "healthy" the instant Until passes, purely from comparing it to the current time, which can be
+	// slightly before Failures/LastError are cleared - that only happens once a probe or a real request
+	// actually confirms the path is back (see pathTransport.recordSuccessLocked).
 	Status string `json:"status"`
 	// Until is when the path's cooldown ends (RFC3339, UTC); empty when it is not cooling down.
 	Until    string `json:"until,omitempty"`
