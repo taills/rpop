@@ -52,32 +52,6 @@
 .auth-card .primary {
   margin-top: 4px;
 }
-.main-nav {
-  display: flex;
-  gap: 4px;
-}
-.main-nav button {
-  border: 0;
-  background: transparent;
-  padding: 8px 10px;
-  color: #64766b;
-  border-radius: 7px;
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-.main-nav button:hover,
-.main-nav button.active {
-  background: #eaf2e6;
-  color: #365c3c;
-}
-.main.subpage > .hero,
-.main.subpage > .stats,
-.main.subpage > .list-head,
-.main.subpage > .site-list,
-.main.subpage > footer {
-  display: none;
-}
 .system-settings-page {
   display: grid;
   gap: 24px;
@@ -211,20 +185,7 @@
 .settings-message {
   margin-top: 16px;
 }
-.main.subpage .error {
-  margin-top: 20px;
-}
 @media(max-width:700px) {
-  .top-right {
-    gap: 5px;
-  }
-  .main-nav {
-    gap: 0;
-  }
-  .main-nav button {
-    padding: 7px 6px;
-    font-size: 10px;
-  }
   .settings-form {
     grid-template-columns: 1fr;
   }

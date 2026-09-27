@@ -7,7 +7,6 @@ import './styles/tokens.css'
 import './styles/base.css'
 import './Rpop.css'
 import './Admin.css'
-import './Sidebar.css'
 
 createRoot(document.getElementById('app')).render(
   <BrowserRouter>
