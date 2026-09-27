@@ -267,6 +267,13 @@
 - `TracePage.jsx`:每跳的 Gantt 行旁加偏差徽标(超阈值告警色 + 提示语),隧道顶部超阈值时额外提示;新增"按偏差校正显示"开关(默认关闭,状态存 `localStorage`,读写都包了 `try/catch`),说明文案从"以各节点本地时钟为准"改为结合偏差与阈值的描述。
 - `NodesPage`/`NodeDetailPage`/`TopologyPage`:新增 `ProtocolHealthSummary`/`ClockSkewSummary`(`NodeHealthSummary.jsx`),outdated/warn 才显示告警色徽标+提示;`nodeHealth.js` 的 `nodeNeedsAttention` 相应把这两种状态计入"需要关注"。
 
+**阶段 7 审查修复(数据面/日志)**:
+
+- D19 主动探测竞态:`pathTransport` 新增 `cooldownEpoch`,每次 `failed`/`succeeded` 递增;`pathProbe.fire` 拨号前记下 epoch,拨号结果经新方法 `probeResult` 校验 epoch 未变才落地,否则视为过期结果丢弃,不再可能撤销并发真实请求刚记录的失败并取消其重试定时器。
+- ClickHouse 空 `dedup_key`:`Write` 在 `DedupKey()` 为空时用 `crypto/rand` 生成 16 字节随机十六进制串顶替,避免同毫秒、同 `site_id` 的两条空键记录被 `ReplacingMergeTree` 误合并;手工迁移 SQL 相应改为 `INSERT ... SELECT timestamp, site_id, record, if(JSONExtractString(record,'trackId')='',generateUUIDv4(),JSONExtractString(record,'trackId')) FROM 旧表`。
+- `internal/spool/upload_test.go` 的 `TestUploaderRetriesWithBackoffAfterFailuresThenSucceeds`(约 3/500 次在 `-race` 下失败):第二次迭代等待 `LastError()!=""` 时该条件已被上一次失败置真,未能确认 uploader 已重新调用 `clk.After` 便提前 `Advance`,新定时器因此错过推进而永久阻塞;`fakeClock` 新增 `notifyArmed` 通道,测试改为等它确认定时器已注册后再推进,500/500 次通过。
+- `TracePage.css` 的 `.trace-gantt__row` 新增 `@media (max-width: 640px)`,窄屏下拆成两行(标签+偏差徽标一行,耗时条+数值一行)。
+
 ## 6. 非目标
 
 多路径负载均衡/加权分流;请求级透明重试;中继节点完全无入站(NAT 反向建链)。
