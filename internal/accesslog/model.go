@@ -46,9 +46,9 @@ type Record struct {
 }
 
 type Query struct {
-	Text     string
-	SiteID   string
-	Status   int
+	Text   string
+	SiteID string
+	Status int
 	// TrackID filters to the one record (if any) carrying this Rpop-Track-Id (D22); see GET
 	// /api/logging/trace/{trackId} in internal/control.
 	TrackID  string

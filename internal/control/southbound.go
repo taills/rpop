@@ -89,6 +89,7 @@ func (c *Control) SouthboundHandler() http.Handler {
 	m.HandleFunc("POST "+southbound.RenewPath, c.southboundRenew)
 	m.HandleFunc("GET "+southbound.WatchPath, c.southboundWatch)
 	m.HandleFunc("POST "+southbound.StatusPath, c.southboundStatus)
+	m.HandleFunc("POST "+southbound.LogsPath, c.southboundLogs)
 	return m
 }
 
@@ -292,6 +293,7 @@ func (c *Control) southboundStatus(w http.ResponseWriter, r *http.Request) {
 	if !decodeSouthbound(w, r, maxStatusBody, &status) {
 		return
 	}
-	c.nodes.report(node.ID, status)
+	previousLogs := c.nodes.report(node.ID, status)
+	c.warnOnLogStatsRegressions(node.ID, previousLogs, status.Logs)
 	w.WriteHeader(http.StatusNoContent)
 }

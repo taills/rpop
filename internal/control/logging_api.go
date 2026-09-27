@@ -59,13 +59,20 @@ func NewWithLogDir(s *store.Store, logger *zap.Logger, logDir string) (*Control,
 		return nil, err
 	}
 	registry.SetTimeZone(location)
+	tunnelEvents, err := newTunnelEventStore(logDir, logger)
+	if err != nil {
+		_ = registry.Close()
+		return nil, err
+	}
 	c := New(s, logger)
 	if err := c.loadRevision(context.Background()); err != nil {
 		_ = registry.Close()
+		_ = tunnelEvents.Close()
 		return nil, err
 	}
 	c.systemSettings = settings
 	c.accessLogs = registry
+	c.tunnelEvents = tunnelEvents
 	c.engine.SetAccessLogWriter(registryWriter{registry: registry})
 	return c, nil
 }
@@ -153,6 +160,18 @@ func (c *Control) CloseAccessLogs(ctx context.Context) error {
 		return c.accessLogs.Close()
 	}
 	return nil
+}
+
+// Close closes every log store NewWithLogDir opened: the access log adapters (draining first) and the tunnel
+// event store (D22). Call it once, during shutdown, after StopAll.
+func (c *Control) Close(ctx context.Context) error {
+	err := c.CloseAccessLogs(ctx)
+	if c.tunnelEvents != nil {
+		if closeErr := c.tunnelEvents.Close(); err == nil {
+			err = closeErr
+		}
+	}
+	return err
 }
 
 func (c *Control) loggingConfig(w http.ResponseWriter, r *http.Request) {

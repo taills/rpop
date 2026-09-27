@@ -77,7 +77,14 @@ func (c *Control) newLocalOverlay(ctx context.Context) (*localOverlay, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &localOverlay{Overlay: overlay.New(identity, c.log.Named("overlay")), identity: identity, keyPEM: keyPEM}, nil
+	local := &localOverlay{Overlay: overlay.New(identity, c.log.Named("overlay")), identity: identity, keyPEM: keyPEM}
+	// The embedded node runs in this same process, so its tunnel events go straight to the controller's own
+	// store instead of through a spool and an upload (item 4 of stage 5 step 3); its access logs already write
+	// directly through registryWriter for the same reason.
+	if c.tunnelEvents != nil {
+		local.SetTunnelEventSink(localTunnelEventWriter{store: c.tunnelEvents, log: c.log})
+	}
+	return local, nil
 }
 
 // renewLocalIdentity replaces the embedded node's certificate before it expires, since a controller can run

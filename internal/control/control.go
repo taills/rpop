@@ -40,12 +40,18 @@ type Control struct {
 	caMu          sync.Mutex
 	ca            *pki.CA
 	registrations *failureLimiter
-	proxies       proxyRegistry
+	// logIngestLocks serializes concurrent log segment uploads from the same node (D24), so two requests for the
+	// same node can never race to read-then-advance its high-water mark.
+	logIngestLocks *keyedMutex
+	proxies        proxyRegistry
 	// overlay carries the embedded node's upstream paths across other nodes; it is created, under opMu, when a
 	// site on that node first needs it.
 	overlay *localOverlay
 
-	accessLogs       *accesslog.Registry
+	accessLogs *accesslog.Registry
+	// tunnelEvents stores overlay.TunnelEvent records reported by every node (D22); nil unless the controller
+	// was built with NewWithLogDir, like accessLogs.
+	tunnelEvents     *tunnelEventStore
 	systemSettingsMu sync.RWMutex
 	systemSettings   systemSettings
 	authMu           sync.Mutex
@@ -59,7 +65,8 @@ type apiError struct {
 
 func New(s *store.Store, l *zap.Logger) *Control {
 	return &Control{store: s, log: l, engine: dataplane.New(l), desired: make(map[string]bool), published: newPublication(),
-		embedded: true, nodes: newNodeRegistry(), registrations: newFailureLimiter(maxRegisterFailures, registerFailureWindow), systemSettings: defaultSystemSettings(), sessions: make(map[string]time.Time), loginAttempts: make(map[string]loginAttempt)}
+		embedded: true, nodes: newNodeRegistry(), registrations: newFailureLimiter(maxRegisterFailures, registerFailureWindow),
+		logIngestLocks: newKeyedMutex(), systemSettings: defaultSystemSettings(), sessions: make(map[string]time.Time), loginAttempts: make(map[string]loginAttempt)}
 }
 func (c *Control) Handler() http.Handler {
 	m := http.NewServeMux()
@@ -74,6 +81,8 @@ func (c *Control) Handler() http.Handler {
 	m.HandleFunc("/api/logging/adapters", c.loggingAdapters)
 	m.HandleFunc("/api/logging/adapters/", c.loggingAdapter)
 	m.HandleFunc("/api/logs", c.searchLogs)
+	m.HandleFunc("/api/logging/trace/", c.loggingTrace)
+	m.HandleFunc("/api/logging/tunnels/", c.loggingTunnelEvents)
 	m.HandleFunc("/api/config.yaml", c.yamlConfig)
 	m.HandleFunc("/api/sites", c.sites)
 	m.HandleFunc("/api/sites/", c.site)

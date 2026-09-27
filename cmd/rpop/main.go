@@ -148,8 +148,8 @@ func runController(ctx context.Context, logger *zap.Logger, o options) {
 	cancelShutdown()
 	service.StopAll()
 	drainCtx, cancelDrain := context.WithTimeout(context.Background(), 30*time.Second)
-	if err := service.CloseAccessLogs(drainCtx); err != nil {
-		logger.Warn("access log drain or close failed", zap.Error(err))
+	if err := service.Close(drainCtx); err != nil {
+		logger.Warn("log store drain or close failed", zap.Error(err))
 	}
 	cancelDrain()
 }

@@ -71,11 +71,15 @@ func (r *nodeRegistry) connected(id string, delta int) {
 	runtime.lastSeen = time.Now()
 }
 
-func (r *nodeRegistry) report(id string, status southbound.Status) {
+// report stores status and returns the LogStats the node reported last time (nil the first time), so a caller
+// can log when the node's drop counters increase (D25) without a separate, racy read-then-write.
+func (r *nodeRegistry) report(id string, status southbound.Status) *southbound.LogStats {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	runtime := r.get(id)
+	previous := runtime.status.Logs
 	runtime.status, runtime.lastSeen = status, time.Now()
+	return previous
 }
 
 func (r *nodeRegistry) snapshot(id string) (nodeRuntime, bool) {
@@ -205,6 +209,9 @@ type nodeView struct {
 	Running           []string             `json:"running"`
 	RelayError        string               `json:"relayError,omitempty"`
 	Links             []overlay.LinkStatus `json:"links"`
+	// Logs summarizes the node's log spool and upload pipeline health (D23/D24/D25); nil until the node reports
+	// a status carrying it, and always nil on the embedded node (see southbound.LogStats's doc comment).
+	Logs *southbound.LogStats `json:"logs,omitempty"`
 }
 
 func (c *Control) nodeView(node store.Node) nodeView {
@@ -225,6 +232,7 @@ func (c *Control) nodeView(node store.Node) nodeView {
 		if runtime.status.Links != nil {
 			view.Links = runtime.status.Links
 		}
+		view.Logs = runtime.status.Logs
 	}
 	view.InSync = view.Online && view.AppliedRevision == view.PublishedRevision
 	return view
@@ -424,6 +432,7 @@ func (c *Control) nodeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		c.nodes.forget(id)
+		c.logIngestLocks.forget(id)
 		c.publishLocked(r.Context(), publishScope{})
 		w.WriteHeader(http.StatusNoContent)
 	default:
