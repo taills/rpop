@@ -44,6 +44,23 @@ const (
 	// each side is far more margin than that ever needs while still letting a time-partitioned adapter
 	// (ClickHouse, S3, Elasticsearch) skip almost all of its history instead of scanning it end to end.
 	traceQueryWindow = time.Minute
+	// maxLogSegmentJump bounds how far one request may advance a segment number past the node's current
+	// high-water mark (stage 5 security review item 2). A legitimate jump happens when the node's spool drops
+	// its oldest unacked segment under disk quota pressure while offline (D25); segments close at least every
+	// spool.DefaultMaxSegmentAge (30s) or spool.DefaultMaxSegmentBytes (8MiB), whichever comes first, so even a
+	// node that somehow closed one every single second, continuously, for ten years offline would jump under
+	// 3.2*10^8 segments — comfortably under this bound. A jump past it is rejected outright: the node cannot
+	// have a legitimate reason to skip this many segments in one request, and accepting it would let a node (or
+	// an attacker holding its certificate) push the high-water mark far enough ahead that the controller can
+	// never again tell a genuine gap from one manufactured to make it permanently blind to that node's future
+	// segments.
+	maxLogSegmentJump = 1 << 32
+	// warnLogSegmentJumpThreshold is the smaller point past which an accepted jump is still logged at Warn
+	// instead of Info, so an operator notices an unusual gap even though the request was accepted. A node
+	// closing a segment every 30 seconds continuously for a full year offline accumulates roughly 1,051,200
+	// segments (a little over 2^20); this threshold sits at exactly 2^20, so routine quota-drop gaps (typically
+	// tens to low thousands of segments) never trigger it.
+	warnLogSegmentJumpThreshold = 1 << 20
 )
 
 // traceIDPattern validates a trackId/tunnelId path parameter: both are UUIDs minted by internal/traceid.New()
@@ -181,10 +198,23 @@ func (c *Control) southboundLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if segment > current.LogHWM+1 {
+		jump := segment - current.LogHWM
+		if jump > maxLogSegmentJump {
+			// Reject before any write happens, the same as the range check above: a jump this large can never be
+			// a legitimate quota-drop gap (see maxLogSegmentJump's doc comment), so there is nothing to accept.
+			writeJSON(w, http.StatusBadRequest, apiError{"log segment number jumped too far ahead of the node's high-water mark"})
+			return
+		}
 		// A legitimate gap: e.g. the node's spool dropped its oldest segment under quota pressure (D25). Accept
-		// and note it; the controller has no way to recover the skipped segment's records.
-		c.log.Info("log segment sequence jumped ahead of the node's high-water mark",
-			zap.String("node", node.ID), zap.Uint64("previous_hwm", current.LogHWM), zap.Uint64("segment", segment))
+		// and note it; the controller has no way to recover the skipped segment's records. A jump large enough to
+		// be unusual (see warnLogSegmentJumpThreshold) is still accepted, but logged at Warn instead of Info so an
+		// operator notices it.
+		logJump := c.log.Info
+		if jump > warnLogSegmentJumpThreshold {
+			logJump = c.log.Warn
+		}
+		logJump("log segment sequence jumped ahead of the node's high-water mark",
+			zap.String("node", node.ID), zap.Uint64("previous_hwm", current.LogHWM), zap.Uint64("segment", segment), zap.Uint64("jump", jump))
 	}
 
 	body := http.MaxBytesReader(w, r.Body, southbound.MaxLogSegmentBytes)

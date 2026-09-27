@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/zap/zapcore"
+
 	"github.com/rpop-project/rpop/internal/accesslog"
 	"github.com/rpop-project/rpop/internal/overlay"
 	"github.com/rpop-project/rpop/internal/pki"
@@ -88,18 +90,21 @@ func TestSouthboundLogsRejectsMalformedRequests(t *testing.T) {
 // store could never persist as a high-water mark must be rejected before the controller does any of a segment's
 // real work (decompressing or writing its records), not after. Each case uses its own node so an out-of-range
 // attempt in one case can never be mistaken for an idempotent replay against another case's high-water mark.
+// store.MaxLogHWM itself is seeded close to the node's current high-water mark first, so this test exercises
+// only the range check (item 1), not item 2's separate bound on how far a single request may jump ahead.
 func TestSouthboundLogsRejectsOutOfRangeSegmentNumbers(t *testing.T) {
 	h := newIngestHarness(t)
 	tests := []struct {
 		name       string
+		seedHWM    uint64
 		segment    uint64
 		wantStatus int
 	}{
-		{"zero is below the 1-based valid range", 0, http.StatusBadRequest},
-		{"one is the lowest valid segment", 1, http.StatusOK},
-		{"store.MaxLogHWM is the highest valid segment", store.MaxLogHWM, http.StatusOK},
-		{"store.MaxLogHWM plus one has the high bit set", uint64(math.MaxInt64) + 1, http.StatusBadRequest},
-		{"MaxUint64 has the high bit set", math.MaxUint64, http.StatusBadRequest},
+		{"zero is below the 1-based valid range", 0, 0, http.StatusBadRequest},
+		{"one is the lowest valid segment", 0, 1, http.StatusOK},
+		{"store.MaxLogHWM is the highest valid segment", store.MaxLogHWM - 1, store.MaxLogHWM, http.StatusOK},
+		{"store.MaxLogHWM plus one has the high bit set", 0, uint64(math.MaxInt64) + 1, http.StatusBadRequest},
+		{"MaxUint64 has the high bit set", 0, math.MaxUint64, http.StatusBadRequest},
 	}
 	for i, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -107,6 +112,11 @@ func TestSouthboundLogsRejectsOutOfRangeSegmentNumbers(t *testing.T) {
 			token := h.createNode(nodeID)
 			identity := h.register(token)
 			client := nodeClient(identity)
+			if tc.seedHWM != 0 {
+				if err := h.control.store.UpdateNodeLogHWM(context.Background(), nodeID, tc.seedHWM); err != nil {
+					t.Fatal(err)
+				}
+			}
 
 			response := h.uploadSegment(client, tc.segment, nil)
 			defer response.Body.Close()
@@ -123,16 +133,85 @@ func TestSouthboundLogsRejectsOutOfRangeSegmentNumbers(t *testing.T) {
 				}
 				return
 			}
-			if node.LogHWM != 0 {
-				t.Fatalf("LogHWM = %d, want 0 (an out-of-range segment must not be written or acknowledged)", node.LogHWM)
+			if node.LogHWM != tc.seedHWM {
+				t.Fatalf("LogHWM = %d, want %d (an out-of-range segment must not be written or acknowledged)", node.LogHWM, tc.seedHWM)
 			}
 		})
 	}
 }
 
-// TestSouthboundLogsRejectsTheEmbeddedNodeIdentity is a defense-in-depth check (item 2's security note): only
-// the controller itself can mint a certificate for LocalNodeID, but the handler must still refuse one.
-// TestSouthboundLogsRejectsTheEmbeddedNodeIdentity is a defense-in-depth check (item 2's security note): the
+// TestSouthboundLogsBoundsSegmentJumpsAndEscalatesLargeOnesToWarn covers stage 5 security review item 2: a
+// node's log segment sequence is allowed to jump ahead of its high-water mark (a legitimate gap from a spool
+// dropping segments under quota pressure, D25), but a single request must not be able to jump it arbitrarily far
+// ahead, and a jump large enough to be unusual must be visible to an operator at Warn, not buried at Info.
+func TestSouthboundLogsBoundsSegmentJumpsAndEscalatesLargeOnesToWarn(t *testing.T) {
+	h := newIngestHarness(t)
+
+	t.Run("a routine jump is accepted and logged at info", func(t *testing.T) {
+		token := h.createNode("edge-routine-jump")
+		identity := h.register(token)
+		client := nodeClient(identity)
+		h.logs.TakeAll()
+		response := h.uploadSegment(client, 5, nil)
+		if ack := decodeAck(t, response); ack.Ack != 5 {
+			t.Fatalf("ack = %#v, want 5", ack)
+		}
+		foundInfo, foundWarn := false, false
+		for _, entry := range h.logs.All() {
+			if strings.Contains(entry.Message, "jumped ahead") {
+				switch entry.Level {
+				case zapcore.InfoLevel:
+					foundInfo = true
+				case zapcore.WarnLevel:
+					foundWarn = true
+				}
+			}
+		}
+		if !foundInfo || foundWarn {
+			t.Fatalf("routine jump: foundInfo=%v foundWarn=%v, want info only", foundInfo, foundWarn)
+		}
+	})
+
+	t.Run("a jump past the warn threshold but within the hard bound is accepted and logged at warn", func(t *testing.T) {
+		token := h.createNode("edge-large-jump")
+		identity := h.register(token)
+		client := nodeClient(identity)
+		h.logs.TakeAll()
+		response := h.uploadSegment(client, warnLogSegmentJumpThreshold+2, nil)
+		if ack := decodeAck(t, response); ack.Ack != warnLogSegmentJumpThreshold+2 {
+			t.Fatalf("ack = %#v, want %d", ack, warnLogSegmentJumpThreshold+2)
+		}
+		foundWarn := false
+		for _, entry := range h.logs.All() {
+			if strings.Contains(entry.Message, "jumped ahead") && entry.Level == zapcore.WarnLevel {
+				foundWarn = true
+			}
+		}
+		if !foundWarn {
+			t.Fatal("expected a warn-level log entry for the large jump")
+		}
+	})
+
+	t.Run("a jump past the hard bound is rejected and the high-water mark does not move", func(t *testing.T) {
+		token := h.createNode("edge-excessive-jump")
+		identity := h.register(token)
+		client := nodeClient(identity)
+		response := h.uploadSegment(client, maxLogSegmentJump+2, nil)
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", response.StatusCode)
+		}
+		node, err := h.control.store.GetNode(context.Background(), "edge-excessive-jump")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if node.LogHWM != 0 {
+			t.Fatalf("LogHWM = %d, want 0 (an excessive jump must not be written or acknowledged)", node.LogHWM)
+		}
+	})
+}
+
+// TestSouthboundLogsRejectsTheEmbeddedNodeIdentity is a defense-in-depth check: the
 // embedded node has no row in the nodes table, so authenticateNode already rejects a certificate presented for
 // LocalNodeID (unauthenticated, not merely "wrong kind of node"); only the controller itself can mint that
 // certificate to begin with. Either way, the request must never be accepted.
