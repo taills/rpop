@@ -483,11 +483,7 @@ func (c *Control) nodeAPI(w http.ResponseWriter, r *http.Request) {
 	// special-cased here rather than falling into the store.GetNode lookup below like every other id does.
 	// embeddedNode/localNodeView each take c.opMu themselves, so this branch must return before the lock below.
 	if len(parts) == 1 && r.Method == http.MethodGet && id == LocalNodeID {
-		if !c.embeddedNode() {
-			writeError(w, store.ErrNodeNotFound)
-			return
-		}
-		writeJSON(w, http.StatusOK, c.localNodeView())
+		c.nodeAPILocal(w)
 		return
 	}
 	c.opMu.Lock()
@@ -501,63 +497,90 @@ func (c *Control) nodeAPI(w http.ResponseWriter, r *http.Request) {
 	case len(parts) == 1 && r.Method == http.MethodGet:
 		writeJSON(w, http.StatusOK, c.nodeView(node))
 	case len(parts) == 2 && parts[1] == "token" && r.Method == http.MethodPost:
-		token, err := c.issueJoinToken(r.Context(), &node)
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-		if err := c.store.SaveNode(r.Context(), node); err != nil {
-			writeError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, joinTokenResponse{Node: c.nodeView(node), JoinToken: token, ExpiresAt: node.TokenExpiresAt})
+		c.nodeAPIToken(w, r, node)
 	case len(parts) == 1 && r.Method == http.MethodPut:
-		var input nodeMutation
-		if !decode(w, r, &input) {
-			return
-		}
-		input.ID, input.Name = id, strings.TrimSpace(input.Name)
-		if err := input.validate(); err != nil {
-			writeJSON(w, http.StatusBadRequest, apiError{err.Error()})
-			return
-		}
-		if input.RelayAddress == "" && node.RelayAddress != "" {
-			if users, err := c.sitesRelayingThrough(r.Context(), id); err != nil {
-				writeError(w, err)
-				return
-			} else if len(users) > 0 {
-				writeJSON(w, http.StatusConflict, apiError{fmt.Sprintf("node %q relays for sites %s and needs a relay address", id, strings.Join(users, ", "))})
-				return
-			}
-		}
-		node.Name, node.RelayAddress = input.Name, input.RelayAddress
-		if err := c.store.SaveNode(r.Context(), node); err != nil {
-			writeError(w, err)
-			return
-		}
-		c.publishLocked(r.Context(), publishScope{})
-		writeJSON(w, http.StatusOK, c.nodeView(node))
+		c.nodeAPIUpdate(w, r, id, node)
 	case len(parts) == 1 && r.Method == http.MethodDelete:
-		if users, err := c.sitesUsingNode(r.Context(), id); err != nil {
-			writeError(w, err)
-			return
-		} else if len(users) > 0 {
-			writeJSON(w, http.StatusConflict, apiError{fmt.Sprintf("node %q is used by sites %s", id, strings.Join(users, ", "))})
-			return
-		}
-		if err := c.store.DeleteNode(r.Context(), id); err != nil {
-			writeError(w, err)
-			return
-		}
-		c.nodes.forget(id)
-		// logIngestLocks needs no forget: its entries are reference-counted and self-remove once unused (see
-		// keyedMutex's doc comment) rather than requiring one racing this deletion.
-		c.logIngestRate.forget(id)
-		c.publishLocked(r.Context(), publishScope{})
-		w.WriteHeader(http.StatusNoContent)
+		c.nodeAPIDelete(w, r, id)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, apiError{"method not allowed"})
 	}
+}
+
+// nodeAPILocal handles GET /api/nodes/local: the embedded node's view, or 404 when this controller runs none.
+func (c *Control) nodeAPILocal(w http.ResponseWriter) {
+	if !c.embeddedNode() {
+		writeError(w, store.ErrNodeNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, c.localNodeView())
+}
+
+// nodeAPIToken handles POST /api/nodes/{id}/token: issue a fresh join token, invalidating any earlier one.
+// Called with c.opMu already held (see nodeAPI).
+func (c *Control) nodeAPIToken(w http.ResponseWriter, r *http.Request, node store.Node) {
+	token, err := c.issueJoinToken(r.Context(), &node)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := c.store.SaveNode(r.Context(), node); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, joinTokenResponse{Node: c.nodeView(node), JoinToken: token, ExpiresAt: node.TokenExpiresAt})
+}
+
+// nodeAPIUpdate handles PUT /api/nodes/{id}: rename the node or change its relay address, republishing every
+// node's snapshot when it did. Called with c.opMu already held (see nodeAPI).
+func (c *Control) nodeAPIUpdate(w http.ResponseWriter, r *http.Request, id string, node store.Node) {
+	var input nodeMutation
+	if !decode(w, r, &input) {
+		return
+	}
+	input.ID, input.Name = id, strings.TrimSpace(input.Name)
+	if err := input.validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiError{err.Error()})
+		return
+	}
+	if input.RelayAddress == "" && node.RelayAddress != "" {
+		if users, err := c.sitesRelayingThrough(r.Context(), id); err != nil {
+			writeError(w, err)
+			return
+		} else if len(users) > 0 {
+			writeJSON(w, http.StatusConflict, apiError{fmt.Sprintf("node %q relays for sites %s and needs a relay address", id, strings.Join(users, ", "))})
+			return
+		}
+	}
+	node.Name, node.RelayAddress = input.Name, input.RelayAddress
+	if err := c.store.SaveNode(r.Context(), node); err != nil {
+		writeError(w, err)
+		return
+	}
+	c.publishLocked(r.Context(), publishScope{})
+	writeJSON(w, http.StatusOK, c.nodeView(node))
+}
+
+// nodeAPIDelete handles DELETE /api/nodes/{id}: refused while any site still depends on the node, otherwise
+// forgets it everywhere and republishes. Called with c.opMu already held (see nodeAPI).
+func (c *Control) nodeAPIDelete(w http.ResponseWriter, r *http.Request, id string) {
+	if users, err := c.sitesUsingNode(r.Context(), id); err != nil {
+		writeError(w, err)
+		return
+	} else if len(users) > 0 {
+		writeJSON(w, http.StatusConflict, apiError{fmt.Sprintf("node %q is used by sites %s", id, strings.Join(users, ", "))})
+		return
+	}
+	if err := c.store.DeleteNode(r.Context(), id); err != nil {
+		writeError(w, err)
+		return
+	}
+	c.nodes.forget(id)
+	// logIngestLocks needs no forget: its entries are reference-counted and self-remove once unused (see
+	// keyedMutex's doc comment) rather than requiring one racing this deletion.
+	c.logIngestRate.forget(id)
+	c.publishLocked(r.Context(), publishScope{})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // sitesUsingNode lists sites placed on a node or relaying through it, so it cannot be deleted from under them.
