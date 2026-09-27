@@ -78,7 +78,9 @@ func (c *Control) startLocked(ctx context.Context, id string) error {
 		group = &listenerGroup{key: key, address: address, tlsEnabled: site.Config.TLS, routes: make(map[string]*siteRuntime), byHost: make(map[string]*siteRuntime)}
 		server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { c.serveGroup(group, w, r) }), ReadHeaderTimeout: HeaderTimeout, IdleTimeout: 60 * time.Second}
 		if site.Config.TLS {
-			server.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) { return c.certificateForHello(group, hello) }}
+			// Offering h2 lifts the browser limit of six HTTP/1.1 connections per origin, which otherwise starves
+			// concurrent SSE streams. WebSockets stay on HTTP/1.1 because extended CONNECT is not advertised.
+			server.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, NextProtos: []string{"h2", "http/1.1"}, GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) { return c.certificateForHello(group, hello) }}
 			ln = tls.NewListener(ln, server.TLSConfig)
 		}
 		group.server = server
