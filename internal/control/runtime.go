@@ -17,10 +17,16 @@ import (
 // HeaderTimeout bounds how long a client may take to send request headers to the control API.
 const HeaderTimeout = dataplane.HeaderTimeout
 
-// registryWriter stores data-plane access logs in the configured adapters.
+// registryWriter stores data-plane access logs in the configured adapters. It is wired only to the controller's
+// own in-process dataplane.Engine, which applies exclusively the embedded ("local") node's snapshot (see
+// publish.go), so every record it sees was genuinely produced by this process.
 type registryWriter struct{ registry *accesslog.Registry }
 
 func (w registryWriter) WriteAccessLog(ctx context.Context, adapterID string, record accesslog.Record) error {
+	// Stamp the embedded node's own identity, overwriting anything already set: the same "trust the identity
+	// behind the write, not whatever the record claims" rule the southbound ingest path applies to a remote
+	// node's uploads (see internal/control/logs_ingest.go's ingestLogLine, stage 5 security review item 3).
+	record.ReportedBy = LocalNodeID
 	return w.registry.Write(ctx, adapterID, record)
 }
 

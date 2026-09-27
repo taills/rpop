@@ -142,7 +142,7 @@ func (h *ingestHarness) createNode(id string) string {
 	return created.JoinToken
 }
 
-// placeSite creates a site placed on nodeID with access logging on adapterID, so nodeAdapterSet allows uploads
+// placeSite creates a site placed on nodeID with access logging on adapterID, so nodePlacement allows uploads
 // referencing that adapter from that node.
 func (h *ingestHarness) placeSite(id, nodeID, adapterID string) {
 	h.t.Helper()

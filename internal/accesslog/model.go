@@ -13,8 +13,14 @@ type Record struct {
 	SiteID    string    `json:"siteId"`
 	// TrackID is the Rpop-Track-Id the ingress node minted for this request (D22); TunnelID names the cross-node
 	// tunnel the request's upstream connection used, empty for direct (single-node) upstreams.
-	TrackID                string              `json:"trackId,omitempty"`
-	TunnelID               string              `json:"tunnelId,omitempty"`
+	TrackID  string `json:"trackId,omitempty"`
+	TunnelID string `json:"tunnelId,omitempty"`
+	// ReportedBy is the node that produced this record, stamped by the controller from the reporting node's
+	// authenticated identity when it ingests the record (never from anything the record itself claims): the
+	// southbound log ingest handler overwrites it with the mTLS-authenticated node ID, and the embedded ("local")
+	// node's direct write path stamps its own ID the same way, so a node can never attribute a record to another
+	// node's identity (stage 5 security review item 3). Omitted from records written before this field existed.
+	ReportedBy             string              `json:"reportedBy,omitempty"`
 	ClientIP               string              `json:"clientIp,omitempty"`
 	ClientPort             int                 `json:"clientPort,omitempty"`
 	ForwardedFor           string              `json:"forwardedFor,omitempty"`

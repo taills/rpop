@@ -359,6 +359,47 @@ func TestSouthboundLogsCountsBadLinesWithoutFailingTheSegment(t *testing.T) {
 	}
 }
 
+// TestSouthboundLogsRejectsRecordsClaimingAnUnplacedSiteID covers stage 5 security review item 3: a node
+// authenticates itself, not the sites it claims to serve, so it could otherwise attribute a record to any site
+// ID at all, including one placed on a different node entirely, as long as the AdapterID happens to be one this
+// node's own sites are allowed to write to. edge-2's site-b also selects the shared "default" adapter, so the
+// forged line passes the (necessarily coarser, see nodePlacement's doc comment) adapter check and must be
+// caught by the SiteID-placement check instead.
+func TestSouthboundLogsRejectsRecordsClaimingAnUnplacedSiteID(t *testing.T) {
+	h := newIngestHarness(t)
+	tokenA := h.createNode("edge-1")
+	identityA := h.register(tokenA)
+	h.placeSite("site-a", "edge-1", "default")
+
+	tokenB := h.createNode("edge-2")
+	h.register(tokenB)
+	h.placeSite("site-b", "edge-2", "default")
+
+	client := nodeClient(identityA)
+	forged := accessEnvelope(t, "default", accesslog.Record{SiteID: "site-b", Method: "GET", Path: "/forged", Status: 200})
+	// ReportedBy is set to a lie here to prove the controller overwrites it with the authenticated node ID (see
+	// TestSouthboundLogsStampsReportedByWithTheAuthenticatedNode) rather than trusting it.
+	genuine := accessEnvelope(t, "default", accesslog.Record{SiteID: "site-a", Method: "GET", Path: "/genuine", Status: 200, ReportedBy: "someone-else"})
+
+	response := h.uploadSegment(client, 1, []string{forged, genuine})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("upload status = %d, want 200 despite the forged line", response.StatusCode)
+	}
+	if ack := decodeAck(t, response); ack.Ack != 1 {
+		t.Fatalf("ack = %#v, want 1", ack)
+	}
+	result, err := h.control.accessLogs.Search(context.Background(), "default", accesslog.Query{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 1 || result.Records[0].Path != "/genuine" {
+		t.Fatalf("records = %#v, want only the genuine site-a record", result)
+	}
+	if result.Records[0].ReportedBy != "edge-1" {
+		t.Fatalf("ReportedBy = %q, want edge-1 (the authenticated node, never the record's own claim)", result.Records[0].ReportedBy)
+	}
+}
+
 // TestSouthboundLogsWriteFailureDoesNotAdvanceHWM covers D24's "any write failure returns an error and the
 // high-water mark does not advance" requirement, and that a subsequent, successfully-routed retry does advance
 // it (modeling an operator fixing a site's adapter selection).

@@ -106,11 +106,19 @@ type logIngestResult struct {
 	// from "line the node never resends", since a byte-identical resend would fail the same way).
 	undecodableLines int
 	// rejectedAdapterLines counts access records whose AdapterID does not exist, or exists but is not used by
-	// any site currently placed on the reporting node; see nodeAdapterSet's doc comment for the rationale.
+	// any site currently placed on the reporting node; see nodePlacement's doc comment for the rationale.
 	rejectedAdapterLines int
+	// rejectedSiteLines counts access records whose SiteID does not name a site currently placed on the
+	// reporting node: a node authenticates itself, not the sites it serves, so nothing stops it from claiming an
+	// arbitrary SiteID otherwise (stage 5 security review item 3). This is deliberately about the node's
+	// placement, not a delayed record's own site-to-adapter selection at the time it was produced; see
+	// nodePlacement's doc comment.
+	rejectedSiteLines int
 }
 
-func (r logIngestResult) hasDrops() bool { return r.undecodableLines > 0 || r.rejectedAdapterLines > 0 }
+func (r logIngestResult) hasDrops() bool {
+	return r.undecodableLines > 0 || r.rejectedAdapterLines > 0 || r.rejectedSiteLines > 0
+}
 
 // warnOnLogStatsRegressions logs once when a node's self-reported LogStats (Status.Logs) shows its quota or
 // bounded-queue drop counters moved forward since the last report (D25's "count and warn" requirement). previous
@@ -235,7 +243,8 @@ func (c *Control) southboundLogs(w http.ResponseWriter, r *http.Request) {
 	if result.hasDrops() {
 		c.log.Warn("log segment contained records the controller could not place",
 			zap.String("node", node.ID), zap.Uint64("segment", segment),
-			zap.Int("undecodable_lines", result.undecodableLines), zap.Int("rejected_adapter_lines", result.rejectedAdapterLines))
+			zap.Int("undecodable_lines", result.undecodableLines), zap.Int("rejected_adapter_lines", result.rejectedAdapterLines),
+			zap.Int("rejected_site_lines", result.rejectedSiteLines))
 	}
 	// Every record in the segment is durably written at this point; only now may the high-water mark advance
 	// (D24's "write, then persist HWM, then ACK" order).
@@ -254,9 +263,9 @@ func (c *Control) southboundLogs(w http.ResponseWriter, r *http.Request) {
 // record-level) idempotency; see docs/architecture/control-data-plane.md §5.
 func (c *Control) ingestLogSegment(ctx context.Context, nodeID string, gz io.Reader) (logIngestResult, error) {
 	var result logIngestResult
-	allowedAdapters, err := c.nodeAdapterSet(ctx, nodeID)
+	placement, err := c.nodePlacement(ctx, nodeID)
 	if err != nil {
-		return result, fmt.Errorf("resolve node's access log adapters: %w", err)
+		return result, fmt.Errorf("resolve node's site placement: %w", err)
 	}
 	limited := io.LimitReader(gz, maxDecompressedLogSegmentBytes+1)
 	reader := bufio.NewReaderSize(limited, 64<<10)
@@ -270,7 +279,7 @@ func (c *Control) ingestLogSegment(ctx context.Context, nodeID string, gz io.Rea
 		if trimmed := bytes.TrimSpace(line); len(trimmed) > 0 {
 			if len(trimmed) > maxLogRecordLineBytes {
 				result.undecodableLines++
-			} else if err := c.ingestLogLine(ctx, nodeID, allowedAdapters, trimmed, &result); err != nil {
+			} else if err := c.ingestLogLine(ctx, nodeID, placement, trimmed, &result); err != nil {
 				return result, err
 			}
 		}
@@ -287,7 +296,7 @@ func (c *Control) ingestLogSegment(ctx context.Context, nodeID string, gz io.Rea
 // ingestLogLine decodes one envelope and writes it to its destination. Decode failures and placement rejections
 // are counted on result and otherwise ignored (a bad line must never block the rest of the segment); only an
 // actual write failure to a destination is returned as an error.
-func (c *Control) ingestLogLine(ctx context.Context, nodeID string, allowedAdapters map[string]bool, line []byte, result *logIngestResult) error {
+func (c *Control) ingestLogLine(ctx context.Context, nodeID string, placement nodePlacementInfo, line []byte, result *logIngestResult) error {
 	var envelope southbound.LogEnvelope
 	if err := json.Unmarshal(line, &envelope); err != nil {
 		result.undecodableLines++
@@ -301,13 +310,25 @@ func (c *Control) ingestLogLine(ctx context.Context, nodeID string, allowedAdapt
 			return nil
 		}
 		adapterID := strings.TrimSpace(envelope.AdapterID)
-		if adapterID == "" || !allowedAdapters[adapterID] {
+		if adapterID == "" || !placement.allowedAdapters[adapterID] {
 			// Covers both an AdapterID that no longer exists and one that exists but belongs to a site this node
-			// does not (or no longer) host: see nodeAdapterSet's doc comment for why this stays lenient about
+			// does not (or no longer) host: see nodePlacement's doc comment for why this stays lenient about
 			// exactly which site, not just which node.
 			result.rejectedAdapterLines++
 			return nil
 		}
+		if !placement.siteIDs[record.SiteID] {
+			// The node authenticated itself, not the SiteID it claims: without this, an AdapterID any site on
+			// this node may write to (checked above) is all a node needs to attribute a record to a site placed
+			// on a different node, or one that no longer exists (stage 5 security review item 3). A record for a
+			// site that used to be on this node but has since moved off it looks the same as this from here, and
+			// is refused the same way; see nodePlacement's doc comment.
+			result.rejectedSiteLines++
+			return nil
+		}
+		// The reporting node authenticated itself over mTLS; trust that identity over whatever reportedBy the
+		// record claims, the same reasoning as event.NodeID below.
+		record.ReportedBy = nodeID
 		if err := c.accessLogs.Write(ctx, adapterID, record); err != nil {
 			return fmt.Errorf("write access log to adapter %q: %w", adapterID, err)
 		}
@@ -329,28 +350,41 @@ func (c *Control) ingestLogLine(ctx context.Context, nodeID string, allowedAdapt
 	return nil
 }
 
-// nodeAdapterSet lists the access log adapters that any site currently placed on nodeID selects. An uploaded
-// access record's AdapterID only needs to be one of these, not specifically the adapter of the record's own
-// SiteID: the AdapterID travels with the record from whenever the node first observed it (see
-// southbound.LogEnvelope's doc comment), and by the time a delayed segment arrives the site may have moved to a
-// different adapter, or off this node entirely. Rejecting on the coarser "does this node have any business
-// writing to this adapter at all" check tolerates that drift instead of dropping records the moment a site is
-// reconfigured, while still refusing an adapter no site on this node has ever selected.
-func (c *Control) nodeAdapterSet(ctx context.Context, nodeID string) (map[string]bool, error) {
+// nodePlacementInfo is what nodePlacement resolves once per segment (item 3): the access log adapters any site
+// currently placed on the node selects, and the exact set of site IDs currently placed on it.
+type nodePlacementInfo struct {
+	// allowedAdapters is the set of adapter IDs any site placed on the node currently selects. An uploaded access
+	// record's AdapterID only needs to be one of these, not specifically the adapter of the record's own SiteID:
+	// the AdapterID travels with the record from whenever the node first observed it (see
+	// southbound.LogEnvelope's doc comment), and by the time a delayed segment arrives the site may have moved to
+	// a different adapter, or off this node entirely. Checking the coarser "does this node have any business
+	// writing to this adapter at all" tolerates that drift instead of dropping records the moment a site is
+	// reconfigured, while still refusing an adapter no site on this node has ever selected.
+	allowedAdapters map[string]bool
+	// siteIDs is the set of site IDs currently placed on the node, checked against a record's own claimed SiteID
+	// (item 3): unlike allowedAdapters, this is not given the same "used to be true" leniency, since it is the
+	// one check standing between a compromised node and attributing traffic to a site it has nothing to do with.
+	siteIDs map[string]bool
+}
+
+// nodePlacement resolves nodeID's current site placement: see nodePlacementInfo's doc comment for what each of
+// its two sets means and why they tolerate different amounts of drift.
+func (c *Control) nodePlacement(ctx context.Context, nodeID string) (nodePlacementInfo, error) {
 	sites, err := c.store.List(ctx)
 	if err != nil {
-		return nil, err
+		return nodePlacementInfo{}, err
 	}
-	allowed := make(map[string]bool)
+	placement := nodePlacementInfo{allowedAdapters: make(map[string]bool), siteIDs: make(map[string]bool)}
 	for _, site := range sites {
-		if site.Config.AccessLog.AdapterID == "" {
+		if !slices.Contains(siteNodes(site.Config), nodeID) {
 			continue
 		}
-		if slices.Contains(siteNodes(site.Config), nodeID) {
-			allowed[site.Config.AccessLog.AdapterID] = true
+		placement.siteIDs[site.ID] = true
+		if site.Config.AccessLog.AdapterID != "" {
+			placement.allowedAdapters[site.Config.AccessLog.AdapterID] = true
 		}
 	}
-	return allowed, nil
+	return placement, nil
 }
 
 // loggingTrace serves GET /api/logging/trace/{trackId}: the one access log record that carries this track ID,
