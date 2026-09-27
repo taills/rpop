@@ -51,7 +51,8 @@ export default function SitesPage() {
   }, [])
   useEffect(() => { refresh(); refreshSystemSettings(); const timer = setInterval(refresh, 5000); return () => clearInterval(timer) }, [refresh, refreshSystemSettings])
 
-  async function action(site, op) { setBusy(`${site.id}:${op}`); try { await api(`/sites/${encodeURIComponent(site.id)}/${op}`, { method: 'POST' }); await refresh() } catch (e) { toast.error(e.message) } finally { setBusy('') } }
+  const actionLabels = { start: '站点已启动', stop: '站点已停止', reload: '站点已重新加载' }
+  async function action(site, op) { setBusy(`${site.id}:${op}`); try { await api(`/sites/${encodeURIComponent(site.id)}/${op}`, { method: 'POST' }); await refresh(); toast.success(actionLabels[op] || '操作已完成') } catch (e) { toast.error(e.message) } finally { setBusy('') } }
   async function openEditor(site) {
     await refreshSystemSettings()
     setCertFile(null); setKeyFile(null)
@@ -104,6 +105,7 @@ export default function SitesPage() {
       }
       closeEditor()
       await refresh()
+      toast.success(persisted ? '站点已更新' : '站点已创建')
       if (cleanupWarning) toast.warn(cleanupWarning)
     } catch (e) {
       for (const name of uploadedSecrets) {
@@ -115,8 +117,8 @@ export default function SitesPage() {
       setFormError(e.message)
     } finally { setBusy('') }
   }
-  async function importYaml(file) { if (!file) return; try { await api('/config.yaml', { method: 'PUT', headers: { 'Content-Type': 'application/yaml' }, body: file }); await refresh() } catch (e) { toast.error(e.message) } }
-  async function remove(site) { if (!window.confirm(`确定删除站点“${site.name}”？`)) return; try { await api(`/sites/${encodeURIComponent(site.id)}`, { method: 'DELETE' }); await refresh() } catch (e) { toast.error(e.message) } }
+  async function importYaml(file) { if (!file) return; try { await api('/config.yaml', { method: 'PUT', headers: { 'Content-Type': 'application/yaml' }, body: file }); await refresh(); toast.success('配置已导入') } catch (e) { toast.error(e.message) } }
+  async function remove(site) { if (!window.confirm(`确定删除站点“${site.name}”？`)) return; try { await api(`/sites/${encodeURIComponent(site.id)}`, { method: 'DELETE' }); await refresh(); toast.success('站点已删除') } catch (e) { toast.error(e.message) } }
 
   const filtered = sites.filter(x => `${x.name} ${x.id} ${(x.config?.upstreams || []).map(up => up.url).join(' ')}`.toLowerCase().includes(query.toLowerCase()))
   const running = sites.filter(x => x.running).length

@@ -5,6 +5,7 @@ import {
   UiDrawer, UiField, UiInput, UiSelect, UiOps,
 } from '@/components/ui'
 import { PROXY_TYPES, blankProxyForm, buildProxyMutation, proxyDeleteProblem, proxyFormFromView, proxyFormProblem } from '../proxyForm.js'
+import { useToast } from '../stores/toast.js'
 
 const typeOptions = PROXY_TYPES.map((value) => ({ label: value, value }))
 
@@ -17,6 +18,7 @@ function usedByLabel(proxy) {
 // lets an operator create, edit and delete them. Credentials are write-only: editing never shows the stored
 // password, and the form leaves it blank to mean "keep the current one" (see proxyForm.js).
 export default function ProxiesPage() {
+  const { toast } = useToast()
   const [proxies, setProxies] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -39,10 +41,12 @@ export default function ProxiesPage() {
     if (problem) { setDrawer((current) => ({ ...current, error: problem })); return }
     setDrawer((current) => ({ ...current, saving: true, error: '' }))
     try {
-      const path = drawer.isNew ? '/proxies' : `/proxies/${encodeURIComponent(drawer.form.id)}`
-      await api(path, { method: drawer.isNew ? 'POST' : 'PUT', body: JSON.stringify(buildProxyMutation(drawer.form, { isNew: drawer.isNew })) })
+      const { isNew } = drawer
+      const path = isNew ? '/proxies' : `/proxies/${encodeURIComponent(drawer.form.id)}`
+      await api(path, { method: isNew ? 'POST' : 'PUT', body: JSON.stringify(buildProxyMutation(drawer.form, { isNew })) })
       closeDrawer()
       await load()
+      toast.success(isNew ? '代理已创建' : '代理已更新')
     } catch (e) { setDrawer((current) => ({ ...current, saving: false, error: e.message })) }
   }
 
@@ -50,7 +54,7 @@ export default function ProxiesPage() {
     const blocked = proxyDeleteProblem(proxy)
     if (blocked) { setError(blocked); return }
     if (!window.confirm(`确定删除代理“${proxy.name}”？`)) return
-    try { await api(`/proxies/${encodeURIComponent(proxy.id)}`, { method: 'DELETE' }); await load() }
+    try { await api(`/proxies/${encodeURIComponent(proxy.id)}`, { method: 'DELETE' }); await load(); toast.success('代理已删除') }
     catch (e) { setError(e.message); await load() }
   }
 
