@@ -89,7 +89,7 @@
 - `Overlay` 关闭后置位内部 `closed` 标记:节点身份被吊销重新注册会整体替换 overlay,旧实例的 `Apply`/`DialPath` 之后一律返回 `ErrClosed`,不会再建立无人回收的链路或中继端口。节点不再承担中继时,`Apply` 会主动 drain 并释放已有的中继监听,而不是让端口和 accept 协程常驻。`Close` 会等到每条链路的后台重拨协程真正退出后才返回。
 - 出站链路(`newLink`/`PeerClientConfig`)在每次握手时都会校验对端证书的注册代数是否等于当前快照里的 `Peer.Generation`,与中继入站方向的校验(`authorizedPeer`)对称;代数写入 `linkKey`,对端代数变化时旧链路被立即退休、下一次拨号强制走一次新的握手校验,而不是继续信任变更前就已建立的连接。
 - 具名代理中 `"http"` 类型以明文发送 `Proxy-Authorization`,这是该代理类型本身的固有属性(CONNECT 请求在 TLS 建立前发出);跨公网使用时应选 `"https"` 类型,`"http"` 仅适合链路已受其他方式保护的场景(如同机房内网)。
-- 尚未实现:D19 的可选主动探测(回切依赖冷却到期后的真实请求)、按上游配置降级参数、链路/路径健康的控制台展示(阶段 6)。
+- D19 的可选主动探测与按上游配置降级参数已在阶段 7 第 2 步实现(见 §5 末尾);链路/路径健康的控制台展示见阶段 6。
 
 **阶段 5(日志与追踪)第 1 步** 定下以下契约,第 2 步(spool/回传)与第 3 步(控制器 ingest/配额/查询)据此实施:
 
@@ -225,6 +225,8 @@
 - 新增 `-tunnel-event-retention-days`(14)与 `Control.SetTunnelEventRetention`;`tunnel_events.go` 的常量 `tunnelEventRetentionDays` 改为 `tunnelEventStore.retentionDays` 字段,默认值来自新导出常量 `DefaultTunnelEventRetentionDays`。
 - 所有取值在 `cmd/rpop`(新文件 `limits.go`)于 `flag.Parse()` 后立即校验,非法即 `log.Fatal` 并给出范围提示;窗口/流数复用 `overlay.ValidateConfig`/`control.ValidateSouthboundMaxStreamsPerConn`,其余四项(日志 ingest 并发/速率、隧道事件容量/保留期)要求为正数。
 - 未开放项按契约不变:`maxDecompressedLogSegmentBytes`/`maxLogRecordLineBytes`/跳号阈值等协议安全边界常量,以及 `tunnelQueryWindowDays`/`maxOpenTunnelEventFiles`/`tunnelEventPruneInterval` 三个纯性能/实现细节常量均未改动。
+
+**阶段 7 第 2 步实施记录**:`pathTransport` 的建连预算/冷却上下限从包级常量改为逐路径字段(`pathFailoverConfig`),由 `store.Upstream.Failover`(可选,`paths` 的兄弟字段)经 `resolveUpstream` 渲染进快照、`validatePaths` 新增的 `validateFailover` 校验范围(`upstreams[i].failover.xxx`);未配置时行为与常量时代完全一致。D19 主动探测落在新文件 `paths_probe.go`:`pathTransport.failed`/`succeeded` 驱动一个 `time.AfterFunc` 定时器,到期即复用 `dialer.DialPath` 探测一次(只建连不发字节),成功/失败分别调回 `succeeded`/`failed`;`siteRuntime.release` 统一收口定时器与在途拨号的 `context.CancelFunc`,`Engine.Handler` 的一次性预览 runtime 因为永不被 `release`,始终强制关闭探测。全局开关 `Engine.SetPathActiveProbe`(默认开)可被每上游 `Failover.ActiveProbe` 覆盖。前端在 `UpstreamFields` 新增折叠区块,纯逻辑落在 `failoverForm.js`。
 
 ## 6. 非目标
 
