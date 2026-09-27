@@ -54,6 +54,12 @@ type link struct {
 	log                *zap.Logger
 	transport          *http.Transport
 
+	// ctx is canceled by retire, so a dial already in flight in maintain aborts immediately instead of running
+	// to its full dialTimeout+handshakeTimeout (up to 20s): a caller retiring or closing every link (see
+	// Overlay.Close) must not be left waiting on one slow or unreachable peer.
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	mu        sync.Mutex
 	conns     []*http.ClientConn
 	failures  int
@@ -83,9 +89,11 @@ func newLink(identity *pki.Identity, peer, address string, proxies []snapshot.Pr
 	}
 	transport.Protocols = new(http.Protocols)
 	transport.Protocols.SetHTTP2(true)
+	ctx, cancel := context.WithCancel(context.Background())
 	l := &link{
 		key: linkKey(peer, generation, address, proxies), peer: peer, address: address, transport: transport,
-		log:  log.With(zap.String("peer", peer), zap.String("address", address)),
+		log: log.With(zap.String("peer", peer), zap.String("address", address)),
+		ctx: ctx, cancel: cancel,
 		wake: make(chan struct{}, 1), done: make(chan struct{}),
 	}
 	go l.maintain()
@@ -250,10 +258,15 @@ func (l *link) maintain() {
 		}
 		finished := l.beginDialLocked()
 		l.mu.Unlock()
-		ctx, cancel := context.WithTimeout(context.Background(), dialTimeout+handshakeTimeout)
+		ctx, cancel := context.WithTimeout(l.ctx, dialTimeout+handshakeTimeout)
 		_, err := l.dial(ctx, finished)
 		cancel()
 		if err != nil {
+			if l.ctx.Err() != nil {
+				// retire canceled l.ctx mid-dial; this is a shutdown, not a real failure. The next iteration's
+				// top-of-loop retired check handles closing up and returning.
+				continue
+			}
 			l.log.Warn("overlay link is down", zap.Error(err))
 			l.mu.Lock()
 			wait := time.Until(l.downUntil)
@@ -263,11 +276,14 @@ func (l *link) maintain() {
 	}
 }
 
-// retire stops new tunnels on the link; tunnels already open finish on their connections.
+// retire stops new tunnels on the link and cancels any dial currently in flight in maintain, so it and callers
+// waiting on done (see Overlay.Close) are not left blocked on a slow or unreachable peer. Tunnels already open
+// finish on their connections.
 func (l *link) retire() {
 	l.mu.Lock()
 	l.retired = true
 	l.mu.Unlock()
+	l.cancel()
 	l.changed(nil)
 }
 
