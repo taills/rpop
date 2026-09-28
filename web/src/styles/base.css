@@ -96,31 +96,6 @@ code {
   margin-bottom: 16px;
 }
 
-.ui-panel {
-  background: var(--bg-card);
-  border: 1px solid var(--border-primary);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
-  min-width: 0;
-  padding: 14px 16px 16px;
-}
-
-.ui-toolbar {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 10px;
-  flex-wrap: wrap;
-  align-items: center;
-}
-
-.ui-toolbar-right {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-left: auto;
-  flex-wrap: wrap;
-}
-
 .ui-mono {
   font-family: var(--font-mono);
   font-size: 12px;
@@ -205,15 +180,8 @@ code {
   gap: 12px;
 }
 
-.grid-3 {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
 @media (max-width: 900px) {
-  .grid-2,
-  .grid-3 {
+  .grid-2 {
     grid-template-columns: 1fr;
   }
 }
