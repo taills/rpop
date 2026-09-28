@@ -66,6 +66,27 @@ test('layoutTopology compacts columns when a pipeline role has no nodes, so idle
   assert.ok(byId.a.x + 24 <= layout.width, 'a node (even with its radius) must fit inside the reported width')
 })
 
+test('layoutTopology compacts columns when only entry and exit roles are present (no relay in between)', () => {
+  // A narrower variant of the "idle-only" regression above: the gap is in the *middle* of the pipeline rather
+  // than at the end. Entry (raw ROLE_ORDER index 0) and exit (raw index 2) are the only two populated layers,
+  // so they must be drawn as two adjacent columns (0 and 1), not left 200px apart at their raw indices with an
+  // empty relay-shaped gap between them.
+  const nodes = [
+    { id: 'e1', online: true, roles: ['entry'] },
+    { id: 'x1', online: true, roles: ['exit'] },
+  ]
+  const layout = layoutTopology(nodes, { columnWidth: 200, rowHeight: 80, marginX: 50, marginY: 40 })
+  const byId = Object.fromEntries(layout.nodes.map((n) => [n.id, n]))
+  assert.equal(layout.columns.length, 2, 'entry and exit are the only two columns actually drawn')
+  assert.deepEqual(layout.columns.map((c) => c.layer), [0, 2], 'each column still remembers its real ROLE_ORDER index for labeling/coloring, even though it is compacted for layout')
+  assert.equal(byId.e1.x, 50)
+  assert.equal(byId.x1.x, 250, 'exit is compacted into the second drawn slot (250), not positioned at its raw index (450)')
+  assert.equal(layout.width, 50 * 2 + 1 * 200, 'width only reserves space for the 2 columns actually drawn, not the 3 raw entry/relay/exit slots')
+  for (const node of layout.nodes) {
+    assert.ok(node.x >= 0 && node.x <= layout.width, `${node.id}'s x (${node.x}) must fall inside the SVG's reported width (${layout.width})`)
+  }
+})
+
 test('layoutTopology is a pure function of each node\'s own roles, so link cycles cannot affect it', () => {
   // Two nodes that relay to each other (a cycle) still each get a single, well-defined column from their roles
   // alone; layoutTopology never looks at links, so there is nothing here that could recurse.
