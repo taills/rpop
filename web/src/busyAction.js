@@ -31,6 +31,20 @@ export function busyKeyMatches(busy, key) {
   return busy !== null && busy === normalizeBusyKey(key)
 }
 
+// restoreFocusIfStranded re-focuses `element` once an action finishes, but only if focus has landed on <body>
+// in the meantime. A native `disabled` attribute (which is how every busy button in this app blocks a second
+// click, see useBusyAction below) forces the browser to blur a focused element the instant it takes effect —
+// there is no way to keep a disabled button focused — so a keyboard user who activates a button loses their
+// focus position to <body> for as long as the request is in flight, and has to Tab back in from the top of the
+// page afterwards if nothing restores it. This only steps in when focus is still exactly on <body>: if the
+// operator tabbed away to something else while the request was running, that deliberate choice is left alone.
+export function restoreFocusIfStranded(element) {
+  if (!element || typeof document === 'undefined') return
+  if (document.activeElement === document.body && document.body.contains(element)) {
+    element.focus()
+  }
+}
+
 // useBusyAction returns:
 //   - busy: the key currently running, or null
 //   - isBusy(key?): whether that particular key (default key if omitted) is the one running
@@ -51,6 +65,11 @@ export function useBusyAction() {
     const key = normalizeBusyKey(hasExplicitKey ? keyOrAction : undefined)
     const action = hasExplicitKey ? maybeAction : keyOrAction
     if (!canStartBusyAction(runningRef.current)) return undefined
+    // Captured before setBusy below triggers the re-render that disables the button: at this exact point
+    // `document.activeElement` is still whatever the operator was focused on when they triggered this call —
+    // almost always that same button — which is exactly what restoreFocusIfStranded needs to hand focus back
+    // to once the button is enabled again (see its doc comment).
+    const triggerElement = typeof document !== 'undefined' && document.activeElement instanceof HTMLElement ? document.activeElement : null
     runningRef.current = key
     setBusy(key)
     try {
@@ -58,6 +77,10 @@ export function useBusyAction() {
     } finally {
       runningRef.current = null
       setBusy(null)
+      // Deferred past this render: setBusy(null) above only *schedules* the re-render that removes `disabled`,
+      // and a still-disabled button cannot take focus back — queuing this for the next macrotask gives React
+      // (and the browser) time to actually commit that DOM update first.
+      if (triggerElement) setTimeout(() => restoreFocusIfStranded(triggerElement), 0)
     }
   }, [])
 
