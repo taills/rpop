@@ -1,7 +1,11 @@
 /* ProxiesPage — page-specific tweaks that don't belong in the shared .row utility (see styles/base.css). */
 
 /* "认证" 列：用户名后紧跟"已设密码"标签时，.row 默认的 flex-wrap: wrap 会在窄列宽下把标签挤到下一行，
- * 与同列其它单行文字错位（见 docs/architecture/control-data-plane.md §5，"控制台:全站页面样式统一"记录）。 */
-.proxies-auth-cell {
+ * 与同列其它单行文字错位（见 docs/architecture/control-data-plane.md §5，"控制台:全站页面样式统一"记录）。
+ * 选择器写成 .row.proxies-auth-cell（而不是单独的 .proxies-auth-cell）：两者都是单一 class 选择器，
+ * 特异性相同时最终生效的由 CSS 源码顺序决定，而不是看起来更"具体"的那一个——单独一个类名在实测中
+ * 会被 base.css 的 .row 覆盖回 wrap，这正是原来的实现改用行内样式而不是类的原因。复合选择器把特异性
+ * 提到 .row 之上，不必依赖两份 CSS 文件的打包顺序。 */
+.row.proxies-auth-cell {
   flex-wrap: nowrap;
 }
