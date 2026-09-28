@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +20,9 @@ import (
 
 	"github.com/rpop-project/rpop/internal/agent"
 	"github.com/rpop-project/rpop/internal/control"
+	"github.com/rpop-project/rpop/internal/pki"
 	"github.com/rpop-project/rpop/internal/sharedport"
+	"github.com/rpop-project/rpop/internal/southbound"
 	"github.com/rpop-project/rpop/internal/store"
 )
 
@@ -141,19 +146,21 @@ func (c *consoleClient) node(id string) southboundTestNodeState {
 
 // TestSouthboundSharesAddressWithConsoleAndServesBothSNIPaths is stage two's southbound integration test: the
 // console (plaintext) and southbound (TLS) share one address through internal/sharedport.Registry, and a real
-// node completes the whole lifecycle — first registration, then steady-state watch — across both TLS paths
-// startSouthbound registers:
+// node completes the whole lifecycle — first registration, then steady-state watch — over the exact-SNI TLS
+// path startSouthbound registers (registry.PutTLSOwner(addr, pki.ControllerName, ...)): every southbound call a
+// current node makes (register, renew, watch, status) authenticates with a ServerName pinned to
+// pki.ControllerName — pki.BootstrapClientConfig for the first, pki.Identity.ControllerClientConfig for the
+// rest — and crypto/tls sends that as the ClientHello's SNI regardless of the -controller URL's own host (an
+// explicit, non-empty, non-IP Config.ServerName is what crypto/tls's hostnameInSNI checks, not the address being
+// dialed; see BootstrapClientConfig's doc comment), even though the -controller URL below is a literal IP
+// address. The node reaching "registered" and then "online" (its watch stream connected) proves the exact-SNI
+// path works end to end while sharing the address with the console.
 //
-//   - The node's -controller URL below is a literal IP address (127.0.0.1), so its first-ever registration
-//     dials with no SNI at all (crypto/tls omits it for an IP host regardless of pki.BootstrapClientConfig's
-//     ServerName; see that function's doc comment) — this must reach the default TLS owner
-//     (registry.PutDefaultTLSOwner).
-//   - Every call after that (renew, watch, status) authenticates with pki.Identity.ControllerClientConfig,
-//     which pins ServerName to pki.ControllerName — this must reach the exact TLS owner
-//     (registry.PutTLSOwner(addr, pki.ControllerName, ...)).
-//
-// The node reaching "registered" (through the first path) and "online" (its watch stream connected, through the
-// second) proves both.
+// The default TLS owner (registry.PutDefaultTLSOwner) this same address also carries is not exercised by this
+// test at all — a current node never sends an SNI it wouldn't match, so nothing here reaches it. Its own
+// coverage is TestSouthboundBootstrapWithNoSNIReachesDefaultOwner, which dials with no SNI on purpose (what a
+// node predating the SNI pin above still does, and what any client dialing without a ServerName set at all
+// does).
 func TestSouthboundSharesAddressWithConsoleAndServesBothSNIPaths(t *testing.T) {
 	addr := freeAddress(t)
 	testSouthboundRegistersAndWatches(t, addr, addr)
@@ -163,6 +170,87 @@ func TestSouthboundSharesAddressWithConsoleAndServesBothSNIPaths(t *testing.T) {
 // share a port with the console (-southbound-addr distinct from -addr, the common production default).
 func TestSouthboundStillWorksOnItsOwnAddress(t *testing.T) {
 	testSouthboundRegistersAndWatches(t, freeAddress(t), freeAddress(t))
+}
+
+// TestSouthboundBootstrapWithNoSNIReachesDefaultOwner is the genuine counterpart to
+// TestSouthboundSharesAddressWithConsoleAndServesBothSNIPaths's exact-SNI path: it dials southbound with no SNI
+// at all — an explicitly empty tls.Config.ServerName, bypassing net/http's own "fill ServerName from the dial
+// host when empty" behavior (see (*persistConn).addTLS) via a custom DialTLSContext — which is what a node whose
+// binary predates pinning the bootstrap SNI to pki.ControllerName still sends (its BootstrapClientConfig never
+// set ServerName, so net/http filled it from the -controller URL's own host, which crypto/tls then sends as SNI
+// only when that host is not itself a literal IP address; see hostnameInSNI in the standard library and RFC 6066
+// §3), and what any other client that never sets ServerName sends regardless of the URL it dials. The
+// registration reaching the controller and getting back a signed certificate — over an address that also carries
+// the exact-SNI owner (pki.ControllerName) and the plaintext console — proves dispatch.go's fallback order
+// actually lands an unmatched SNI on registry.PutDefaultTLSOwner instead of failing the handshake.
+func TestSouthboundBootstrapWithNoSNIReachesDefaultOwner(t *testing.T) {
+	addr := freeAddress(t)
+	c := startController(t, addr, addr)
+	joinToken := c.createRelayNode("edge-1", "")
+
+	token, err := pki.ParseJoinToken(joinToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, csrPEM, err := pki.NewKeyAndCSR(token.NodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	transport := &http.Transport{
+		// ForceAttemptHTTP2 is required alongside a custom DialTLSContext: net/http's Transport otherwise
+		// stays conservative and leaves HTTP/2 off for a caller supplying its own TLS dialer (see
+		// Transport.protocols), and southbound's handler is HTTP/2 only.
+		ForceAttemptHTTP2: true,
+		DialTLSContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			raw, err := (&net.Dialer{}).DialContext(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			conn := tls.Client(raw, &tls.Config{InsecureSkipVerify: true, ServerName: "", NextProtos: []string{"h2", "http/1.1"}})
+			if err := conn.HandshakeContext(ctx); err != nil {
+				_ = raw.Close()
+				return nil, err
+			}
+			return conn, nil
+		},
+	}
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	t.Cleanup(transport.CloseIdleConnections)
+
+	body, err := json.Marshal(southbound.RegisterRequest{Token: joinToken, CSRPEM: csrPEM})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, "https://"+addr+southbound.RegisterPath, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(southbound.ProtocolVersionHeader, strconv.Itoa(southbound.ProtocolVersion))
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("register with no SNI: %v", err)
+	}
+	defer response.Body.Close()
+	data, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("register with no SNI: status = %d, body = %s", response.StatusCode, data)
+	}
+	var decoded southbound.RegisterResponse
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode register response: %v (%s)", err, data)
+	}
+	if decoded.CertificatePEM == "" || decoded.CAPEM == "" {
+		t.Fatalf("register response missing certificate or CA: %+v", decoded)
+	}
+	certificate, err := pki.ParseCertificate(decoded.CertificatePEM)
+	if err != nil {
+		t.Fatalf("controller issued an unparsable certificate: %v", err)
+	}
+	if id, ok := pki.NodeIDFromCertificate(certificate); !ok || id != token.NodeID {
+		t.Fatalf("certificate names node %q, want %q", id, token.NodeID)
+	}
 }
 
 func testSouthboundRegistersAndWatches(t *testing.T, consoleAddr, southboundAddr string) {
