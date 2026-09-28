@@ -6,7 +6,7 @@ import {
 } from '@/components/ui'
 import { PROXY_TYPES, blankProxyForm, buildProxyMutation, proxyDeleteProblem, proxyFormFromView, proxyFormProblem } from '../proxyForm.js'
 import { useToast } from '../stores/toast.js'
-import { useBusyAction } from '../busyAction.js'
+import { canStartBusyAction, useBusyAction } from '../busyAction.js'
 import './ProxiesPage.css'
 
 const typeOptions = PROXY_TYPES.map((value) => ({ label: value, value }))
@@ -62,9 +62,13 @@ export default function ProxiesPage() {
   // hook is still a single global lock (see busyAction.js), so every row's links are disabled while ANY row
   // is being deleted or the drawer is saving — two overlapping mutations here both refresh the same `proxies`
   // list via load(), and letting one queue behind the other is simpler than reconciling out-of-order refreshes.
+  // The canStartBusyAction check runs before window.confirm (not only inside run()) so a click on a row that's
+  // already blocked by another one's in-flight delete/save doesn't pop a confirm dialog that run() then
+  // silently drops after the operator answers it.
   async function remove(proxy) {
     const blocked = proxyDeleteProblem(proxy)
     if (blocked) { setError(blocked); return }
+    if (!canStartBusyAction(busy)) return
     if (!window.confirm(`确定删除代理“${proxy.name}”？`)) return
     await run(proxy.id, async () => {
       try { await api(`/proxies/${encodeURIComponent(proxy.id)}`, { method: 'DELETE' }); await load(); toast.success('代理已删除') }

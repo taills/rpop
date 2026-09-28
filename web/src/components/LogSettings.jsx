@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useToast } from '../stores/toast.js'
 import { UiAlert, UiButton, UiCard, UiPageHeader } from '@/components/ui'
-import { useBusyAction } from '../busyAction.js'
+import { canStartBusyAction, useBusyAction } from '../busyAction.js'
 import '../Logs.css'
 
 const blankConfig = { adapter: 'file', file: { rotation: 'day', maxSizeBytes: 1073741824, compress: true, keepFiles: 30 }, clickhouse: { url: '', database: 'default', table: 'access_logs', splitMode: 'none', username: '', password: '' }, elasticsearch: { url: '', index: 'rpop-access-logs', splitMode: 'none', authType: 'none', username: '', password: '', apiKey: '' }, s3: { endpoint: '', region: 'us-east-1', bucket: '', prefix: 'rpop/access', splitMode: 'hour', accessKeyId: '', secretAccessKey: '', sessionToken: '', forcePathStyle: true } }
@@ -83,8 +83,11 @@ export default function LogSettings({ api, onChange }) {
 
   // remove is keyed per adapter id so the busy row can show its own "删除中…" state; it still shares the
   // hook's single lock with save() above, so editing/deleting any adapter while another mutation is in flight
-  // is blocked rather than firing a second overlapping /logging/adapters request.
+  // is blocked rather than firing a second overlapping /logging/adapters request. The canStartBusyAction check
+  // runs before window.confirm (not only inside run()) so deleting one row while another mutation is already
+  // in flight doesn't pop a confirm dialog that run() then silently drops after the operator answers it.
   async function remove(adapter) {
+    if (!canStartBusyAction(busy)) return
     if (!window.confirm(`删除日志适配器“${adapter.name}”？已绑定站点的适配器不能删除。`)) return
     await run(adapter.id, async () => {
       setError('')
@@ -157,7 +160,13 @@ export default function LogSettings({ api, onChange }) {
           <label className="log-check"><input type="checkbox" checked={config.s3.forcePathStyle} onChange={e => patch('s3', 'forcePathStyle', e.target.checked)}/> 使用 Path-style URL（MinIO 常用）</label>
         </>}
         <div className="log-settings-warning">存储凭证保存在 SQLite 中且未加密。请保护数据库和备份文件；更新时密钥留空会保留已有值。</div>
-        <div className="log-editor-actions"><button type="button" className="secondary" disabled={saving} onClick={closeEditor}>取消</button><button className="primary" disabled={saving} aria-busy={saving || undefined}>{saving ? '保存中…' : '保存适配器'}</button></div>
+        {/* disabled uses Boolean(busy), not `saving` (isBusy('save')): deleting a different adapter in the
+            list above locks this hook the same way, so this form's buttons must look blocked too — otherwise
+            they'd stay clickable and the click would be silently dropped by run()'s single-slot guard, same
+            class of bug as the list buttons above already avoided by using Boolean(busy) instead of a
+            per-row key match. aria-busy/label still key off `saving` so the spinner only lights up for this
+            form's own save. */}
+        <div className="log-editor-actions"><button type="button" className="secondary" disabled={Boolean(busy)} onClick={closeEditor}>取消</button><button className="primary" disabled={Boolean(busy)} aria-busy={saving || undefined}>{saving ? '保存中…' : '保存适配器'}</button></div>
       </form>
       </div>
     </UiCard>}
