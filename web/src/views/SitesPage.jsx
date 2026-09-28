@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api.js'
 import '../Rpop.css'
 import '../Admin.css'
+import { UiButton, UiPageHeader } from '@/components/ui'
 import SiteListItem from '../components/SiteListItem.jsx'
 import SiteEditor from '../components/SiteEditor.jsx'
 import { addUpstream, applySections, blankUpstream, makeDefaultUpstream, prepareSiteForEditing, removeUpstream, sectionsForSite, uploadSlot, validateSections } from '../siteForm.js'
@@ -123,8 +124,13 @@ export default function SitesPage() {
   const filtered = sites.filter(x => `${x.name} ${x.id} ${(x.config?.upstreams || []).map(up => up.url).join(' ')}`.toLowerCase().includes(query.toLowerCase()))
   const running = sites.filter(x => x.running).length
 
-  return <div className="main">
-    <section className="hero"><div><div className="eyebrow">REVERSE PROXY OVER PROXY</div><h1>站点代理管理</h1><p>统一管理反向代理站点与独立出站链路。</p></div><button className="primary" onClick={() => openEditor(blank)}>＋ 新建站点</button></section>
+  return <div className="ui-page">
+    <UiPageHeader
+      eyebrow="REVERSE PROXY OVER PROXY"
+      title="站点代理管理"
+      sub="统一管理反向代理站点与独立出站链路。"
+      actions={<UiButton variant="primary" icon="plus" onClick={() => openEditor(blank)}>新建站点</UiButton>}
+    />
     {error && <div className="error">{error}<button onClick={() => setError('')}>×</button></div>}
     <section className="stats"><article><small>站点总数</small><strong>{sites.length.toString().padStart(2, '0')}</strong><span>已配置代理站点</span></article><article><small>运行中</small><strong className="green">{running.toString().padStart(2, '0')}</strong><span>正在接收流量</span></article><article><small>已停止</small><strong>{(sites.length - running).toString().padStart(2, '0')}</strong><span>可随时启动</span></article><article className="health"><small>系统状态</small><strong><i className="live-dot"/> HEALTHY</strong><span>SQLite 持久化 · API 正常</span></article></section>
     <section className="list-head"><div><h2>代理站点</h2><p>每个站点拥有独立监听器、TLS 与上游连接策略</p></div><label className="search">⌕ <input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索站点"/></label><a className="yaml-link" href="/api/config.yaml">导出 YAML</a><label className="yaml-upload">导入 YAML<input type="file" accept=".yaml,.yml" onChange={e => importYaml(e.target.files?.[0])}/></label></section>

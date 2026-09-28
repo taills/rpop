@@ -1,6 +1,4 @@
-.pad {
-  padding: 14px 16px 16px;
-}
+/* .pad 现在是 base.css 的全局工具类（生产构建也会打包），这里不再重复定义。 */
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

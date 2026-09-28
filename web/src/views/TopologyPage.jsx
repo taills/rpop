@@ -80,7 +80,7 @@ export default function TopologyPage() {
   const edges = useMemo(() => groupEdges(data?.links || []), [data])
 
   return (
-    <div className="topology-page">
+    <div className="ui-page topology-page">
       <UiPageHeader title="拓扑" sub="按入口 → 中继 → 出口分层展示节点与节点间链路的实时健康状态。" />
       {error && <UiAlert type="error" title="加载失败">{error}</UiAlert>}
       {!data

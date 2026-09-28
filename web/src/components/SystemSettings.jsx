@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import TimezoneSelect from './TimezoneSelect.jsx'
 import KeyedCertificateManager, { CLIENT_CERTIFICATE_KIND, SERVER_CERTIFICATE_KIND } from './KeyedCertificateManager.jsx'
+import { UiPageHeader } from '@/components/ui'
 
 function cleanRootCertificate(certificate) {
   return {
@@ -180,12 +181,12 @@ export default function SystemSettings({ api, onChange }) {
   const normalizedCertificateQuery = certificateQuery.trim().toLowerCase()
   const visibleRootCertificates = rootCertificates.filter(certificate => !normalizedCertificateQuery || `${certificate.name} ${certificate.id}`.toLowerCase().includes(normalizedCertificateQuery))
 
-  return <div className="system-settings-page">
-    <header className="system-settings-heading">
-      <div className="eyebrow">SYSTEM</div>
-      <h2>系统设置</h2>
-      <p>管理系统时区、站点 HTTPS 证书、上游 HTTPS CA 根证书、mTLS Client 证书和管理员密码。</p>
-    </header>
+  return <div className="ui-page system-settings-page">
+    <UiPageHeader
+      eyebrow="SYSTEM"
+      title="系统设置"
+      sub="管理系统时区、站点 HTTPS 证书、上游 HTTPS CA 根证书、mTLS Client 证书和管理员密码。"
+    />
 
     <div className="system-settings-tabs" role="tablist" aria-label="系统设置分类">
       <button type="button" role="tab" id="system-settings-tab-general" aria-selected={activeTab === 'general'} aria-controls="system-settings-panel-general" onClick={() => setActiveTab('general')}>常规设置</button>

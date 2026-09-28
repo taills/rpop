@@ -1,29 +1,5 @@
-.logs-page {
-  margin: 30px 0 20px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-primary);
-  border-radius: 14px;
-  padding: 22px;
-}
-.logs-heading {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-}
-.logs-heading h1 {
-  font-size: 24px;
-  margin: 5px 0;
-}
-.logs-heading h2 {
-  font-size: 18px;
-  margin: 5px 0;
-}
-.logs-heading p {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin: 0 0 20px;
-}
+/* .logs-page/.logs-heading（原访问日志/日志适配器页的卡片式标题区）已随统一样式改造迁移到
+   .ui-page + UiPageHeader，这里不再保留死代码。 */
 .log-filters {
   display: grid;
   grid-template-columns: 2fr 1fr 110px 1fr 1fr auto;
@@ -198,10 +174,6 @@
   background: var(--bg-tertiary);
   border-radius: 9px;
 }
-.log-settings-section h2 {
-  font-size: 14px;
-  margin: 0 0 5px;
-}
 .log-settings-section p,
 .log-settings label span {
   font-size: 11px;
@@ -235,7 +207,9 @@
 .adapter-list {
   display: grid;
   gap: 10px;
-  margin-top: 20px;
+}
+.adapter-list:not(:first-child) {
+  margin-top: 12px;
 }
 .adapter-card {
   display: flex;
@@ -303,15 +277,9 @@
   color: var(--text-secondary);
   font-size: 12px;
 }
-.log-editor {
-  margin-top: 22px;
-  padding-top: 20px;
-  border-top: 1px solid var(--border-primary);
-}
-.log-editor .log-settings-section h2 {
-  margin: 0 0 5px;
-}
-.log-editor .log-settings-section h3 {
+/* .log-editor 曾是适配器编辑表单在同一张大卡片内、与列表分隔用的外框；表单现在放进独立的 UiCard
+   （见 LogSettings.jsx），不再需要这层外边距/分隔线，但小节标题字号仍要保留，去掉 .log-editor 前缀。 */
+.log-settings-section h3 {
   font-size: 13px;
   margin: 0 0 5px;
 }

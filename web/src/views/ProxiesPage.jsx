@@ -62,7 +62,7 @@ export default function ProxiesPage() {
     { key: 'name', title: '名称', render: (row) => <>{row.name}<div className="ui-owner-line ui-mono">{row.id}</div></> },
     { key: 'type', title: '类型', width: '110px', render: (row) => <UiTag tone="type">{row.type}</UiTag> },
     { key: 'address', title: '地址', mono: true },
-    { key: 'auth', title: '认证', width: '160px', render: (row) => row.username ? <span>{row.username}{row.hasPassword && <UiTag tone="success">已设密码</UiTag>}</span> : '—' },
+    { key: 'auth', title: '认证', width: '160px', render: (row) => row.username ? <span className="row" style={{ flexWrap: 'nowrap' }}>{row.username}{row.hasPassword && <UiTag tone="success">已设密码</UiTag>}</span> : '—' },
     { key: 'usedBy', title: '使用中', width: '110px', render: usedByLabel },
     {
       key: 'ops', title: '操作', width: '140px', align: 'right',
@@ -79,7 +79,7 @@ export default function ProxiesPage() {
         eyebrow="OVERLAY · 具名代理"
         title="具名代理"
         sub="SOCKS5 / SOCKS5H / HTTP(S) CONNECT 代理注册表；密码只写不读，被上游候选路径引用时不能删除。"
-        actions={<UiButton variant="primary" size="sm" icon="plus" onClick={openCreate}>新建代理</UiButton>}
+        actions={<UiButton variant="primary" icon="plus" onClick={openCreate}>新建代理</UiButton>}
       />
       {error && <UiAlert type="error" title="操作失败">{error}</UiAlert>}
       <UiCard flush title="代理列表" icon="link" count={proxies.length || null}>

@@ -29,15 +29,8 @@ body {
 .brand-mark span {
   opacity: 0.78;
 }
-/* Width/margin below absorb the AppSideNav-era override that used to live in the now-deleted
-   Sidebar.css (the old .rail layout is gone, but .main is still the root wrapper every legacy
-   page renders, so its sizing must not regress). */
-.main {
-  width: auto;
-  max-width: 1600px;
-  margin: 0 auto;
-  padding: 0 48px 28px;
-}
+/* .main（原每个"旧版"页面各自撑开的根容器）已随统一样式改造完全迁移到 .ui-page（见 styles/base.css），
+   全站页面现在共用同一套外层容器，这里不再保留死代码。 */
 .eyebrow {
   font-size: 10px;
   letter-spacing: 1.4px;
@@ -53,18 +46,7 @@ body {
   display: inline-block;
   box-shadow: 0 0 0 3px var(--soft-green);
 }
-.hero {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  padding: 36px 0 28px;
-}
-.hero h1 {
-  font-size: 30px;
-  letter-spacing: -1px;
-  margin: 8px 0;
-}
-.hero p,
+/* .hero（原站点管理页标题区）已随统一样式改造迁移到 UiPageHeader 组件，这里不再保留死代码。 */
 .list-head p {
   font-size: 13px;
   color: var(--text-secondary);
@@ -498,14 +480,18 @@ footer span {
   color: var(--text-secondary);
 }
 @media(max-width:900px) {
-  .main {
-    padding: 0 24px 24px;
-  }
   .site {
     flex-wrap: wrap;
   }
+  /* .site-info（站点名+ID+两行指标）原本和 .tags 挤在同一行，靠 flex-grow 抢剩余空间——
+     宽度不够时 flex-basis:0 的 .site-info 会被挤到只剩几十像素，站点名逐字换行。
+     这里让它独占一行，.tags 换到下一行并允许自己内部再换行，避免继续挤压标题。 */
+  .site-info {
+    flex-basis: 100%;
+  }
   .tags {
     margin-left: 56px;
+    flex-wrap: wrap;
   }
   .actions {
     margin-left: auto;
@@ -515,17 +501,6 @@ footer span {
   }
 }
 @media(max-width:600px) {
-  .main {
-    padding: 0 14px 20px;
-  }
-  .hero {
-    align-items: flex-start;
-    gap: 15px;
-    flex-direction: column;
-  }
-  .hero h1 {
-    font-size: 25px;
-  }
   .stats {
     gap: 8px;
   }

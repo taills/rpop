@@ -293,6 +293,13 @@
 - 新增单测(20 个,总数 124→144):`themes/nav.test.js`(`resolveNavMode`/`navModeById` 的生产/DEV 分支与非法值兜底)、`themes/index.test.js`(`groupThemesByMode` 的分组顺序、组内顺序、空输入)、`components/ui/dropdownKeyboard.test.js`(`moveActiveIndex` 的起始项、循环、单项列表)、`utils/viewport.test.js`(`isNarrowViewport` 的边界值与非法输入)。
 - 冒烟(生产构建,`go run ./cmd/rpop -web-dir web/dist`,运行时数据落在 `/tmp`,未触碰仓库的 `data/`/`logs/`):1440px 与 390px 下侧栏 8 个菜单均可点击跳转、收起/展开互不影响;主题下拉的打开/分组渲染/鼠标选中/键盘(↓ 移动、Enter 选中、Esc 关闭)均正确,`<html data-theme>` 随选择更新且刷新后保留;向 `localStorage` 写入历史遗留的 `towere-ui-kit-nav-mode=hybrid` 后刷新,`<html data-nav>` 仍是 `vertical`,侧栏依旧是竖版全量菜单。冒烟过程中观察到一个与本次改动无关的现象:自动化浏览器把标签页短暂切到后台时,`.app-side-nav` 的 `width` CSS 过渡(`transition:width .15s`)会被浏览器的后台标签节流暂停,`getBoundingClientRect()` 读到过渡中间值,多等待一段时间后才稳定到目标宽度;用内联样式强制 reflow 或延长等待均可复现"最终值正确",确认是测试环境的渲染节流而非产物本身的问题。
 
+**控制台:全站页面样式统一(以访问日志页为基准)** 实施记录:
+
+- 以"访问日志"页(`LogViewer.jsx`)已有的 `.ui-page` + `UiPageHeader` + `UiCard` 组合为基准量出的实测基线(见 `base.css`/`UiPageHeader.css` 的注释),把 `NodesPage`/`NodeDetailPage`/`SitesPage`/`ProxiesPage`/`TopologyPage`/`LogSettings.jsx`(日志适配器页)/`SystemSettings.jsx` 逐一迁移到同一套容器:全站页面外层现在只有 `.ui-page` 一处定义(原先 `.main`(`Rpop.css`)与 `.ui-page`(`base.css`)两套页面容器、`.ui-page-header` 系 class 在 `base.css`/`UiPageHeader.css` 两处重复定义,统一前已发现两份定义已不一致),标题区全部改用 `UiPageHeader` 组件。
+- 顺带移除死代码:`.system-settings-heading`/`.logs-heading`/`.hero`/旧 `.main`/`CatalogPage.css`&`DemoPage.css` 里重复的 `.pad` 定义等,迁移后不再被任何组件引用的规则直接删除并在原处留注释说明去向,不留"看起来还在用、其实已经没人渲染这些 class"的陷阱。
+- 顺手修的小问题(样式统一过程中发现,均是"访问日志页没有、其他页面各自长出来"的不一致):`ProxiesPage.jsx` 的"认证"列在用户名后紧跟"已设密码"标签时因缺少 `flex-wrap: nowrap` 会在窄列宽下换行错位,补上 `className="row" style={{ flexWrap: 'nowrap' }}`;`UiButton` 的 size 在个别页面(`ProxiesPage`/`SitesPage` 的主操作按钮)误传了 `size="sm"`,与访问日志页的主操作按钮尺寸不一致,统一去掉该 prop 恢复默认尺寸。
+- 验证:`node --test`/`npm run build` 全绿;生产构建下 1440px 与 390px 分别核对 节点/代理/日志/拓扑/系统设置 等页均无页面级横向滚动条,深色主题(`navy`)下抽查节点/代理/日志三页对比度正常。
+
 **已知遗留项**:
 
 - `nodeAdapterSet` 每次日志 ingest 都全量 `store.List` 站点做适配器校验,阶段 7 设计中明确记为已知遗留、未做优化;站点规模很大时有性能债务,原因是当前规模下收益不足以优先处理。

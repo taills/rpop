@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useToast } from '../stores/toast.js'
+import { UiAlert, UiButton, UiCard, UiPageHeader } from '@/components/ui'
 import '../Logs.css'
 
 const blankConfig = { adapter: 'file', file: { rotation: 'day', maxSizeBytes: 1073741824, compress: true, keepFiles: 30 }, clickhouse: { url: '', database: 'default', table: 'access_logs', splitMode: 'none', username: '', password: '' }, elasticsearch: { url: '', index: 'rpop-access-logs', splitMode: 'none', authType: 'none', username: '', password: '', apiKey: '' }, s3: { endpoint: '', region: 'us-east-1', bucket: '', prefix: 'rpop/access', splitMode: 'hour', accessKeyId: '', secretAccessKey: '', sessionToken: '', forcePathStyle: true } }
@@ -84,16 +85,27 @@ export default function LogSettings({ api, onChange }) {
     } catch (e) { toast.error(e.message) }
   }
 
-  if (loading) return <section className="logs-page"><p>正在读取日志配置…</p></section>
-  return <section className="logs-page">
-    <div className="logs-heading"><div><div className="eyebrow">LOG STORAGE</div><h1>日志适配器</h1><p>可以配置多个同类型适配器；每个站点独立选择一个目标。</p></div><button className="primary" onClick={startCreate}>＋ 添加适配器</button></div>
-    {error && <div className="error">{error}</div>}
-    <div className="adapter-list">
-      {!adapters.length && <div className="adapter-empty">还没有日志适配器。添加一个后，站点才能启用访问日志。</div>}
-      {adapters.map(adapter => <article className="adapter-card" key={adapter.id}><div className="adapter-card-icon">{adapterIcon(adapter.config.adapter)}</div><div className="adapter-card-info"><strong>{adapter.name}</strong><span>{adapterLabel[adapter.config.adapter] || adapter.config.adapter} · ID: {adapter.id}</span></div><span className="adapter-type">{adapter.config.adapter}</span><div className="adapter-actions"><button className="secondary" onClick={() => startEdit(adapter)}>编辑</button><button className="secondary danger-action" onClick={() => remove(adapter)}>删除</button></div></article>)}
-    </div>
-    {editing && <div className="log-editor"><div className="log-settings-section"><h2>{editing.id ? '编辑适配器' : '添加适配器'}</h2><p>不同适配器可使用相同类型；保存后可在站点设置中绑定。</p></div>
-      <form className="log-settings" onSubmit={save}>
+  if (loading) return <div className="ui-page"><p>正在读取日志配置…</p></div>
+  return <div className="ui-page">
+    <UiPageHeader
+      eyebrow="LOG STORAGE"
+      title="日志适配器"
+      sub="可以配置多个同类型适配器；每个站点独立选择一个目标。"
+      actions={<UiButton variant="primary" icon="plus" onClick={startCreate}>添加适配器</UiButton>}
+    />
+    {error && <UiAlert type="error">{error}</UiAlert>}
+    <UiCard title="适配器列表" icon="database" count={adapters.length || null}>
+      <div className="pad">
+        {!adapters.length && <div className="adapter-empty">还没有日志适配器。添加一个后，站点才能启用访问日志。</div>}
+        <div className="adapter-list">
+          {adapters.map(adapter => <article className="adapter-card" key={adapter.id}><div className="adapter-card-icon">{adapterIcon(adapter.config.adapter)}</div><div className="adapter-card-info"><strong>{adapter.name}</strong><span>{adapterLabel[adapter.config.adapter] || adapter.config.adapter} · ID: {adapter.id}</span></div><span className="adapter-type">{adapter.config.adapter}</span><div className="adapter-actions"><button className="secondary" onClick={() => startEdit(adapter)}>编辑</button><button className="secondary danger-action" onClick={() => remove(adapter)}>删除</button></div></article>)}
+        </div>
+      </div>
+    </UiCard>
+    {editing && <UiCard title={editing.id ? '编辑适配器' : '添加适配器'} icon={editing.id ? 'edit' : 'plus'}>
+      <div className="pad">
+        <p className="ui-cell-dim">不同适配器可使用相同类型；保存后可在站点设置中绑定。</p>
+        <form className="log-settings" onSubmit={save}>
         <label className="wide">适配器名称<input required maxLength="128" value={name} onChange={e => setName(e.target.value)} placeholder="例如：生产 ClickHouse"/></label>
         <label className="wide">适配器类型<select value={config.adapter} onChange={e => setConfig(current => ({ ...current, adapter: e.target.value }))} disabled={!!editing.id}><option value="file">本地文件</option><option value="clickhouse">ClickHouse</option><option value="elasticsearch">Elasticsearch</option><option value="s3">S3 / S3-compatible</option></select><span>{editing.id ? '编辑时不能改变类型；如需切换类型，请新建一个适配器并重新绑定站点。' : '允许创建多个同类适配器。'}</span></label>
         {config.adapter === 'file' && <>
@@ -137,6 +149,7 @@ export default function LogSettings({ api, onChange }) {
         <div className="log-settings-warning">存储凭证保存在 SQLite 中且未加密。请保护数据库和备份文件；更新时密钥留空会保留已有值。</div>
         <div className="log-editor-actions"><button type="button" className="secondary" onClick={closeEditor}>取消</button><button className="primary" disabled={saving}>{saving ? '保存中…' : '保存适配器'}</button></div>
       </form>
-    </div>}
-  </section>
+      </div>
+    </UiCard>}
+  </div>
 }

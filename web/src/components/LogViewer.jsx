@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import LogDetailDrawer, { statusClass } from './LogDetailDrawer.jsx'
 import { clientIP, forwardedFor, userAgent } from '../logRecord.js'
+import { UiButton, UiCard, UiPageHeader } from '@/components/ui'
 import '../Logs.css'
 
 function emptyLogsMessage(loading, adapterCount) {
@@ -65,27 +66,34 @@ export default function LogViewer({ api }) {
     rowRefs.current[selectedIndex]?.scrollIntoView({ block: 'nearest' })
   }, [selectedIndex])
 
-  return <section className="logs-page">
-    <div className="logs-heading"><div><div className="eyebrow">ACCESS LOGS</div><h1>访问日志</h1><p>选择目标适配器后，可按站点、关键词、状态码和时间范围搜索。</p></div><button className="secondary" onClick={() => load(result.page)} disabled={loading || !filters.adapterId}>刷新</button></div>
+  return <div className="ui-page">
+    <UiPageHeader
+      eyebrow="ACCESS LOGS"
+      title="访问日志"
+      sub="选择目标适配器后，可按站点、关键词、状态码和时间范围搜索。"
+      actions={<UiButton variant="outline" onClick={() => load(result.page)} disabled={loading || !filters.adapterId}>刷新</UiButton>}
+    />
     {!adapters.length && <div className="adapter-empty">当前没有配置日志适配器。请先到“日志适配器”添加后，再为站点绑定。</div>}
-    <form className="log-filters" onSubmit={submit}>
-      <label>关键词<input value={filters.q} onChange={e => update('q', e.target.value)} placeholder="路径、IP、UA、Header 或 Body"/></label>
-      <label>日志适配器<select value={filters.adapterId} onChange={e => chooseAdapter(e.target.value)} disabled={!adapters.length}><option value="">选择适配器</option>{adapters.map(adapter => <option key={adapter.id} value={adapter.id}>{adapter.name} · {adapter.config.adapter}</option>)}</select></label>
-      <label>站点 ID<input value={filters.siteId} onChange={e => update('siteId', e.target.value)} placeholder="全部站点"/></label>
-      <label>状态码<input type="number" min="100" max="599" value={filters.status} onChange={e => update('status', e.target.value)} placeholder="全部"/></label>
-      <label>开始时间<input type="datetime-local" value={filters.from} onChange={e => update('from', e.target.value)}/></label>
-      <label>结束时间<input type="datetime-local" value={filters.to} onChange={e => update('to', e.target.value)}/></label>
-      <button className="primary" disabled={loading || !filters.adapterId}>{loading ? '查询中…' : '搜索日志'}</button>
-    </form>
-    {error && <div className="error">{error}</div>}
-    <div className="logs-summary">共 {result.total} 条 · 第 {result.page} / {pages} 页</div>
-    <div className="logs-table-wrap"><table className="logs-table"><thead><tr><th>时间</th><th>站点</th><th>客户端 IP</th><th>请求</th><th>状态</th><th>完整耗时</th><th>流量</th><th>User-Agent</th></tr></thead><tbody>
-      {result.records.map((record, index) => <tr key={`${record.timestamp}-${record.siteId}-${index}`} ref={element => { rowRefs.current[index] = element }} tabIndex="0" onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedIndex(index) } }} onClick={() => setSelectedIndex(index)} className={selectedIndex === index ? 'selected' : ''}>
-        <td>{new Date(record.timestamp).toLocaleString()}</td><td>{record.siteId}</td><td title={forwardedFor(record) ? `X-Forwarded-For: ${forwardedFor(record)}` : undefined}>{clientIP(record) || '-'}</td><td><b>{record.method}</b> <span className="log-path" title={record.host ? `${record.host}${record.path}` : record.path}>{record.path}</span></td><td><span className={`log-status ${statusClass(record.status)}`}>{record.status}</span></td><td>{Number(record.responseMillis || 0).toFixed(1)} ms</td><td>{record.requestBytes} ⇢ {record.responseBytes} B</td><td><span className="log-ua" title={userAgent(record)}>{userAgent(record) || '-'}</span></td>
-      </tr>)}
-      {!result.records.length && <tr><td colSpan="8" className="logs-empty">{emptyLogsMessage(loading, adapters.length)}</td></tr>}
-    </tbody></table></div>
-    <div className="logs-pagination"><button className="secondary" disabled={loading || result.page <= 1} onClick={() => load(result.page - 1)}>上一页</button><button className="secondary" disabled={loading || result.page >= pages} onClick={() => load(result.page + 1)}>下一页</button></div>
+    <UiCard>
+      <form className="log-filters" onSubmit={submit}>
+        <label>关键词<input value={filters.q} onChange={e => update('q', e.target.value)} placeholder="路径、IP、UA、Header 或 Body"/></label>
+        <label>日志适配器<select value={filters.adapterId} onChange={e => chooseAdapter(e.target.value)} disabled={!adapters.length}><option value="">选择适配器</option>{adapters.map(adapter => <option key={adapter.id} value={adapter.id}>{adapter.name} · {adapter.config.adapter}</option>)}</select></label>
+        <label>站点 ID<input value={filters.siteId} onChange={e => update('siteId', e.target.value)} placeholder="全部站点"/></label>
+        <label>状态码<input type="number" min="100" max="599" value={filters.status} onChange={e => update('status', e.target.value)} placeholder="全部"/></label>
+        <label>开始时间<input type="datetime-local" value={filters.from} onChange={e => update('from', e.target.value)}/></label>
+        <label>结束时间<input type="datetime-local" value={filters.to} onChange={e => update('to', e.target.value)}/></label>
+        <button className="primary" disabled={loading || !filters.adapterId}>{loading ? '查询中…' : '搜索日志'}</button>
+      </form>
+      {error && <div className="error">{error}</div>}
+      <div className="logs-summary">共 {result.total} 条 · 第 {result.page} / {pages} 页</div>
+      <div className="logs-table-wrap"><table className="logs-table"><thead><tr><th>时间</th><th>站点</th><th>客户端 IP</th><th>请求</th><th>状态</th><th>完整耗时</th><th>流量</th><th>User-Agent</th></tr></thead><tbody>
+        {result.records.map((record, index) => <tr key={`${record.timestamp}-${record.siteId}-${index}`} ref={element => { rowRefs.current[index] = element }} tabIndex="0" onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedIndex(index) } }} onClick={() => setSelectedIndex(index)} className={selectedIndex === index ? 'selected' : ''}>
+          <td>{new Date(record.timestamp).toLocaleString()}</td><td>{record.siteId}</td><td title={forwardedFor(record) ? `X-Forwarded-For: ${forwardedFor(record)}` : undefined}>{clientIP(record) || '-'}</td><td><b>{record.method}</b> <span className="log-path" title={record.host ? `${record.host}${record.path}` : record.path}>{record.path}</span></td><td><span className={`log-status ${statusClass(record.status)}`}>{record.status}</span></td><td>{Number(record.responseMillis || 0).toFixed(1)} ms</td><td>{record.requestBytes} ⇢ {record.responseBytes} B</td><td><span className="log-ua" title={userAgent(record)}>{userAgent(record) || '-'}</span></td>
+        </tr>)}
+        {!result.records.length && <tr><td colSpan="8" className="logs-empty">{emptyLogsMessage(loading, adapters.length)}</td></tr>}
+      </tbody></table></div>
+      <div className="logs-pagination"><button className="secondary" disabled={loading || result.page <= 1} onClick={() => load(result.page - 1)}>上一页</button><button className="secondary" disabled={loading || result.page >= pages} onClick={() => load(result.page + 1)}>下一页</button></div>
+    </UiCard>
     {selected && <LogDetailDrawer record={selected} position={selectedIndex + 1} total={result.records.length} onPrevious={selectedIndex > 0 ? showPrevious : null} onNext={selectedIndex < result.records.length - 1 ? showNext : null} onClose={closeDetail}/>}
-  </section>
+  </div>
 }
