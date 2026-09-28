@@ -13,14 +13,19 @@
   min-width: 0;
 }
 .ui-eyebrow {
-  font-size: 10px;
+  /* calc(px * var(--type-scale)) rather than one of tokens.css's existing --fs-* steps (11/12/13/14/16/22/...):
+   * none of them equals 10px at the standard (1x) scale, and this file's whole point is to reproduce the old
+   * 访问日志页基准 pixel-for-pixel at the default type-scale while still tracking DEV's font-scale slider
+   * (see UiTypeSwitcher) instead of being frozen at a hardcoded px value. */
+  font-size: calc(10px * var(--type-scale));
   color: var(--text-accent);
   font-weight: 800;
   letter-spacing: 1.4px;
+  text-transform: uppercase;
 }
 .ui-title {
   margin: 5px 0;
-  font-size: 24px;
+  font-size: calc(24px * var(--type-scale));
   font-weight: 700;
   color: var(--text-primary);
   display: flex;
@@ -29,7 +34,7 @@
 }
 .ui-sub {
   margin: 0;
-  font-size: 12px;
+  font-size: calc(12px * var(--type-scale));
   color: var(--text-secondary);
   line-height: 1.5;
 }
