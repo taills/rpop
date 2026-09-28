@@ -8,22 +8,21 @@ import {
   UiPageHeader,
   UiSearch,
   UiSkeleton,
-  UiStatusDot,
-  UiTable,
-  UiTag,
 } from '@/components/ui'
 import NodeFormDrawer from '@/components/NodeFormDrawer.jsx'
 import JoinTokenDialog from '@/components/JoinTokenDialog.jsx'
-import TimeCell from '@/components/TimeCell.jsx'
-import { LinkHealthSummary, LogHealthSummary, PathHealthSummary, ClockSkewSummary, ProtocolHealthSummary } from '@/components/NodeHealthSummary.jsx'
-import '@/components/NodeHealthBlocks.css'
+import NodeCard from '@/components/NodeCard.jsx'
 import { nodeNeedsAttention } from '@/nodeHealth'
+import { nodeMatchesQuery } from '@/nodeCard'
 import { useToast } from '@/stores/toast'
 import './NodesPage.css'
 
 // NodesPage lists every known node (embedded + registered) with its online/sync/link/path/log health, and owns
 // node lifecycle management (create, rename/re-point relay address, reissue join token, delete). Detail tables
-// live on NodeDetailPage; this page only shows compact summaries (see NodeHealthSummary).
+// live on NodeDetailPage; this page only shows compact summaries, one card per node (see NodeCard.jsx), laid
+// out in a responsive grid instead of the wide table the console used before (see docs/architecture/
+// control-data-plane.md §5, "节点卡片网格" entry) so 1440px never needs a horizontal scrollbar and a phone-width
+// viewport gets one full-width card per row instead of a squeezed table.
 export default function NodesPage() {
   const navigate = useNavigate()
   const { toast } = useToast()
@@ -57,6 +56,9 @@ export default function NodesPage() {
   }
   function openEdit(node) {
     setForm({ open: true, mode: 'edit', initial: node })
+  }
+  function openDetail(node) {
+    navigate(`/nodes/${encodeURIComponent(node.id)}`)
   }
 
   async function submitForm(values) {
@@ -102,76 +104,11 @@ export default function NodesPage() {
     }
   }
 
-  const filtered = nodes.filter((n) => `${n.name} ${n.id}`.toLowerCase().includes(query.toLowerCase()))
+  const filtered = nodes.filter((n) => nodeMatchesQuery(n, query))
   const attentionCount = nodes.filter(nodeNeedsAttention).length
 
-  const columns = [
-    {
-      key: 'name', title: '节点', minWidth: '160px',
-      render: (row) => (
-        <div>
-          <a className="ui-name-link" onClick={() => navigate(`/nodes/${encodeURIComponent(row.id)}`)}>{row.name}</a>
-          <div className="ui-owner-line">{row.id}{row.embedded && ' · 内嵌'}</div>
-        </div>
-      ),
-    },
-    {
-      key: 'online', title: '在线状态', minWidth: '140px',
-      render: (row) => (
-        <div className="stacked-cell">
-          <UiStatusDot tone={row.online ? 'success' : 'danger'}>{row.online ? '在线' : '离线'}</UiStatusDot>
-          <TimeCell value={row.lastSeen} />
-        </div>
-      ),
-    },
-    {
-      key: 'revision', title: 'Revision / 应用结果', minWidth: '150px',
-      render: (row) => (
-        <div className="stacked-cell">
-          <span className="ui-mono">{row.appliedRevision} / {row.publishedRevision}</span>
-          <UiTag tone={row.inSync ? 'success' : 'warn'}>{row.inSync ? '已同步' : '待同步'}</UiTag>
-        </div>
-      ),
-    },
-    {
-      key: 'cert', title: '证书', minWidth: '150px',
-      render: (row) => row.embedded
-        ? <span className="ui-cell-dim">内嵌节点</span>
-        : (
-          <div className="stacked-cell">
-            <UiTag tone={row.certGeneration > 0 ? 'success' : 'muted'}>{row.certGeneration > 0 ? `第 ${row.certGeneration} 代` : '未注册'}</UiTag>
-            <TimeCell value={row.certNotAfter} />
-          </div>
-        ),
-    },
-    { key: 'links', title: '链路健康', minWidth: '160px', render: (row) => <LinkHealthSummary links={row.links} /> },
-    { key: 'paths', title: '路径健康', minWidth: '160px', render: (row) => <PathHealthSummary paths={row.paths} /> },
-    { key: 'logs', title: '日志 spool', minWidth: '150px', render: (row) => <LogHealthSummary logs={row.logs} /> },
-    {
-      key: 'protocol', title: '协议版本', minWidth: '140px',
-      render: (row) => <ProtocolHealthSummary protocolVersion={row.protocolVersion} protocolStatus={row.protocolStatus} />,
-    },
-    {
-      key: 'clockSkew', title: '时钟偏差', minWidth: '140px',
-      render: (row) => <ClockSkewSummary clockSkewMillis={row.clockSkewMillis} clockSkewStatus={row.clockSkewStatus} />,
-    },
-    {
-      key: 'actions', title: '操作', minWidth: '220px',
-      render: (row) => row.embedded
-        ? <span className="ui-cell-dim">无需管理</span>
-        : (
-          <div className="row-actions">
-            <UiButton size="sm" variant="outline" onClick={() => navigate(`/nodes/${encodeURIComponent(row.id)}`)}>详情</UiButton>
-            <UiButton size="sm" variant="outline" onClick={() => openEdit(row)}>编辑</UiButton>
-            <UiButton size="sm" variant="outline" loading={busy === `${row.id}:token`} onClick={() => regenerateToken(row)}>{row.registered ? '重置 token' : '生成 token'}</UiButton>
-            <UiButton size="sm" variant="danger" loading={busy === `${row.id}:delete`} onClick={() => remove(row)}>删除</UiButton>
-          </div>
-        ),
-    },
-  ]
-
   return (
-    <div className="nodes-page">
+    <div className="ui-page nodes-page">
       <UiPageHeader
         title="节点管理"
         sub="查看每个节点的在线状态、链路/路径健康与日志 spool 情况，并管理节点的注册与 join token。"
@@ -179,21 +116,34 @@ export default function NodesPage() {
       />
       {error && <UiAlert type="error" title="加载失败">{error}</UiAlert>}
       {attentionCount > 0 && (
-        <UiAlert type="warn" title="需要关注">{attentionCount} 个节点离线、链路/路径异常、日志 spool 有问题、协议版本落后或时钟偏差过大，请查看下表或详情页。</UiAlert>
+        <UiAlert type="warn" title="需要关注">{attentionCount} 个节点离线、链路/路径异常、日志 spool 有问题、协议版本落后或时钟偏差过大，请查看下方卡片或详情页。</UiAlert>
       )}
       <div className="nodes-toolbar">
         <UiSearch value={query} onChange={setQuery} placeholder="搜索节点 ID 或名称" />
       </div>
       {loading
-        ? <UiSkeleton type="block" height="240px" />
-        : (
-          <UiTable
-            columns={columns}
-            rows={filtered}
-            rowKey="id"
-            empty={<UiEmpty title={nodes.length ? '没有匹配的节点' : '还没有节点'} desc={nodes.length ? '调整搜索词' : '创建第一个节点以生成 join token。'} />}
-          />
-        )}
+        ? (
+          <div className="node-card-grid">
+            {[0, 1, 2].map((i) => <UiSkeleton key={i} type="block" height="280px" />)}
+          </div>
+        )
+        : filtered.length
+          ? (
+            <div className="node-card-grid">
+              {filtered.map((node) => (
+                <NodeCard
+                  key={node.id}
+                  node={node}
+                  busy={busy}
+                  onDetail={openDetail}
+                  onEdit={openEdit}
+                  onToken={regenerateToken}
+                  onDelete={remove}
+                />
+              ))}
+            </div>
+          )
+          : <UiEmpty title={nodes.length ? '没有匹配的节点' : '还没有节点'} desc={nodes.length ? '调整搜索词' : '创建第一个节点以生成 join token。'} />}
       <NodeFormDrawer value={form.open} mode={form.mode} initial={form.initial} onChange={(open) => setForm((f) => ({ ...f, open }))} onSubmit={submitForm} />
       <JoinTokenDialog
         value={tokenDialog.open}

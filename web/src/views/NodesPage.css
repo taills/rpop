@@ -13,3 +13,22 @@
   flex-wrap: wrap;
   gap: 6px;
 }
+
+/* 节点卡片网格：1440px 桌面基线下每行 2-3 张（320px 起步 + 1fr 均分剩余宽度，通常落在 3 张），
+ * 900px/640px 两级收窄与 .ui-page 自身的内边距断点保持一致，640px 起强制单列，
+ * 避免 auto-fit 在窄屏下把最小宽度撑出横向滚动条。 */
+.node-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+}
+@media (max-width: 900px) {
+  .node-card-grid {
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  }
+}
+@media (max-width: 640px) {
+  .node-card-grid {
+    grid-template-columns: 1fr;
+  }
+}

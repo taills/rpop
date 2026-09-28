@@ -1,0 +1,98 @@
+/* NodeCard — one node's summary as a self-contained card (see components/NodeCard.jsx). Pairs with the
+ * `.node-card-grid` container defined in NodesPage.css. */
+.node-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.node-card__head {
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--border-primary);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.node-card__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.node-card__name {
+  font-size: var(--fs-md);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.node-card__id {
+  margin: 0;
+}
+
+.node-card__status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+/* 两列指标网格：每张卡片固定展示全部 7 项指标，异常项由 nodeCardMetrics 排到前面，
+ * 而不是靠隐藏/折叠——保证"无需切换标签即可看到关键信息"。 */
+.node-card__body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+  padding: 14px 16px;
+  flex: 1;
+}
+
+.node-card__metric {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  background: transparent;
+  transition: background 0.15s ease;
+}
+
+.node-card__metric.is-anomaly {
+  background: var(--soft-red);
+}
+
+.node-card__metric-label {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.node-card__metric-value {
+  min-width: 0;
+}
+
+.node-card__foot {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-primary);
+}
+
+.node-card__foot .row-actions {
+  justify-content: flex-end;
+}
+
+.node-card__foot .ui-cell-dim {
+  display: block;
+  text-align: right;
+}
+
+/* 单张卡片内部指标不必强行挤两列；480px 以下改单列，比缩小字号/出现横向滚动更可读。 */
+@media (max-width: 480px) {
+  .node-card__body {
+    grid-template-columns: 1fr;
+  }
+}
