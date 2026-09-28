@@ -10,7 +10,6 @@ import {
   UiPageHeader,
   UiSkeleton,
   UiStatusDot,
-  UiTabs,
   UiTag,
 } from '@/components/ui'
 import NodeLinksTable from '@/components/NodeLinksTable.jsx'
@@ -33,7 +32,6 @@ export default function NodeDetailPage() {
   const [node, setNode] = useState(null)
   const [notFound, setNotFound] = useState(false)
   const [error, setError] = useState('')
-  const [tab, setTab] = useState('links')
   const [editing, setEditing] = useState(false)
   const [tokenDialog, setTokenDialog] = useState({ open: false, node: null, token: '', expiresAt: '' })
   const [busy, setBusy] = useState(false)
@@ -106,7 +104,7 @@ export default function NodeDetailPage() {
 
   if (notFound) {
     return (
-      <div className="node-detail-page">
+      <div className="ui-page node-detail-page">
         <UiBreadcrumb items={[{ label: '节点管理', to: '/nodes' }, { label: id }]} onNavigate={(item) => item.to && navigate(item.to)} />
         <UiAlert type="error" title="节点不存在">未找到 ID 为 “{id}” 的节点，它可能已被删除。</UiAlert>
       </div>
@@ -132,14 +130,8 @@ export default function NodeDetailPage() {
     { label: '正在运行的站点', value: (node.running || []).join('、') || '（无）' },
   ]
 
-  const tabs = [
-    { key: 'links', label: '链路健康', count: node?.links?.length || 0 },
-    { key: 'paths', label: '路径健康', count: node?.paths?.length || 0 },
-    { key: 'logs', label: '日志 spool' },
-  ]
-
   return (
-    <div className="node-detail-page">
+    <div className="ui-page node-detail-page">
       <UiBreadcrumb items={[{ label: '节点管理', to: '/nodes' }, { label: node?.name || id }]} onNavigate={(item) => item.to && navigate(item.to)} />
       {error && <UiAlert type="error" title="加载失败">{error}</UiAlert>}
       {!node
@@ -166,12 +158,22 @@ export default function NodeDetailPage() {
             <UiCard title="基本信息" variant="flat">
               <UiDescriptions items={basics} />
             </UiCard>
-            <UiCard title="健康详情" variant="flat" flush>
-              <UiTabs tabs={tabs} value={tab} onChange={setTab} />
-              <div className="node-detail-page__tab">
-                {tab === 'links' && <NodeLinksTable links={node.links} />}
-                {tab === 'paths' && <NodePathsTable paths={node.paths} />}
-                {tab === 'logs' && <NodeLogHealth logs={node.logs} />}
+            {/* 链路/路径/日志健康以前挤在一组标签页里，切换才能看到另外两项；改成三张纵向卡片后，
+                运维排查时（比如某条链路故障但候选路径正常）不用来回点标签就能一眼对比全部信息
+                （task 3 usability pass，2026-09-28，见 docs/architecture/control-data-plane.md §5）。 */}
+            <UiCard title="链路健康" variant="flat" flush count={node.links?.length || 0}>
+              <div className="node-detail-page__section">
+                <NodeLinksTable links={node.links} />
+              </div>
+            </UiCard>
+            <UiCard title="路径健康" variant="flat" flush count={node.paths?.length || 0}>
+              <div className="node-detail-page__section">
+                <NodePathsTable paths={node.paths} />
+              </div>
+            </UiCard>
+            <UiCard title="日志 spool" variant="flat" flush>
+              <div className="node-detail-page__section">
+                <NodeLogHealth logs={node.logs} />
               </div>
             </UiCard>
           </>

@@ -3,7 +3,7 @@
   flex-direction: column;
   gap: 16px;
 }
-.node-detail-page__tab {
+.node-detail-page__section {
   padding: 14px 16px 16px;
 }
 .row-actions {
