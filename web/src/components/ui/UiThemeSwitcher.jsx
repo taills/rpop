@@ -1,5 +1,5 @@
 import './UiThemeSwitcher.css'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { cx } from '@/utils/cx'
 import { useThemeStore } from '@/stores/theme'
 import { groupThemesByMode } from '@/themes'
@@ -13,6 +13,12 @@ export default function UiThemeSwitcher() {
   const [activeIndex, setActiveIndex] = useState(-1)
   const rootRef = useRef(null)
   const triggerRef = useRef(null)
+  // useId() scopes every option/panel id to this instance so two switchers on the same page (e.g. a future
+  // second mount, or a dev tool rendering the catalog alongside the real one) never collide on plain
+  // `ui-theme-switcher-opt-${id}` strings, which aria-activedescendant/aria-controls both rely on staying unique.
+  const uid = useId()
+  const panelId = `${uid}-panel`
+  const optionId = (themeId) => `${uid}-opt-${themeId}`
 
   const groups = groupThemesByMode(themeStore.themes)
   const flatThemes = groups.flatMap((g) => g.items)
@@ -67,7 +73,7 @@ export default function UiThemeSwitcher() {
     }
   }
 
-  const activeOptionId = activeIndex >= 0 && flatThemes[activeIndex] ? `ui-theme-switcher-opt-${flatThemes[activeIndex].id}` : undefined
+  const activeOptionId = activeIndex >= 0 && flatThemes[activeIndex] ? optionId(flatThemes[activeIndex].id) : undefined
 
   return (
     <div ref={rootRef} className={cx('ui-theme-switcher', open && 'open')}>
@@ -77,6 +83,7 @@ export default function UiThemeSwitcher() {
         className="ui-theme-switcher__trigger"
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={panelId}
         aria-activedescendant={activeOptionId}
         onClick={() => (open ? closePanel() : openPanel())}
         onKeyDown={onTriggerKeyDown}
@@ -91,7 +98,7 @@ export default function UiThemeSwitcher() {
       </button>
 
       {open && (
-        <div className="ui-theme-switcher__panel" role="listbox" aria-label="主题">
+        <div id={panelId} className="ui-theme-switcher__panel" role="listbox" aria-label="主题">
           {groups.map((group) => (
             <div key={group.mode} className="ui-theme-switcher__group" role="group" aria-label={group.label}>
               <div className="ui-theme-switcher__group-label" aria-hidden="true">{group.label}</div>
@@ -101,7 +108,7 @@ export default function UiThemeSwitcher() {
                 return (
                   <button
                     key={t.id}
-                    id={`ui-theme-switcher-opt-${t.id}`}
+                    id={optionId(t.id)}
                     type="button"
                     role="option"
                     aria-selected={selected}
