@@ -17,6 +17,7 @@ export default function UiModal({
   persistent = false,
   onChange,
   onConfirm,
+  onError,
   footer,
   children,
 }) {
@@ -37,6 +38,15 @@ export default function UiModal({
     setLoading(true)
     try {
       await onConfirm?.()
+    } catch (error) {
+      // onConfirm rejecting must not become an unhandled rejection just because this handler is invoked from
+      // onClick (React never awaits or catches that returned promise): the modal has no error UI of its own —
+      // it never even auto-closes on success, that is entirely onConfirm's/the caller's job — so on failure the
+      // only correct move is to leave it open (matching the "no change on error" outcome a thrown error implies)
+      // and hand the error to whatever the caller can see: the console, plus an optional onError callback for
+      // callers that want to surface it in their own UI (e.g. a toast or an inline message).
+      console.error('UiModal onConfirm failed', error)
+      onError?.(error)
     } finally {
       confirmingRef.current = false
       setLoading(false)
