@@ -130,6 +130,15 @@ code {
   color: var(--text-accent);
   font-weight: 600;
   cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+/* Keyboard-focus ring, same treatment UiButton/UiInput/etc. already give every other focusable control (see
+ * their :focus-visible rules) — .ui-name-link now backs a real <a>/router <Link> (see NodeCard.jsx), so it
+ * needs one too. */
+.ui-name-link:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .ui-owner-line {

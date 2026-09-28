@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import { UiButton, UiStatusDot, UiTag } from '@/components/ui'
 import TimeCell from '@/components/TimeCell.jsx'
 import { LinkHealthSummary, LogHealthSummary, PathHealthSummary, ClockSkewSummary, ProtocolHealthSummary } from '@/components/NodeHealthSummary.jsx'
@@ -52,8 +53,9 @@ function MetricValue({ metricKey, node }) {
 
 // NodeCard replaces one row of the old node table with a self-contained card: header (name/id/embedded flag/
 // online status/anomaly tag), a metrics grid (revision/cert/link/path/log/protocol/clock-skew, anomalies sorted
-// first by nodeCardMetrics) and a footer with the same one-click actions the table's "操作" column had. onDetail
-// also backs the name link, so opening details never needs more than the one click the table already offered.
+// first by nodeCardMetrics) and a footer with the same one-click actions the table's "操作" column had. The name
+// is a real router `Link` (not an onClick-only span) so it is keyboard-focusable and supports middle-click/
+// Cmd-click to open in a new tab; onDetail (same navigation, imperative) still backs the "详情" button below.
 // hasAnomaly/errorText both derive from nodeCard.js, which in turn derives from nodeHealth.js's
 // nodeNeedsAttention — the same predicate NodesPage's banner counts, so this card's "需要关注" tag and the
 // banner's count can never disagree.
@@ -65,7 +67,7 @@ export default function NodeCard({ node, busy, onDetail, onEdit, onToken, onDele
     <article className={cx('ui-card node-card', hasAnomaly && 'is-anomaly')}>
       <header className="node-card__head">
         <div className="node-card__title-row">
-          <a className="ui-name-link node-card__name" onClick={() => onDetail(node)}>{node.name}</a>
+          <Link className="ui-name-link node-card__name" to={`/nodes/${encodeURIComponent(node.id)}`}>{node.name}</Link>
           {node.embedded && <UiTag tone="muted">内嵌</UiTag>}
           {hasAnomaly && <UiTag tone="risk-critical" icon="alert">需要关注</UiTag>}
         </div>
