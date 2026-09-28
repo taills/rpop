@@ -20,6 +20,8 @@ export default function UiPagination({
   showSizeChanger = false,
   pageSizes = [10, 20, 50, 100],
   totalSlot,
+  /** 翻页请求进行中：禁用导航按钮并标记 aria-busy，调用方自己决定是否额外显示 spinner/骨架屏 */
+  loading = false,
   onPageChange,
   onChange,
   onPageSizeChange,
@@ -85,12 +87,12 @@ export default function UiPagination({
         </div>
       )}
 
-      <div className="ui-pager__nav" role="navigation" aria-label="分页">
+      <div className="ui-pager__nav" role="navigation" aria-label="分页" aria-busy={loading || undefined}>
         {showFirstLast && (
           <button
             type="button"
             className="ui-pager__btn is-edge"
-            disabled={page <= 1}
+            disabled={loading || page <= 1}
             aria-label="首页"
             title="首页"
             onClick={() => go(1)}
@@ -101,7 +103,7 @@ export default function UiPagination({
         <button
           type="button"
           className="ui-pager__btn is-nav"
-          disabled={page <= 1}
+          disabled={loading || page <= 1}
           aria-label="上一页"
           onClick={() => go(page - 1)}
         >
@@ -114,7 +116,7 @@ export default function UiPagination({
               key={`${p}-${i}`}
               type="button"
               className={cx('ui-pager__btn', p === page && 'is-on', p === '…' && 'is-ellipsis')}
-              disabled={p === '…'}
+              disabled={loading || p === '…'}
               onClick={() => p !== '…' && go(p)}
             >
               {p}
@@ -131,7 +133,7 @@ export default function UiPagination({
         <button
           type="button"
           className="ui-pager__btn is-nav"
-          disabled={page >= pageCount}
+          disabled={loading || page >= pageCount}
           aria-label="下一页"
           onClick={() => go(page + 1)}
         >
@@ -141,7 +143,7 @@ export default function UiPagination({
           <button
             type="button"
             className="ui-pager__btn is-edge"
-            disabled={page >= pageCount}
+            disabled={loading || page >= pageCount}
             aria-label="末页"
             title="末页"
             onClick={() => go(pageCount)}
@@ -158,6 +160,7 @@ export default function UiPagination({
             <select
               className="ui-pager__select"
               value={pageSize}
+              disabled={loading}
               onChange={(e) => handleSizeChange(Number(e.target.value))}
             >
               {pageSizes.map((s) => (
@@ -178,11 +181,12 @@ export default function UiPagination({
               min="1"
               max={pageCount}
               value={jumper}
+              disabled={loading}
               onChange={(e) => setJumper(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && onJump()}
             />
             <span className="ui-pager__size-label">页</span>
-            <button type="button" className="ui-pager__btn is-go" onClick={onJump}>
+            <button type="button" className="ui-pager__btn is-go" disabled={loading} onClick={onJump}>
               Go
             </button>
           </label>

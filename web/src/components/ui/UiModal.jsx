@@ -1,5 +1,5 @@
 import './UiModal.css'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { cx } from '@/utils/cx'
 import UiButton from './UiButton'
@@ -21,17 +21,24 @@ export default function UiModal({
   children,
 }) {
   const [loading, setLoading] = useState(false)
+  // confirmingRef is the actual reentrancy guard: setLoading only takes effect on the next render, which is
+  // too late to stop a second handleConfirm() call landing before the confirm button's disabled attribute has
+  // re-rendered (a fast double-click, or Enter held down). The ref is checked synchronously instead.
+  const confirmingRef = useRef(false)
 
   function tryClose() {
-    if (persistent) return
+    if (persistent || confirmingRef.current) return
     onChange?.(false)
   }
 
   async function handleConfirm() {
+    if (confirmingRef.current) return
+    confirmingRef.current = true
     setLoading(true)
     try {
       await onConfirm?.()
     } finally {
+      confirmingRef.current = false
       setLoading(false)
     }
   }

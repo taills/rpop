@@ -23,6 +23,7 @@ export default function UiButton({
         loading && 'is-loading',
       )}
       disabled={disabled || loading}
+      aria-busy={loading || undefined}
       type={type}
       onClick={onClick}
     >

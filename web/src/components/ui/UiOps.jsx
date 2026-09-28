@@ -17,9 +17,11 @@ export default function UiOps({
           {item.divider && i > 0 && <span className="ui-ops__sep" />}
           <UiLink
             tone={item.tone === 'danger' && !allowRed ? 'muted' : item.tone || 'primary'}
+            disabled={item.disabled || item.loading}
+            aria-busy={item.loading || undefined}
             onClick={() => item.onClick?.()}
           >
-            {item.label}
+            {item.loading ? item.loadingLabel || item.label : item.label}
           </UiLink>
         </Fragment>
       ))}
