@@ -1,0 +1,211 @@
+# Builds rpop for linux/macOS/windows on every push and pull request, and publishes a GitHub Release with
+# the archives and SHA256SUMS when a v* tag is pushed. go-sqlite3 needs CGO, so every platform is compiled
+# on a runner (or cross toolchain) that can build C for it:
+#   linux   — the Dockerfile's `binary` target on native amd64/arm64 runners (static musl, same as the image)
+#   macOS   — clang on the arm64 macOS runner, with `-arch` selecting amd64 or arm64
+#   windows — MinGW-w64 gcc from MSYS2, statically linked
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then version="$GITHUB_REF_NAME"; else version="dev-${GITHUB_SHA::7}"; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  frontend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+          retention-days: 1
+
+  linux:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build static binary
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: binary
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=local,dest=out
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            NPM_REGISTRY=https://registry.npmjs.org
+            GOPROXY=https://proxy.golang.org,direct
+          cache-from: type=gha,scope=binary-linux-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=binary-linux-${{ matrix.arch }}
+      - name: Package
+        run: |
+          file out/rpop
+          mkdir -p dist
+          cp README.md out/
+          tar -czf "dist/rpop_${VERSION}_linux_${{ matrix.arch }}.tar.gz" -C out rpop README.md
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  darwin:
+    needs: [version, frontend]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            clang-arch: x86_64
+          - arch: arm64
+            clang-arch: arm64
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: web/dist
+      - name: Build
+        env:
+          CGO_ENABLED: '1'
+          GOOS: darwin
+          GOARCH: ${{ matrix.arch }}
+          CC: clang -arch ${{ matrix.clang-arch }}
+        run: |
+          go build -trimpath -tags sqlite_omit_load_extension \
+            -ldflags "-s -w -X main.Version=${VERSION}" -o out/rpop ./cmd/rpop
+          file out/rpop
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp README.md out/
+          tar -czf "dist/rpop_${VERSION}_darwin_${{ matrix.arch }}.tar.gz" -C out rpop README.md
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-darwin-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    needs: [version, frontend]
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-gcc
+      - name: Put MinGW gcc on PATH
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_PATH -Value "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin"
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: web/dist
+      - name: Build
+        shell: bash
+        env:
+          CGO_ENABLED: '1'
+          GOOS: windows
+          GOARCH: amd64
+          CC: gcc
+        run: |
+          gcc --version | head -1
+          go build -trimpath -tags sqlite_omit_load_extension \
+            -ldflags "-s -w -X main.Version=${VERSION} -extldflags '-static'" -o out/rpop.exe ./cmd/rpop
+      - name: Smoke test
+        shell: bash
+        run: |
+          ./out/rpop.exe -h > usage.txt 2>&1
+          grep -q -- '-addr' usage.txt
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item README.md out/
+          Compress-Archive -Path out/rpop.exe, out/README.md -DestinationPath "dist/rpop_$($env:VERSION)_windows_amd64.zip"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-windows-amd64
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [linux, darwin, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum * | tee SHA256SUMS
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=()
+          case "$GITHUB_REF_NAME" in *-*) prerelease=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag "${prerelease[@]}"
