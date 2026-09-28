@@ -319,9 +319,6 @@
   }
 }
 @media(max-width:600px) {
-  .logs-page {
-    padding: 15px;
-  }
   .log-detail-grid {
     grid-template-columns: 1fr;
   }
