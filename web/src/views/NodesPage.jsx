@@ -15,6 +15,7 @@ import NodeCard from '@/components/NodeCard.jsx'
 import { nodeNeedsAttention } from '@/nodeHealth'
 import { nodeMatchesQuery } from '@/nodeCard'
 import { useToast } from '@/stores/toast'
+import { useBusyAction } from '../busyAction.js'
 import './NodesPage.css'
 
 // NodesPage lists every known node (embedded + registered) with its online/sync/link/path/log health, and owns
@@ -29,7 +30,7 @@ export default function NodesPage() {
   const [nodes, setNodes] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [busy, setBusy] = useState('')
+  const { busy, run } = useBusyAction()
   const [query, setQuery] = useState('')
   const [form, setForm] = useState({ open: false, mode: 'create', initial: null })
   const [tokenDialog, setTokenDialog] = useState({ open: false, node: null, token: '', expiresAt: '' })
@@ -76,32 +77,34 @@ export default function NodesPage() {
     }
   }
 
+  // regenerateToken/remove share one useBusyAction lock (keyed per node+op) with the rest of this page's
+  // actions: NodeCard already reads `busy` with the same `${node.id}:token` / `${node.id}:delete` keys it did
+  // before, so switching the source of `busy` to the hook needed no change there, only a synchronous reentrancy
+  // guard here for the fast-double-click case a `disabled` attribute alone can't catch (see busyAction.js).
   async function regenerateToken(node) {
     if (!window.confirm(`确定为节点“${node.name}”重新生成 join token？旧 token 将立即失效。`)) return
-    setBusy(`${node.id}:token`)
-    try {
-      const res = await api(`/nodes/${encodeURIComponent(node.id)}/token`, { method: 'POST' })
-      await refresh()
-      setTokenDialog({ open: true, node: res.node, token: res.joinToken, expiresAt: res.expiresAt })
-    } catch (e) {
-      toast.error(e.message)
-    } finally {
-      setBusy('')
-    }
+    await run(`${node.id}:token`, async () => {
+      try {
+        const res = await api(`/nodes/${encodeURIComponent(node.id)}/token`, { method: 'POST' })
+        await refresh()
+        setTokenDialog({ open: true, node: res.node, token: res.joinToken, expiresAt: res.expiresAt })
+      } catch (e) {
+        toast.error(e.message)
+      }
+    })
   }
 
   async function remove(node) {
     if (!window.confirm(`确定删除节点“${node.name}”？`)) return
-    setBusy(`${node.id}:delete`)
-    try {
-      await api(`/nodes/${encodeURIComponent(node.id)}`, { method: 'DELETE' })
-      await refresh()
-      toast.success('节点已删除')
-    } catch (e) {
-      toast.error(e.message)
-    } finally {
-      setBusy('')
-    }
+    await run(`${node.id}:delete`, async () => {
+      try {
+        await api(`/nodes/${encodeURIComponent(node.id)}`, { method: 'DELETE' })
+        await refresh()
+        toast.success('节点已删除')
+      } catch (e) {
+        toast.error(e.message)
+      }
+    })
   }
 
   const filtered = nodes.filter((n) => nodeMatchesQuery(n, query))

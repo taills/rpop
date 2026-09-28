@@ -21,6 +21,7 @@ import TimeCell from '@/components/TimeCell.jsx'
 import { ClockSkewSummary, ProtocolHealthSummary } from '@/components/NodeHealthSummary.jsx'
 import '@/components/NodeHealthBlocks.css'
 import { useToast } from '@/stores/toast'
+import { useBusyAction } from '../busyAction.js'
 import './NodeDetailPage.css'
 
 // NodeDetailPage shows one node's full health: basic info, overlay link table, upstream path-failover table and
@@ -34,7 +35,7 @@ export default function NodeDetailPage() {
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
   const [tokenDialog, setTokenDialog] = useState({ open: false, node: null, token: '', expiresAt: '' })
-  const [busy, setBusy] = useState(false)
+  const { busy, run } = useBusyAction()
   // requestRef guards against a stale response overwriting a newer one: the 5s poll timer, plus id changing
   // while a request is still in flight (e.g. clicking a different node in NodesPage while this page is
   // navigating), can both leave an older api() call resolving after a newer one already set state (see
@@ -75,31 +76,33 @@ export default function NodeDetailPage() {
     toast.success('节点已更新')
   }
 
+  // regenerateToken/remove use useBusyAction's synchronous ref instead of a plain `busy` boolean: a fast
+  // double-click on "重置 token"/"删除" could otherwise fire the request twice before React re-renders the
+  // disabled buttons below (see busyAction.js).
   async function regenerateToken() {
     if (!window.confirm(`确定为节点“${node.name}”重新生成 join token？旧 token 将立即失效。`)) return
-    setBusy(true)
-    try {
-      const res = await api(`/nodes/${encodeURIComponent(id)}/token`, { method: 'POST' })
-      await refresh()
-      setTokenDialog({ open: true, node: res.node, token: res.joinToken, expiresAt: res.expiresAt })
-    } catch (e) {
-      toast.error(e.message)
-    } finally {
-      setBusy(false)
-    }
+    await run(async () => {
+      try {
+        const res = await api(`/nodes/${encodeURIComponent(id)}/token`, { method: 'POST' })
+        await refresh()
+        setTokenDialog({ open: true, node: res.node, token: res.joinToken, expiresAt: res.expiresAt })
+      } catch (e) {
+        toast.error(e.message)
+      }
+    })
   }
 
   async function remove() {
     if (!window.confirm(`确定删除节点“${node.name}”？`)) return
-    setBusy(true)
-    try {
-      await api(`/nodes/${encodeURIComponent(id)}`, { method: 'DELETE' })
-      toast.success('节点已删除')
-      navigate('/nodes')
-    } catch (e) {
-      toast.error(e.message)
-      setBusy(false)
-    }
+    await run(async () => {
+      try {
+        await api(`/nodes/${encodeURIComponent(id)}`, { method: 'DELETE' })
+        toast.success('节点已删除')
+        navigate('/nodes')
+      } catch (e) {
+        toast.error(e.message)
+      }
+    })
   }
 
   if (notFound) {
@@ -143,9 +146,9 @@ export default function NodeDetailPage() {
               sub={node.embedded ? '内嵌节点' : `节点 ID: ${node.id}`}
               actions={!node.embedded && (
                 <div className="row-actions">
-                  <UiButton size="sm" variant="outline" onClick={() => setEditing(true)}>编辑</UiButton>
-                  <UiButton size="sm" variant="outline" loading={busy} onClick={regenerateToken}>{node.registered ? '重置 token' : '生成 token'}</UiButton>
-                  <UiButton size="sm" variant="danger" loading={busy} onClick={remove}>删除</UiButton>
+                  <UiButton size="sm" variant="outline" disabled={Boolean(busy)} onClick={() => setEditing(true)}>编辑</UiButton>
+                  <UiButton size="sm" variant="outline" loading={Boolean(busy)} onClick={regenerateToken}>{node.registered ? '重置 token' : '生成 token'}</UiButton>
+                  <UiButton size="sm" variant="danger" loading={Boolean(busy)} onClick={remove}>删除</UiButton>
                 </div>
               )}
             />

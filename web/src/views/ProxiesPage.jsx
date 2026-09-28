@@ -6,6 +6,7 @@ import {
 } from '@/components/ui'
 import { PROXY_TYPES, blankProxyForm, buildProxyMutation, proxyDeleteProblem, proxyFormFromView, proxyFormProblem } from '../proxyForm.js'
 import { useToast } from '../stores/toast.js'
+import { useBusyAction } from '../busyAction.js'
 import './ProxiesPage.css'
 
 const typeOptions = PROXY_TYPES.map((value) => ({ label: value, value }))
@@ -24,6 +25,7 @@ export default function ProxiesPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [drawer, setDrawer] = useState(null)
+  const { busy, isBusy, run } = useBusyAction()
 
   const load = useCallback(async () => {
     try { setProxies(await api('/proxies')); setError('') }
@@ -32,31 +34,42 @@ export default function ProxiesPage() {
   }, [])
   useEffect(() => { load() }, [load])
 
-  function openCreate() { setDrawer({ isNew: true, form: blankProxyForm(), saving: false, error: '' }) }
-  function openEdit(proxy) { setDrawer({ isNew: false, form: proxyFormFromView(proxy), saving: false, error: '' }) }
+  function openCreate() { setDrawer({ isNew: true, form: blankProxyForm(), error: '' }) }
+  function openEdit(proxy) { setDrawer({ isNew: false, form: proxyFormFromView(proxy), error: '' }) }
   function closeDrawer() { setDrawer(null) }
   function patch(field, value) { setDrawer((current) => ({ ...current, form: { ...current.form, [field]: value } })) }
 
+  // submit is guarded by useBusyAction's synchronous ref, same as remove() below, instead of checking
+  // drawer.saving: that state only takes effect on the next render, one tick too late to stop a fast
+  // double-click (or Enter held down) from firing the create/update request twice.
   async function submit() {
     const problem = proxyFormProblem(drawer.form, { isNew: drawer.isNew })
     if (problem) { setDrawer((current) => ({ ...current, error: problem })); return }
-    setDrawer((current) => ({ ...current, saving: true, error: '' }))
-    try {
-      const { isNew } = drawer
-      const path = isNew ? '/proxies' : `/proxies/${encodeURIComponent(drawer.form.id)}`
-      await api(path, { method: isNew ? 'POST' : 'PUT', body: JSON.stringify(buildProxyMutation(drawer.form, { isNew })) })
-      closeDrawer()
-      await load()
-      toast.success(isNew ? '代理已创建' : '代理已更新')
-    } catch (e) { setDrawer((current) => ({ ...current, saving: false, error: e.message })) }
+    await run('save', async () => {
+      setDrawer((current) => ({ ...current, error: '' }))
+      try {
+        const { isNew } = drawer
+        const path = isNew ? '/proxies' : `/proxies/${encodeURIComponent(drawer.form.id)}`
+        await api(path, { method: isNew ? 'POST' : 'PUT', body: JSON.stringify(buildProxyMutation(drawer.form, { isNew })) })
+        closeDrawer()
+        await load()
+        toast.success(isNew ? '代理已创建' : '代理已更新')
+      } catch (e) { setDrawer((current) => ({ ...current, error: e.message })) }
+    })
   }
 
+  // remove is keyed per proxy id (via useBusyAction) so the busy row can show its own "删除中…" label; the
+  // hook is still a single global lock (see busyAction.js), so every row's links are disabled while ANY row
+  // is being deleted or the drawer is saving — two overlapping mutations here both refresh the same `proxies`
+  // list via load(), and letting one queue behind the other is simpler than reconciling out-of-order refreshes.
   async function remove(proxy) {
     const blocked = proxyDeleteProblem(proxy)
     if (blocked) { setError(blocked); return }
     if (!window.confirm(`确定删除代理“${proxy.name}”？`)) return
-    try { await api(`/proxies/${encodeURIComponent(proxy.id)}`, { method: 'DELETE' }); await load(); toast.success('代理已删除') }
-    catch (e) { setError(e.message); await load() }
+    await run(proxy.id, async () => {
+      try { await api(`/proxies/${encodeURIComponent(proxy.id)}`, { method: 'DELETE' }); await load(); toast.success('代理已删除') }
+      catch (e) { setError(e.message); await load() }
+    })
   }
 
   const columns = [
@@ -68,8 +81,8 @@ export default function ProxiesPage() {
     {
       key: 'ops', title: '操作', width: '140px', align: 'right',
       render: (row) => <UiOps items={[
-        { label: '编辑', onClick: () => openEdit(row) },
-        { label: '删除', tone: 'danger', divider: true, onClick: () => remove(row) },
+        { label: '编辑', disabled: Boolean(busy), onClick: () => openEdit(row) },
+        { label: '删除', tone: 'danger', divider: true, disabled: Boolean(busy), loading: isBusy(row.id), loadingLabel: '删除中…', onClick: () => remove(row) },
       ]}/>,
     },
   ]
@@ -93,10 +106,10 @@ export default function ProxiesPage() {
         </div>
       </UiCard>
 
-      <UiDrawer value={!!drawer} onChange={(open) => !open && closeDrawer()} title={drawer?.isNew ? '新建代理' : '编辑代理'} eyebrow="具名代理" footer={drawer && (
+      <UiDrawer value={!!drawer} onChange={(open) => !open && closeDrawer()} title={drawer?.isNew ? '新建代理' : '编辑代理'} eyebrow="具名代理" persistent={isBusy('save')} footer={drawer && (
         <>
-          <UiButton variant="outline" size="sm" onClick={closeDrawer}>取消</UiButton>
-          <UiButton variant="primary" size="sm" loading={drawer.saving} onClick={submit}>保存</UiButton>
+          <UiButton variant="outline" size="sm" disabled={isBusy('save')} onClick={closeDrawer}>取消</UiButton>
+          <UiButton variant="primary" size="sm" loading={isBusy('save')} onClick={submit}>保存</UiButton>
         </>
       )}>
         {drawer && <div className="form-grid">

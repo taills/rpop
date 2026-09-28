@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { UiAlert, UiButton, UiDrawer, UiField, UiInput } from '@/components/ui'
+import { useBusyAction } from '../busyAction.js'
 import './NodeFormDrawer.css'
 
 const idPattern = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
@@ -11,7 +12,7 @@ const idPattern = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
 export default function NodeFormDrawer({ value, mode = 'create', initial, onChange, onSubmit }) {
   const [form, setForm] = useState({ id: '', name: '', relayAddress: '' })
   const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
+  const { busy, run } = useBusyAction()
 
   useEffect(() => {
     if (value) {
@@ -25,6 +26,9 @@ export default function NodeFormDrawer({ value, mode = 'create', initial, onChan
     return (v) => setForm((f) => ({ ...f, [field]: v }))
   }
 
+  // submit is guarded by useBusyAction's synchronous ref: `busy` state alone would still let a fast
+  // double-click (or Enter held down while clicking the drawer's "创建"/"保存" button) fire onSubmit twice
+  // before the disabled attribute below has actually re-rendered.
   async function submit(event) {
     event.preventDefault()
     if (mode === 'create' && !idPattern.test(form.id)) {
@@ -35,15 +39,14 @@ export default function NodeFormDrawer({ value, mode = 'create', initial, onChan
       setError('请填写节点名称')
       return
     }
-    setBusy(true)
-    setError('')
-    try {
-      await onSubmit({ id: form.id.trim(), name: form.name.trim(), relayAddress: form.relayAddress.trim() })
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setBusy(false)
-    }
+    await run(async () => {
+      setError('')
+      try {
+        await onSubmit({ id: form.id.trim(), name: form.name.trim(), relayAddress: form.relayAddress.trim() })
+      } catch (e) {
+        setError(e.message)
+      }
+    })
   }
 
   return (
@@ -52,10 +55,11 @@ export default function NodeFormDrawer({ value, mode = 'create', initial, onChan
       onChange={onChange}
       title={mode === 'create' ? '新建节点' : `编辑节点 ${initial?.id || ''}`}
       eyebrow="节点管理"
+      persistent={Boolean(busy)}
       footer={
         <>
-          <UiButton variant="outline" size="sm" disabled={busy} onClick={() => onChange?.(false)}>取消</UiButton>
-          <UiButton variant="primary" size="sm" loading={busy} onClick={submit}>{mode === 'create' ? '创建并生成 join token' : '保存'}</UiButton>
+          <UiButton variant="outline" size="sm" disabled={Boolean(busy)} onClick={() => onChange?.(false)}>取消</UiButton>
+          <UiButton variant="primary" size="sm" loading={Boolean(busy)} onClick={submit}>{mode === 'create' ? '创建并生成 join token' : '保存'}</UiButton>
         </>
       }
     >

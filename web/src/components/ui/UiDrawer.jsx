@@ -8,22 +8,27 @@ export default function UiDrawer({
   title = '',
   eyebrow = '',
   width = '480px',
+  // persistent blocks the mask click / × button / Esc from closing the drawer, same as UiModal's prop of the
+  // same name — pass the caller's busy/saving flag so a request in flight can't be abandoned mid-air by an
+  // accidental outside click, leaving its eventual success or error toast with nothing left open to show it in.
+  persistent = false,
   onChange,
   subtitle,
   footer,
   children,
 }) {
   function tryClose() {
+    if (persistent) return
     onChange?.(false)
   }
 
   useEffect(() => {
     function onKey(e) {
-      if (e.key === 'Escape' && value) tryClose()
+      if (e.key === 'Escape' && value && !persistent) tryClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [value, onChange])
+  }, [value, persistent, onChange])
 
   if (!value) return null
 
@@ -46,7 +51,7 @@ export default function UiDrawer({
             <h3 className="ui-drawer__title">{title}</h3>
             {subtitle}
           </div>
-          <button type="button" className="ui-drawer__x" aria-label="关闭" onClick={tryClose}>
+          <button type="button" className="ui-drawer__x" aria-label="关闭" disabled={persistent} onClick={tryClose}>
             <UiIcon name="x" size={16} />
           </button>
         </header>
