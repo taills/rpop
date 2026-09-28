@@ -6,12 +6,24 @@
   min-width: 0;
 }
 
+/* 卡片级"需要关注"提示：与 NodesPage 顶部横幅共用 nodeNeedsAttention（见 nodeCard.js 的
+ * nodeCardHasAnomaly），边框/卡头统一走 --accent-red/--soft-red 语义 token，和下面网格内单项高亮
+ * （.node-card__metric.is-anomaly）用的是同一色系，一眼能看出"这张卡片有问题"。 */
+.node-card.is-anomaly {
+  border-color: color-mix(in srgb, var(--accent-red) 32%, var(--border-primary));
+}
+
 .node-card__head {
   padding: 14px 16px 12px;
   border-bottom: 1px solid var(--border-primary);
   display: flex;
   flex-direction: column;
   gap: 6px;
+  transition: background 0.15s ease;
+}
+
+.node-card.is-anomaly .node-card__head {
+  background: var(--soft-red);
 }
 
 .node-card__title-row {
@@ -40,6 +52,17 @@
   gap: 8px;
   font-size: var(--fs-xs);
   color: var(--text-muted);
+}
+
+/* 中继绑定失败/站点应用失败的一行摘要（见 nodeCard.js 的 nodeCardErrorText）：单行截断，不做内部滚动，
+ * 完整文本交给 title 属性的原生 tooltip 展示。 */
+.node-card__error {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--accent-red);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 两列指标网格：每张卡片固定展示全部 7 项指标，异常项由 nodeCardMetrics 排到前面，

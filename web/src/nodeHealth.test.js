@@ -10,6 +10,9 @@ import {
   linkStatusTone,
   linksNeedAttention,
   logsNeedAttention,
+  NODE_ATTENTION_CHECKS,
+  nodeHasApplyErrors,
+  nodeHasRelayError,
   nodeNeedsAttention,
   pathStatusTone,
   pathsNeedAttention,
@@ -97,6 +100,30 @@ test('nodeNeedsAttention also flags an outdated protocol version (D27) or a warn
   assert.equal(nodeNeedsAttention({ online: true, protocolStatus: 'current', clockSkewStatus: 'ok' }), false)
   assert.equal(nodeNeedsAttention({ online: true, protocolStatus: 'outdated', clockSkewStatus: 'ok' }), true)
   assert.equal(nodeNeedsAttention({ online: true, protocolStatus: 'current', clockSkewStatus: 'warn' }), true)
+})
+
+// Regression for the UI review's MEDIUM finding: a briefly unsynced revision or a not-yet-issued certificate
+// must never count as "needs attention" — see nodeCard.js's METRIC_ANOMALY, which relies on this staying false.
+test('nodeNeedsAttention never fires on inSync/certGeneration alone — those are not attention checks', () => {
+  assert.equal(nodeNeedsAttention({ online: true, inSync: false, certGeneration: 0, links: [], paths: [], logs: null }), false)
+  assert.equal(nodeNeedsAttention({ online: true, embedded: true, inSync: false, certGeneration: 0, links: [], paths: [], logs: null }), false)
+})
+
+test('nodeHasRelayError/nodeHasApplyErrors read the same raw fields NodeDetailPage alerts on', () => {
+  assert.equal(nodeHasRelayError({ relayError: '' }), false)
+  assert.equal(nodeHasRelayError({ relayError: 'port in use' }), true)
+  assert.equal(nodeHasApplyErrors({ errors: {} }), false)
+  assert.equal(nodeHasApplyErrors({ errors: null }), false)
+  assert.equal(nodeHasApplyErrors({ errors: { site1: 'bad config' } }), true)
+})
+
+// NODE_ATTENTION_CHECKS is the single source nodeNeedsAttention and nodeCard.js's per-card highlighting both
+// build on (see nodeCard.js's METRIC_ANOMALY comment); pin its shape so a future edit cannot silently drop or
+// rename a check without a test noticing.
+test('NODE_ATTENTION_CHECKS covers exactly the reasons nodeNeedsAttention checks, revision/cert excluded', () => {
+  assert.deepEqual(Object.keys(NODE_ATTENTION_CHECKS), ['offline', 'links', 'paths', 'logs', 'relayError', 'errors', 'protocol', 'clockSkew'])
+  const node = { online: true, links: [], paths: [], logs: null, protocolStatus: 'current', clockSkewStatus: 'ok' }
+  assert.equal(Object.values(NODE_ATTENTION_CHECKS).some((check) => check(node)), nodeNeedsAttention(node))
 })
 
 test('status tone mappers default to neutral for unrecognized values', () => {

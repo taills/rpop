@@ -114,20 +114,41 @@ export function logsNeedAttention(logs) {
   return Boolean(logs.lastUploadError) || Number(logs.quotaDroppedSegments) > 0
 }
 
-// nodeNeedsAttention decides whether a node's row should be flagged in the list: offline (embedded nodes are
-// always "online" by definition, see localNodeView), a down link, a cooling path, an unhealthy spool, a relay
-// port that failed to bind, a site that failed to apply, an outdated protocol version (D27), or a clock skew
-// large enough to warn (D28).
+// nodeHasRelayError/nodeHasApplyErrors read the same two raw fields NodeDetailPage renders as its "中继端口绑定
+//失败"/"部分站点应用失败" alerts (see NodeDetailPage.jsx); pulled out here so both the summary banner and the
+// node card's own error line (nodeCard.js) key off the exact same truthiness check.
+export function nodeHasRelayError(node) {
+  return Boolean(node.relayError)
+}
+
+export function nodeHasApplyErrors(node) {
+  return Boolean(node.errors && Object.keys(node.errors).length > 0)
+}
+
+// NODE_ATTENTION_CHECKS is every individual reason a node might need operator attention, keyed for reuse: the
+// NodesPage banner sums these into a count, and nodeCard.js's per-card "需要关注" treatment and per-metric
+// highlighting are built from the exact same predicates (linked by name below) — so a card can never show an
+// anomaly the banner doesn't count, or vice versa. `offline` has no dedicated grid cell on the card (the
+// header's online/offline status dot already makes it obvious), but it still participates in the card-level
+// "需要关注" flag via nodeNeedsAttention. `revision`/`cert` are deliberately absent: a node that just had a new
+// config published, or that has not been issued a certificate yet, is not anomalous (see nodeCard.js's
+// METRIC_ANOMALY comment) — only their own warn/muted tag reflects that state.
+export const NODE_ATTENTION_CHECKS = {
+  offline: (node) => !node.embedded && !node.online,
+  links: (node) => linksNeedAttention(node.links),
+  paths: (node) => pathsNeedAttention(node.paths),
+  logs: (node) => logsNeedAttention(node.logs),
+  relayError: (node) => nodeHasRelayError(node),
+  errors: (node) => nodeHasApplyErrors(node),
+  protocol: (node) => node.protocolStatus === 'outdated',
+  clockSkew: (node) => node.clockSkewStatus === 'warn',
+}
+
+// nodeNeedsAttention decides whether a node's row/card should be flagged: true if any single check in
+// NODE_ATTENTION_CHECKS fires. See that map's doc comment for what each one covers and why revision/cert are
+// excluded.
 export function nodeNeedsAttention(node) {
-  if (!node.embedded && !node.online) return true
-  if (linksNeedAttention(node.links)) return true
-  if (pathsNeedAttention(node.paths)) return true
-  if (logsNeedAttention(node.logs)) return true
-  if (node.relayError) return true
-  if (node.errors && Object.keys(node.errors).length > 0) return true
-  if (node.protocolStatus === 'outdated') return true
-  if (node.clockSkewStatus === 'warn') return true
-  return false
+  return Object.values(NODE_ATTENTION_CHECKS).some((check) => check(node))
 }
 
 const LINK_STATUS_TONE = { up: 'success', dialing: 'warn', down: 'danger' }

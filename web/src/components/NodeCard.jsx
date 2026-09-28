@@ -1,7 +1,7 @@
 import { UiButton, UiStatusDot, UiTag } from '@/components/ui'
 import TimeCell from '@/components/TimeCell.jsx'
 import { LinkHealthSummary, LogHealthSummary, PathHealthSummary, ClockSkewSummary, ProtocolHealthSummary } from '@/components/NodeHealthSummary.jsx'
-import { nodeCardMetrics } from '@/nodeCard'
+import { nodeCardErrorText, nodeCardHasAnomaly, nodeCardMetrics } from '@/nodeCard'
 import { cx } from '@/utils/cx'
 import './NodeCard.css'
 
@@ -51,23 +51,30 @@ function MetricValue({ metricKey, node }) {
 }
 
 // NodeCard replaces one row of the old node table with a self-contained card: header (name/id/embedded flag/
-// online status), a metrics grid (revision/cert/link/path/log/protocol/clock-skew, anomalies sorted first by
-// nodeCardMetrics) and a footer with the same one-click actions the table's "操作" column had. onDetail also
-// backs the name link, so opening details never needs more than the one click the table already offered.
+// online status/anomaly tag), a metrics grid (revision/cert/link/path/log/protocol/clock-skew, anomalies sorted
+// first by nodeCardMetrics) and a footer with the same one-click actions the table's "操作" column had. onDetail
+// also backs the name link, so opening details never needs more than the one click the table already offered.
+// hasAnomaly/errorText both derive from nodeCard.js, which in turn derives from nodeHealth.js's
+// nodeNeedsAttention — the same predicate NodesPage's banner counts, so this card's "需要关注" tag and the
+// banner's count can never disagree.
 export default function NodeCard({ node, busy, onDetail, onEdit, onToken, onDelete }) {
   const metrics = nodeCardMetrics(node)
+  const hasAnomaly = nodeCardHasAnomaly(node)
+  const errorText = nodeCardErrorText(node)
   return (
-    <article className="ui-card node-card">
+    <article className={cx('ui-card node-card', hasAnomaly && 'is-anomaly')}>
       <header className="node-card__head">
         <div className="node-card__title-row">
           <a className="ui-name-link node-card__name" onClick={() => onDetail(node)}>{node.name}</a>
           {node.embedded && <UiTag tone="muted">内嵌</UiTag>}
+          {hasAnomaly && <UiTag tone="risk-critical" icon="alert">需要关注</UiTag>}
         </div>
         <div className="ui-owner-line node-card__id">{node.id}</div>
         <div className="node-card__status-row">
           <UiStatusDot tone={node.online ? 'success' : 'danger'}>{node.online ? '在线' : '离线'}</UiStatusDot>
           <TimeCell value={node.lastSeen} />
         </div>
+        {errorText && <p className="node-card__error" title={errorText}>{errorText}</p>}
       </header>
       <div className="node-card__body">
         {metrics.map(({ key, anomaly }) => (
