@@ -46,6 +46,26 @@ test('layoutTopology places each layer at a deterministic x and orders rows onli
   assert.equal(layout.width, 50 * 2 + 3 * 200)
 })
 
+test('layoutTopology compacts columns when a pipeline role has no nodes, so idle-only nodes stay inside width', () => {
+  // Regression test for a real bug found during the task 3 usability pass (2026-09-28): when every node is
+  // role-less (no entry/relay/exit — e.g. every registered node is still unregistered/idle), all of them land
+  // in the trailing idle layer (index 3), but only one column is actually drawn. Positioning that column at
+  // x = marginX + 3 * columnWidth while `width` only accounts for 1 drawn column placed every node past the
+  // SVG's right edge, clipping the whole diagram to blank. Columns must be compacted to the columns actually
+  // drawn (0-based), not the raw ROLE_ORDER index, so idle-only data still renders inside `width`.
+  const nodes = [
+    { id: 'a', online: true, roles: [] },
+    { id: 'b', online: false, roles: [] },
+  ]
+  const layout = layoutTopology(nodes, { columnWidth: 200, rowHeight: 80, marginX: 50, marginY: 40 })
+  const byId = Object.fromEntries(layout.nodes.map((n) => [n.id, n]))
+  assert.equal(layout.columns.length, 1)
+  assert.equal(layout.width, 50 * 2, 'a single drawn column must not reserve space for the three unused entry/relay/exit slots before it')
+  assert.equal(byId.a.x, 50, 'the lone column sits at the first slot, not at its raw ROLE_ORDER index (3)')
+  assert.equal(byId.b.x, 50)
+  assert.ok(byId.a.x + 24 <= layout.width, 'a node (even with its radius) must fit inside the reported width')
+})
+
 test('layoutTopology is a pure function of each node\'s own roles, so link cycles cannot affect it', () => {
   // Two nodes that relay to each other (a cycle) still each get a single, well-defined column from their roles
   // alone; layoutTopology never looks at links, so there is nothing here that could recurse.

@@ -159,6 +159,12 @@ export default function TopologyPage() {
                   })}
                   {layout.nodes.map((node) => {
                     const label = node.name.length > 6 ? `${node.name.slice(0, 5)}…` : node.name
+                    // node.id has no length limit server-side (see internal/control/topology.go), and unlike
+                    // node.name just above it was rendered here in full: a long id (the wrap-test seed fixture
+                    // uses one) overflows well past the node's own circle with no page-level scrollbar to reveal
+                    // it, so it just looks cut off. Truncate the same way as the name, with the full id still
+                    // available in the hover tooltip via nodeTooltip() (task 3 usability pass, 2026-09-28).
+                    const idLabel = node.id.length > 16 ? `${node.id.slice(0, 15)}…` : node.id
                     return (
                     <g
                       key={node.id}
@@ -176,7 +182,7 @@ export default function TopologyPage() {
                       />
                       <title>{nodeTooltip(node)}</title>
                       <text y={4} textAnchor="middle" className="topology-svg__label">{label}</text>
-                      <text y={NODE_RADIUS + 16} textAnchor="middle" className="topology-svg__sub">{node.id}</text>
+                      <text y={NODE_RADIUS + 16} textAnchor="middle" className="topology-svg__sub">{idLabel}</text>
                     </g>
                     )
                   })}

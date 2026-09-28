@@ -51,6 +51,13 @@ export function layoutTopology(nodes = [], options = {}) {
   }
 
   const layers = [...columns.keys()].sort((a, b) => a - b)
+  // displayColumn maps each *populated* layer to a compact 0-based slot, so a gap in the pipeline (e.g. no node
+  // currently has an entry/relay/exit role and everything lands in the trailing idle layer, index 3) does not
+  // leave the real content positioned past `width`'s right edge: width below is derived from layers.length
+  // (how many columns are actually drawn), so x must be too, rather than from the raw ROLE_ORDER index, or the
+  // whole diagram silently clips out of the SVG's viewBox (see topologyLayout.test.js's "idle-only" regression
+  // case — this was a real bug found during the task 3 usability pass, 2026-09-28).
+  const displayColumn = new Map(layers.map((layer, index) => [layer, index]))
   const maxRows = layers.reduce((max, layer) => Math.max(max, columns.get(layer).length), 1)
   const columnHeight = maxRows * rowHeight
 
@@ -59,8 +66,9 @@ export function layoutTopology(nodes = [], options = {}) {
   for (const layer of layers) {
     const list = columns.get(layer)
     const offsetY = marginY + (columnHeight - list.length * rowHeight) / 2
+    const x = marginX + displayColumn.get(layer) * columnWidth
     list.forEach((node, row) => {
-      const placed = { ...node, layer, x: marginX + layer * columnWidth, y: offsetY + row * rowHeight + rowHeight / 2 }
+      const placed = { ...node, layer, x, y: offsetY + row * rowHeight + rowHeight / 2 }
       positioned.push(placed)
       byId.set(placed.id, placed)
     })
@@ -69,7 +77,7 @@ export function layoutTopology(nodes = [], options = {}) {
   return {
     nodes: positioned,
     byId,
-    columns: layers.map((layer) => ({ layer, label: layerLabel(layer), x: marginX + layer * columnWidth })),
+    columns: layers.map((layer) => ({ layer, label: layerLabel(layer), x: marginX + displayColumn.get(layer) * columnWidth })),
     width: marginX * 2 + Math.max(0, layers.length - 1) * columnWidth,
     height: marginY * 2 + columnHeight,
   }
