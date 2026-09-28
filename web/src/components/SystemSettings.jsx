@@ -33,23 +33,29 @@ export default function SystemSettings({ api, onChange }) {
   const [newPassword, setNewPassword] = useState('')
   const [passwordError, setPasswordError] = useState('')
   const [passwordMessage, setPasswordMessage] = useState('')
-  // This page's four independent-looking forms (timezone, node deployment defaults, admin password, CA
-  // certificates) all PUT the same /api/settings resource except the password change, and each one that does
-  // resends whatever it is not itself changing from its last-saved snapshot (see nodeSettingsFields() below) —
-  // so two of them actually in flight at once could race and have the slower one's stale snapshot clobber the
-  // faster one's just-saved field. One shared useBusyAction lock (rather than four separate booleans) makes
-  // that impossible instead of just discouraging it, at the minor cost of not letting an operator save the
-  // timezone and change their password in the same instant.
+  // This page's forms (timezone, node deployment defaults, admin password, CA root certificates, and — via
+  // props — the server/client KeyedCertificateManager tabs) all PUT the same /api/settings resource except the
+  // password change, and each one that does resends whatever it is not itself changing from its last-saved
+  // snapshot (see nodeSettingsFields() below) — so two of them actually in flight at once could race and have
+  // the slower one's stale snapshot clobber the faster one's just-saved field, even though the server
+  // serializes the PUTs themselves: the client-side body is built from React state captured before either
+  // request resolved, so serialising on the server does not stop the second body from carrying stale values.
+  // One shared useBusyAction lock (rather than one boolean per form) makes that impossible instead of just
+  // discouraging it, at the minor cost of not letting an operator save the timezone and change their password
+  // in the same instant. KeyedCertificateManager no longer owns its own lock — it runs its save through this
+  // same `runSettingsAction`, via the `busy`/`run` props below, so its PUTs are serialized with all the others
+  // too instead of only with itself.
   const { busy: settingsBusy, run: runSettingsAction } = useBusyAction()
   const savingTimeZone = settingsBusy === 'timezone'
   const savingCertificate = settingsBusy === 'certificate'
   const savingNodeSettings = settingsBusy === 'nodeSettings'
   const savingPassword = settingsBusy === 'password'
   // The general tab renders the timezone/node-settings/password forms together (and the CA tab's buttons are
-  // reachable by switching tabs mid-save), so a click on any of these four forms' buttons while ANOTHER one is
+  // reachable by switching tabs mid-save), so a click on any of these forms' buttons while ANOTHER one is
   // mid-PUT must be visibly blocked too, not just silently dropped by runSettingsAction's lock — hence
-  // disabling every one of them on `anySettingsBusy`, while each button's own "保存中…" text/aria-busy still
-  // only lights up for its own matching key.
+  // disabling every one of them (including the tab buttons themselves, see the tablist below) on
+  // `anySettingsBusy`, while each button's own "保存中…" text/aria-busy still only lights up for its own
+  // matching key.
   const anySettingsBusy = Boolean(settingsBusy)
   // nodeControllerUrl/nodeImage feed the node onboarding guide (see NodeBootstrapGuide.jsx); saved* mirrors
   // savedTimeZone's role below: every PUT to /api/settings must resend the CURRENTLY SAVED value of every
@@ -259,11 +265,15 @@ export default function SystemSettings({ api, onChange }) {
       sub="管理系统时区、站点 HTTPS 证书、上游 HTTPS CA 根证书、mTLS Client 证书和管理员密码。"
     />
 
+    {/* Tab buttons stay disabled while any settings form is saving: switching tabs mid-save would unmount
+        KeyedCertificateManager (for the server/client tabs) while its own persist() is still in flight, losing
+        the success/error message and racing setState on an unmounted component. Blocking the switch is simpler
+        and safer than trying to keep an unmounted form's result visible. */}
     <div className="system-settings-tabs" role="tablist" aria-label="系统设置分类">
-      <button type="button" role="tab" id="system-settings-tab-general" aria-selected={activeTab === 'general'} aria-controls="system-settings-panel-general" onClick={() => setActiveTab('general')}>常规设置</button>
-      <button type="button" role="tab" id="system-settings-tab-server" aria-selected={activeTab === 'server'} aria-controls="system-settings-panel-server" onClick={() => setActiveTab('server')}>站点 HTTPS 证书 <span className="tab-count">{serverCertificates.length}</span></button>
-      <button type="button" role="tab" id="system-settings-tab-ca" aria-selected={activeTab === 'ca'} aria-controls="system-settings-panel-ca" onClick={() => setActiveTab('ca')}>上游 CA 根证书 <span className="tab-count">{rootCertificates.length}</span></button>
-      <button type="button" role="tab" id="system-settings-tab-client" aria-selected={activeTab === 'client'} aria-controls="system-settings-panel-client" onClick={() => setActiveTab('client')}>mTLS Client 证书 <span className="tab-count">{clientCertificates.length}</span></button>
+      <button type="button" role="tab" id="system-settings-tab-general" aria-selected={activeTab === 'general'} aria-controls="system-settings-panel-general" disabled={anySettingsBusy} onClick={() => setActiveTab('general')}>常规设置</button>
+      <button type="button" role="tab" id="system-settings-tab-server" aria-selected={activeTab === 'server'} aria-controls="system-settings-panel-server" disabled={anySettingsBusy} onClick={() => setActiveTab('server')}>站点 HTTPS 证书 <span className="tab-count">{serverCertificates.length}</span></button>
+      <button type="button" role="tab" id="system-settings-tab-ca" aria-selected={activeTab === 'ca'} aria-controls="system-settings-panel-ca" disabled={anySettingsBusy} onClick={() => setActiveTab('ca')}>上游 CA 根证书 <span className="tab-count">{rootCertificates.length}</span></button>
+      <button type="button" role="tab" id="system-settings-tab-client" aria-selected={activeTab === 'client'} aria-controls="system-settings-panel-client" disabled={anySettingsBusy} onClick={() => setActiveTab('client')}>mTLS Client 证书 <span className="tab-count">{clientCertificates.length}</span></button>
     </div>
 
     {activeTab === 'general' && <div id="system-settings-panel-general" role="tabpanel" aria-labelledby="system-settings-tab-general" className="system-settings-tabpanel">
@@ -349,7 +359,7 @@ export default function SystemSettings({ api, onChange }) {
       <p className="ca-management-note">最多 64 张证书。根证书仅在站点明确选择后生效；移除已被站点引用的证书前，需先修改对应站点配置。</p>
     </section>}
 
-    {activeTab === 'server' && <KeyedCertificateManager kind={SERVER_CERTIFICATE_KIND} certificates={serverCertificates} loaded={settingsLoaded} loading={loading} persist={next => persistKeyedCertificates('serverCertificates', next)}/>}
-    {activeTab === 'client' && <KeyedCertificateManager kind={CLIENT_CERTIFICATE_KIND} certificates={clientCertificates} loaded={settingsLoaded} loading={loading} persist={next => persistKeyedCertificates('clientCertificates', next)}/>}
+    {activeTab === 'server' && <KeyedCertificateManager kind={SERVER_CERTIFICATE_KIND} certificates={serverCertificates} loaded={settingsLoaded} loading={loading} persist={next => persistKeyedCertificates('serverCertificates', next)} busy={settingsBusy} run={runSettingsAction}/>}
+    {activeTab === 'client' && <KeyedCertificateManager kind={CLIENT_CERTIFICATE_KIND} certificates={clientCertificates} loaded={settingsLoaded} loading={loading} persist={next => persistKeyedCertificates('clientCertificates', next)} busy={settingsBusy} run={runSettingsAction}/>}
   </div>
 }

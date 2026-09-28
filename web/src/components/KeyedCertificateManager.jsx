@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { useBusyAction } from '../busyAction.js'
 
 const MAX_KEYED_CERTIFICATES = 64
 
@@ -57,21 +56,32 @@ async function readPEMFile(event, apply) {
   if (file) apply(await file.text())
 }
 
-export default function KeyedCertificateManager({ kind, certificates, loaded, loading, persist }) {
+// busyKey identifies this manager's save/delete slot in the shared SystemSettings lock (see the `busy`/`run`
+// props below) — distinct per kind so a server-certificate save and a client-certificate save are still two
+// different keys, even though only one of the two tabs is ever mounted at a time.
+function busyKeyFor(kind) {
+  return `${kind.key}Certificate`
+}
+
+export default function KeyedCertificateManager({ kind, certificates, loaded, loading, persist, busy, run }) {
   const [draft, setDraft] = useState(null)
   const [editingID, setEditingID] = useState(null)
   const [confirmDeleteID, setConfirmDeleteID] = useState(null)
   const [query, setQuery] = useState('')
-  // save() is the single entry point submitDraft/remove both funnel through, so guarding it once here with
-  // useBusyAction's synchronous ref covers a fast double-click on "保存证书" and on "确认删除" alike — a plain
-  // `saving` state check would still leave the same one-tick window busyAction.js's doc comment warns about.
-  const { busy: savingKey, run } = useBusyAction()
-  const saving = Boolean(savingKey)
+  // `busy`/`run` come from SystemSettings' single shared useBusyAction lock (see its doc comment) rather than
+  // an instance of the hook owned here: this manager's persist() call is one more PUT to the same
+  // /api/settings resource as the timezone/node-settings/CA-root forms, so it must be serialized with them
+  // too, not just with its own future double-clicks. `saving` (this manager's own key) drives the "保存中…"
+  // label; `anyBusy` (ANY key, including another form entirely) disables every button here, matching how the
+  // other forms on this page disable on `anySettingsBusy`.
+  const busyKey = busyKeyFor(kind)
+  const saving = busy === busyKey
+  const anyBusy = Boolean(busy)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
 
   async function save(nextCertificates, successMessage) {
-    await run(async () => {
+    await run(busyKey, async () => {
       setError('')
       setMessage('')
       try {
@@ -130,7 +140,7 @@ export default function KeyedCertificateManager({ kind, certificates, loaded, lo
   return <section id={panelID} role="tabpanel" aria-labelledby={`system-settings-tab-${kind.key}`} className="settings-panel ca-management-panel">
     <div className="ca-management-heading">
       <div><h3>{kind.title}</h3><p>{kind.description}</p></div>
-      <button type="button" className="secondary" disabled={!canManage || saving || certificates.length >= MAX_KEYED_CERTIFICATES} onClick={() => openEditor()}>＋ 添加 {kind.noun}</button>
+      <button type="button" className="secondary" disabled={!canManage || anyBusy || certificates.length >= MAX_KEYED_CERTIFICATES} onClick={() => openEditor()}>＋ 添加 {kind.noun}</button>
     </div>
     {error && <div className="error settings-message">{error}</div>}
     {message && <div className="log-success settings-message">{message}</div>}
@@ -139,7 +149,7 @@ export default function KeyedCertificateManager({ kind, certificates, loaded, lo
     {loaded && certificates.length === 0 && !draft && <div className="ca-empty-state"><strong>尚未添加 {kind.noun}</strong><span>{kind.emptyText}</span></div>}
     {certificates.length > 0 && <label className="ca-search">搜索 {kind.noun}<input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="按名称、域名、主题或指纹搜索" autoComplete="off"/></label>}
     {draft && <form className="ca-editor" onSubmit={submitDraft}>
-      <div className="ca-editor-heading"><h4>{editingID ? `编辑 ${kind.noun}` : `添加 ${kind.noun}`}</h4><button type="button" className="icon-button" aria-label="关闭证书编辑器" disabled={saving} onClick={closeEditor}>×</button></div>
+      <div className="ca-editor-heading"><h4>{editingID ? `编辑 ${kind.noun}` : `添加 ${kind.noun}`}</h4><button type="button" className="icon-button" aria-label="关闭证书编辑器" disabled={anyBusy} onClick={closeEditor}>×</button></div>
       <label>证书名称<input required maxLength="128" value={draft.name} onChange={event => setDraft(current => ({ ...current, name: event.target.value }))} placeholder={kind.namePlaceholder}/></label>
       <label>证书 PEM（可附带中间证书）
         <textarea required rows="8" value={draft.certificatePem} onChange={event => setDraft(current => ({ ...current, certificatePem: event.target.value }))} placeholder={'-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----'} spellCheck="false" autoCapitalize="off" autoComplete="off"/>
@@ -150,7 +160,7 @@ export default function KeyedCertificateManager({ kind, certificates, loaded, lo
         <span className="pem-file-picker">或从文件读取<input type="file" accept=".pem,.key" onChange={event => readPEMFile(event, text => setDraft(current => ({ ...current, privateKeyPem: text })))}/></span>
       </label>
       <p className="ca-editor-note">{kind.usageNote}；私钥需为未加密的 PKCS#1 / PKCS#8 / EC PEM，并与证书匹配。{kind.replaceNote}</p>
-      <div className="ca-editor-actions"><button type="button" className="secondary" onClick={closeEditor} disabled={saving}>取消</button><button className="primary" disabled={saving}>{saving ? '保存中…' : '保存证书'}</button></div>
+      <div className="ca-editor-actions"><button type="button" className="secondary" onClick={closeEditor} disabled={anyBusy}>取消</button><button className="primary" disabled={anyBusy}>{saving ? '保存中…' : '保存证书'}</button></div>
     </form>}
     {loaded && certificates.length > 0 && visible.length === 0 && <div className="ca-empty-state">没有匹配的 {kind.noun}。</div>}
     {loaded && visible.length > 0 && <div className="ca-record-list">
@@ -166,9 +176,9 @@ export default function KeyedCertificateManager({ kind, certificates, loaded, lo
             <code>SHA-256 · {certificate.fingerprint || certificate.id}</code>
           </div><div className="ca-record-actions">
             {confirmDeleteID === certificate.id ? (
-              <><span className="ca-delete-prompt">确认删除？被站点引用时会被拒绝。</span><button type="button" className="danger" disabled={saving} onClick={() => remove(certificate)}>确认删除</button><button type="button" className="secondary" onClick={() => setConfirmDeleteID(null)}>取消</button></>
+              <><span className="ca-delete-prompt">确认删除？被站点引用时会被拒绝。</span><button type="button" className="danger" disabled={anyBusy} onClick={() => remove(certificate)}>确认删除</button><button type="button" className="secondary" onClick={() => setConfirmDeleteID(null)}>取消</button></>
             ) : (
-              <><button type="button" className="secondary" disabled={saving || draft !== null} onClick={() => openEditor(certificate)}>编辑</button><button type="button" className="secondary" disabled={saving || draft !== null} onClick={() => { setError(''); setMessage(''); setConfirmDeleteID(certificate.id) }}>删除</button></>
+              <><button type="button" className="secondary" disabled={anyBusy || draft !== null} onClick={() => openEditor(certificate)}>编辑</button><button type="button" className="secondary" disabled={anyBusy || draft !== null} onClick={() => { setError(''); setMessage(''); setConfirmDeleteID(certificate.id) }}>删除</button></>
             )}
           </div></div>
           <details className="ca-record-details"><summary>查看证书 PEM</summary><pre>{certificate.certificatePem}</pre></details>
