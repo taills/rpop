@@ -206,6 +206,19 @@ test('siteSharedPortHints says nothing about a TLS site colocated with a plainte
   assert.deepEqual(hints, [])
 })
 
+test('siteSharedPortHints says nothing about a plaintext site colocated with a node\'s TLS-only relay port (the mirror image of the test above)', () => {
+  // ownersForNode always marks a node's relay port `tls: true` (see its doc comment), so the same "dispatches
+  // by first byte before either table is reached" rule as the TLS-site/plaintext-console case above applies in
+  // reverse here: a plaintext site sharing the exact same address as a relay port never reaches that TLS table
+  // either, and needs no hostname on that account alone. Same idea as
+  // "flags a missing hostname on a node's relay port" above, but with the site's own tls flipped to false so it
+  // no longer matches the owner's mode — matchingOwners ends up empty, so admitSite is never even asked.
+  const site = { id: 'a', config: { nodes: ['edge-1'], listenAddress: '', listenPort: 9000, tls: false, hostnames: [] } }
+  const nodes = [{ id: 'edge-1', relayAddress: '203.0.113.5:9000' }]
+  const hints = siteSharedPortHints({ site, bootstrapInfo: bootstrapInfo(), nodes, sites: [] })
+  assert.deepEqual(hints, [])
+})
+
 test('siteSharedPortHints shows only an informational reuse hint once a hostname is already set (mirrors AllowsLegitimateReuseToSaveAndStart)', () => {
   const site = { id: 'a', config: { listenAddress: '127.0.0.1', listenPort: 8080, hostnames: ['shared.test'], tls: false, nodes: [] } }
   const hints = siteSharedPortHints({ site, bootstrapInfo: bootstrapInfo(), nodes: [], sites: [] })
