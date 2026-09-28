@@ -55,7 +55,10 @@
   position: absolute;
   z-index: 40;
   top: calc(100% + 6px);
-  right: 0;
+  /* `left` is computed and set inline by UiThemeSwitcher.jsx (clampDropdownLeft, see utils/dropdownPosition.js):
+   * a static `right: 0` here would anchor the panel to the trigger's own right edge, which runs the panel off
+   * the viewport's left edge on a narrow screen where the trigger sits close to the left (see
+   * docs/architecture/control-data-plane.md §5's "UI 审查问题修复" entry). */
   width: 240px;
   max-width: calc(100vw - 32px);
   background: var(--bg-card);

@@ -1,8 +1,9 @@
 import './UiThemeSwitcher.css'
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { cx } from '@/utils/cx'
 import { useThemeStore } from '@/stores/theme'
 import { groupThemesByMode } from '@/themes'
+import { clampDropdownLeft } from '@/utils/dropdownPosition'
 import { moveActiveIndex } from './dropdownKeyboard'
 import UiIcon from './UiIcon'
 
@@ -13,6 +14,7 @@ export default function UiThemeSwitcher() {
   const [activeIndex, setActiveIndex] = useState(-1)
   const rootRef = useRef(null)
   const triggerRef = useRef(null)
+  const panelRef = useRef(null)
   // useId() scopes every option/panel id to this instance so two switchers on the same page (e.g. a future
   // second mount, or a dev tool rendering the catalog alongside the real one) never collide on plain
   // `ui-theme-switcher-opt-${id}` strings, which aria-activedescendant/aria-controls both rely on staying unique.
@@ -32,6 +34,35 @@ export default function UiThemeSwitcher() {
     document.addEventListener('mousedown', onClickAway)
     return () => document.removeEventListener('mousedown', onClickAway)
   }, [])
+
+  // CSS alone (`position: absolute; right: 0`) anchors the panel to the *trigger's own* right edge, which is
+  // fine on a wide screen but not the page's own right edge — on a narrow screen where the trigger sits close
+  // to the left (squeezed by neighboring header controls, e.g. "退出登录"), that made the panel run off the
+  // viewport's left edge entirely (browser-verified at 320px; see docs/architecture/control-data-plane.md §5's
+  // "UI 审查问题修复" entry and utils/dropdownPosition.js's tests). Recomputed with useLayoutEffect (before
+  // paint, so there is no visible jump) and again on resize while open.
+  useLayoutEffect(() => {
+    if (!open) return
+    function reposition() {
+      const panel = panelRef.current
+      const trigger = triggerRef.current
+      const root = rootRef.current
+      if (!panel || !trigger || !root) return
+      const desiredLeft = clampDropdownLeft({
+        triggerRight: trigger.getBoundingClientRect().right,
+        panelWidth: panel.offsetWidth,
+        viewportWidth: window.innerWidth,
+      })
+      // The panel's `left` is resolved by the browser relative to its nearest positioned ancestor (rootRef,
+      // `.ui-theme-switcher`), not the viewport — but clampDropdownLeft works in viewport coordinates (it only
+      // knows about getBoundingClientRect()/window.innerWidth). Convert back into the ancestor's own coordinate
+      // space, or the panel ends up offset by however far that ancestor sits from the viewport's left edge.
+      panel.style.left = `${desiredLeft - root.getBoundingClientRect().left}px`
+    }
+    reposition()
+    window.addEventListener('resize', reposition)
+    return () => window.removeEventListener('resize', reposition)
+  }, [open])
 
   function openPanel() {
     setActiveIndex(flatThemes.findIndex((t) => t.id === themeStore.themeId))
@@ -98,7 +129,7 @@ export default function UiThemeSwitcher() {
       </button>
 
       {open && (
-        <div id={panelId} className="ui-theme-switcher__panel" role="listbox" aria-label="主题">
+        <div ref={panelRef} id={panelId} className="ui-theme-switcher__panel" role="listbox" aria-label="主题">
           {groups.map((group) => (
             <div key={group.mode} className="ui-theme-switcher__group" role="group" aria-label={group.label}>
               <div className="ui-theme-switcher__group-label" aria-hidden="true">{group.label}</div>
