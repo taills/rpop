@@ -332,6 +332,41 @@ func TestFailedModeSwitchKeepsServingTheOldMode(t *testing.T) {
 	}
 }
 
+// TestFailedModeSwitchFromTLSToPlaintextKeepsServingTheOldMode mirrors TestFailedModeSwitchKeepsServingTheOldMode
+// in the other direction: a TLS site that fails to switch to plaintext must keep serving its old TLS
+// registration, restored with its original certificate (previous.route.certificate.Load) — the one branch the
+// plaintext-to-TLS test above never exercises, since the site it restores there is plaintext and carries no
+// certificate at all. The TLS request below deliberately sets ServerName: a request with none can pass even
+// against the wrong certificate/handler (this project has shipped that mistake before), so this asserts against
+// the site's actual hostname instead of leaving SNI to chance.
+func TestFailedModeSwitchFromTLSToPlaintextKeepsServingTheOldMode(t *testing.T) {
+	engine := newTestEngine(t)
+	port := freePort(t)
+	sibling := plainSite("sibling", port, textUpstream(t, "sibling").URL)
+	sibling.Hostnames = []string{"sibling.test"}
+	cert := newTestCertificate(t)
+	web := plainSite("web", port, textUpstream(t, "web-tls").URL)
+	web.TLS, web.Hostnames = true, []string{"web.test"}
+	web.Certificate = &snapshot.KeyPair{CertificatePEM: cert.certPEM, PrivateKeyPEM: cert.keyPEM}
+	mustApply(t, engine, sibling, web)
+
+	// Switching "web" to plaintext with no hostname must be rejected: the plaintext side of this address already
+	// has "sibling", which does have a hostname, so admit() requires "web" to configure one too in order to share.
+	webPlain := plainSite("web", port, textUpstream(t, "web-plain").URL)
+	errs := engine.Apply([]snapshot.Site{sibling, webPlain})
+	if errs["web"] == nil {
+		t.Fatal("expected the mode switch to fail admission")
+	}
+
+	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	if got := getSNI(t, address, "web.test"); got != "web-tls" {
+		t.Fatalf("TLS GET with SNI %q after the failed switch = %q, want the old TLS site restored", "web.test", got)
+	}
+	if !engine.Running("web") {
+		t.Fatal("web should still be reported as running its old config")
+	}
+}
+
 // TestFailedModeSwitchRestoreStopsTrackingTheSite covers the case TestFailedModeSwitchKeepsServingTheOldMode
 // cannot: the restore PutSite that puts a site's old registration back after a failed mode switch can itself
 // fail, if something else sharing the registry claims the vacated hostname in the instant between RemoveSite and
