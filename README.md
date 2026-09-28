@@ -43,6 +43,51 @@ Create a node with `POST /api/nodes` (`{"id":"edge-1","name":"Edge 1"}`); the re
 
 A node's log spool (access logs and tunnel events awaiting upload) defaults to a 2 GiB quota uploaded at up to 4 MiB/s, tunable with `-log-spool-quota-bytes`/`-log-upload-rate-bytes` (env `RPOP_LOG_SPOOL_QUOTA_BYTES`/`RPOP_LOG_UPLOAD_RATE_BYTES`). Overlay/southbound HTTP/2 flow-control windows and stream limits (`-overlay-stream-window`, `-overlay-connection-window`, `-overlay-max-streams`, `-southbound-max-streams`), controller-side log-ingest concurrency and rate limits (`-log-ingest-max-concurrent`, `-log-ingest-rate-bytes`), the tunnel-event store's capacity and retention (`-tunnel-event-store-max-bytes`, `-tunnel-event-retention-days`), the console's clock-skew warning threshold (`-clock-skew-warn-threshold`), and D19 active path probing (`-path-active-probe`, on by default) all ship with sane defaults and a matching `RPOP_*` environment variable; run `rpop -h` for the full flag list and defaults.
 
+### Deploying a node
+
+Creating a node in the console (Nodes page, or the token reset button) opens a one-time join-token dialog that also renders a node onboarding guide: it calls `GET /api/nodes/bootstrap-info` (authenticated; returns the controller's version, process mode, southbound listen state/address/port, and the `nodeControllerUrl`/`nodeImage` system settings) to prefill a working `-controller` address — the operator's configured `nodeControllerUrl` setting when set, otherwise a guess built from the browser's own hostname and the southbound port (IPv6 hosts get bracketed) — and regenerates four ready-to-copy recipes live as that address is edited: a plain CLI command, a systemd unit, a `docker run` invocation, and a full `docker-compose.yml` (token kept in a sibling `.env`, not in the compose file itself). Each recipe numbers its steps, gives every command/config block its own copy button, and ends with what a successful registration looks like plus common failure causes (expired/used token, firewall/port reachability, CA mismatch). Set System Settings' "节点部署默认值" (`nodeControllerUrl`/`nodeImage`) once per environment so the guide defaults to your real controller URL and image registry instead of a same-origin guess. If the controller was not started with a southbound listener, the guide shows a warning instead of a command that would not work — run it in `controller` mode, or set `-southbound-addr` on `all-in-one`.
+
+Minimal systemd unit (the guide's own systemd tab produces a fuller, hardened version — `ProtectSystem=strict`, `CAP_NET_BIND_SERVICE`, a dedicated `rpop` user — plus the install/env-file/cleanup steps around it):
+
+```ini
+[Unit]
+Description=rpop node
+After=network-online.target
+
+[Service]
+User=rpop
+EnvironmentFile=/etc/rpop/node.env
+ExecStart=/usr/local/bin/rpop
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Minimal `docker-compose.yml` (see `deploy/docker-compose.node.example.yml`/`deploy/.env.node.example` for the full version, or let the guide generate one with the real controller address and token filled in):
+
+```yaml
+services:
+  rpop-node:
+    image: rpop:1.4.0
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      RPOP_MODE: node
+      RPOP_CONTROLLER: "https://controller.example.com:7443"
+      RPOP_JOIN_TOKEN: "${RPOP_JOIN_TOKEN}"
+      RPOP_DATA_DIR: /app/data
+      RPOP_LOG_DIR: /app/logs
+    volumes:
+      - rpop-node-data:/app/data
+      - rpop-node-logs:/app/logs
+volumes:
+  rpop-node-data:
+  rpop-node-logs:
+```
+
+Node mode's `-health-check` (what the Docker image's built-in `HEALTHCHECK` runs, see above) has no local control API listener to probe the way `controller`/`all-in-one` do; instead it checks that `-data-dir` holds a complete node identity (cert/key/CA from a successful registration). A node that has never registered — bad join token, unreachable controller, wrong `-controller` — reports unhealthy, the failure an operator most wants surfaced; once registered it keeps reporting healthy through a later, transient controller outage, since the node keeps serving its cached snapshot and retries registration on its own rather than needing the container restarted.
+
 ### Upstream paths across nodes
 
 An upstream can reach its origin through other nodes and external proxies instead of connecting directly. `paths` lists candidate routes in priority order; each `via` is an ordered mix of nodes and registered proxies, and an empty `via` connects directly. `via` on the upstream itself is shorthand for a single path.

@@ -1,0 +1,41 @@
+# rpop 节点（node 模式）部署示例。用法：
+#   cp deploy/docker-compose.node.example.yml docker-compose.yml
+#   cp deploy/.env.node.example .env        # 填入实际的 RPOP_IMAGE / RPOP_CONTROLLER / RPOP_JOIN_TOKEN
+#   docker compose up -d
+#
+# 更方便的做法：在控制台“节点管理”新建节点后，join token 弹窗里的接入向导会直接根据当前控制器地址
+# 生成这两个文件的完整内容（含真实的 controller 地址与一次性 token），可直接复制使用，不需要手改本文件。
+#
+# 内网环境请把 RPOP_IMAGE 替换为私有镜像源地址。
+
+name: rpop-node
+
+services:
+  rpop-node:
+    image: ${RPOP_IMAGE:?在 .env 中设置 RPOP_IMAGE}
+    container_name: rpop-node
+    restart: unless-stopped
+    # host 网络下节点监听的中继端口、以及之后在此节点上运行的每个站点端口都无需单独映射。
+    network_mode: host
+    environment:
+      RPOP_MODE: node
+      RPOP_CONTROLLER: ${RPOP_CONTROLLER:?在 .env 中设置 RPOP_CONTROLLER，如 https://controller.example.com:7443}
+      # 只有首次注册需要；注册成功（节点在控制台显示为在线）后，把这一行从 .env 中清空或删除，
+      # 再执行 docker compose up -d 重建容器——节点身份已保存在下方数据卷中，不受影响。
+      RPOP_JOIN_TOKEN: ${RPOP_JOIN_TOKEN}
+      RPOP_DATA_DIR: /app/data
+      RPOP_LOG_DIR: /app/logs
+    volumes:
+      - rpop-node-data:/app/data   # 节点身份（证书/私钥）与快照缓存
+      - rpop-node-logs:/app/logs   # 应用日志与待上传的访问日志/隧道事件 spool
+    # 不使用 host 网络时（例如 Docker Desktop，不支持 --network host）：删除上面的 network_mode: host，
+    # 改为显式映射端口，并在需要时设置 RPOP_RELAY_LISTEN 绑定容器内部地址：
+    # ports:
+    #   - "<中继端口>:<中继端口>"
+    #   - "<站点端口>:<站点端口>"
+    # environment:
+    #   RPOP_RELAY_LISTEN: 0.0.0.0:<中继端口>
+
+volumes:
+  rpop-node-data:
+  rpop-node-logs:
