@@ -1,0 +1,45 @@
+/* SharedPortHints.css — advisory shared-port hints in the site editor's "监听" section (共享端口第三段: see
+   docs/architecture/control-data-plane.md §5). Every color is a theme token (var(--*)), never a literal, per
+   the console's theming rule — same convention as Placement.css. */
+
+.shared-port-hints {
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.shared-port-hint {
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+}
+
+/* info: this address genuinely will share a port (console/southbound/a node's relay port) — expected, just
+   naming what it shares with and reminding the operator a hostname is what tells them apart. */
+.shared-port-hint.is-info {
+  color: var(--text-secondary);
+  background: var(--soft-blue);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--border-primary));
+}
+
+/* warning: a configuration this module predicts the server would reject outright (missing hostname, hostname
+   overlap, wildcard/specific scope conflict, internal reserved name) — same orange as hop-warning/
+   placement-badge.warn, one step below the backend's own red error banner since saving is never blocked here. */
+.shared-port-hint.is-warning {
+  color: var(--accent-orange);
+  background: var(--soft-orange);
+  border: 1px solid color-mix(in srgb, var(--accent-orange) 30%, var(--border-primary));
+}
+
+/* error: the backend's own 400 for one of these rules (isSharedPortError), echoed here verbatim next to the
+   field it concerns in addition to the modal's general error banner — same red as Routing.css's other inline
+   validation errors, since unlike info/warning this one did block the save. */
+.shared-port-hint.is-error {
+  color: var(--accent-red);
+  background: var(--soft-red);
+  border: 1px solid color-mix(in srgb, var(--accent-red) 30%, var(--border-primary));
+}

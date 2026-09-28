@@ -1,11 +1,13 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import '../Routing.css'
 import { uncoveredHostnames } from '../siteForm.js'
+import { isSharedPortError, siteSharedPortHints } from '../sharedPortHints.js'
 import { FormSection, OptionToggle, certificateLabel } from './FormParts.jsx'
 import PlacementFields from './PlacementFields.jsx'
 import UpstreamFields from './UpstreamFields.jsx'
 import RouteEditor from './RouteEditor.jsx'
 import RouteSimulator from './RouteSimulator.jsx'
+import SharedPortHints from './SharedPortHints.jsx'
 
 function ServerCertificateFields({ site, serverCertificates, setConfig, setFile }) {
   const selected = serverCertificates.find(certificate => certificate.id === site.config.certificateId)
@@ -47,8 +49,19 @@ function AccessLogFields({ accessLog, enabled, logAdapters, onToggle, setAccessL
 }
 
 export default function SiteEditor({ site, isNew, sections, catalog, saving, error, upstreamFiles, onChange, onSectionsChange, setFile, setUpstreamFile, onAddUpstream, onRemoveUpstream, onMakeDefault, onSimulate, onCancel, onSubmit }) {
-  const { serverCertificates, logAdapters } = catalog
+  const { serverCertificates, logAdapters, nodes, sites, bootstrapInfo } = catalog
   const [matchedRoute, setMatchedRoute] = useState(null)
+  // Predicted, non-blocking shared-port hints (see sharedPortHints.js) recomputed on every relevant edit; cheap
+  // enough (a handful of already-fetched sites/nodes, no I/O) to not need debouncing.
+  const sharedPortHints = useMemo(
+    () => siteSharedPortHints({ site, bootstrapInfo, nodes: nodes || [], sites: sites || [] }),
+    [site.id, site.config.listenAddress, site.config.listenPort, site.config.hostnames, site.config.tls, site.config.nodes, bootstrapInfo, nodes, sites],
+  )
+  // A save/start rejection the backend returned for one of the same rules (see isSharedPortError's doc comment
+  // — pre-validation cannot always predict every rejection, e.g. a node's own -relay-listen override) is echoed
+  // here too, verbatim, next to the fields it concerns — in addition to, not instead of, the modal's general
+  // error banner below.
+  const sharedPortServerError = isSharedPortError(error) ? [{ severity: 'error', kind: 'server-error', text: error }] : []
   const { upstreams } = site.config
   const routes = site.config.routes || []
   const accessLog = site.config.accessLog || {}
@@ -75,6 +88,7 @@ export default function SiteEditor({ site, isNew, sections, catalog, saving, err
           <OptionToggle checked={!!site.config.tls} onChange={tls => setConfig({ tls })} label="启用站点 HTTPS" hint="选择系统证书，或上传站点专属证书与私钥">
             <ServerCertificateFields site={site} serverCertificates={serverCertificates} setConfig={setConfig} setFile={setFile}/>
           </OptionToggle>
+          <SharedPortHints hints={[...sharedPortServerError, ...sharedPortHints]}/>
         </FormSection>
 
         <FormSection title="站点放置" description="选择运行该站点的数据面节点（D5）；候选路径可用的跳点会随此设置实时更新">
