@@ -2,11 +2,15 @@ import { useState } from 'react'
 import { UiAlert, UiButton, UiModal } from '@/components/ui'
 import { describeTime } from '@/nodeHealth'
 import { useToast } from '@/stores/toast'
+import NodeBootstrapGuide from './NodeBootstrapGuide.jsx'
 import './JoinTokenDialog.css'
 
 // JoinTokenDialog shows a freshly issued join token exactly once (the server only ever stores its hash — see
 // issueJoinToken/hashToken in internal/control/nodes.go): closing this dialog is the point of no return, so it
-// stays open until the user explicitly dismisses it (no backdrop/escape close) and offers a one-click copy.
+// stays open until the user explicitly dismisses it (no backdrop/escape close) and offers a one-click copy. It
+// also renders the node onboarding guide (NodeBootstrapGuide) below the token, turning it straight into a
+// working deployment recipe instead of leaving the operator to build the "-controller"/"-join-token" command by
+// hand.
 export default function JoinTokenDialog({ value, node, token, expiresAt, onClose }) {
   const [copied, setCopied] = useState(false)
   const { toast } = useToast()
@@ -30,6 +34,7 @@ export default function JoinTokenDialog({ value, node, token, expiresAt, onClose
     <UiModal
       value={value}
       persistent
+      size="lg"
       title={`节点 ${node?.id || ''} 的 join token`}
       eyebrow="仅显示一次"
       showFooter={false}
@@ -41,6 +46,7 @@ export default function JoinTokenDialog({ value, node, token, expiresAt, onClose
         <UiButton variant="outline" size="sm" icon="copy" onClick={copy}>{copied ? '已复制' : '复制 token'}</UiButton>
         <UiButton variant="primary" size="sm" onClick={onClose}>我已保存，关闭</UiButton>
       </div>
+      <NodeBootstrapGuide node={node} token={token} visible={value} />
     </UiModal>
   )
 }

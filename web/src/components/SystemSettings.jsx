@@ -35,6 +35,19 @@ export default function SystemSettings({ api, onChange }) {
   const [savingPassword, setSavingPassword] = useState(false)
   const [passwordError, setPasswordError] = useState('')
   const [passwordMessage, setPasswordMessage] = useState('')
+  // nodeControllerUrl/nodeImage feed the node onboarding guide (see NodeBootstrapGuide.jsx); saved* mirrors
+  // savedTimeZone's role below: every PUT to /api/settings must resend the CURRENTLY SAVED value of every
+  // plain-string field it is not itself changing (see the nodeSettingsFields() calls throughout this file), or
+  // that field is silently cleared — unlike clientCertificates/serverCertificates, a plain string has no
+  // "omitted means keep the current value" treatment on the server (see mergeKeyedCertificateKeys's doc
+  // comment), so rootCertificates already gets the same treatment further down.
+  const [nodeControllerUrl, setNodeControllerUrl] = useState('')
+  const [savedNodeControllerUrl, setSavedNodeControllerUrl] = useState('')
+  const [nodeImage, setNodeImage] = useState('')
+  const [savedNodeImage, setSavedNodeImage] = useState('')
+  const [savingNodeSettings, setSavingNodeSettings] = useState(false)
+  const [nodeSettingsError, setNodeSettingsError] = useState('')
+  const [nodeSettingsMessage, setNodeSettingsMessage] = useState('')
 
   useEffect(() => {
     api('/settings')
@@ -42,12 +55,27 @@ export default function SystemSettings({ api, onChange }) {
         const zone = settings.timeZone || 'UTC'
         setTimeZone(zone)
         setSavedTimeZone(zone)
+        applyNodeSettings(settings)
         applyCertificateLists(settings)
         setSettingsLoaded(true)
       })
       .catch(err => setSettingsError(err.message))
       .finally(() => setLoading(false))
   }, [api])
+
+  function applyNodeSettings(settings) {
+    setNodeControllerUrl(settings.nodeControllerUrl || '')
+    setSavedNodeControllerUrl(settings.nodeControllerUrl || '')
+    setNodeImage(settings.nodeImage || '')
+    setSavedNodeImage(settings.nodeImage || '')
+  }
+
+  // nodeSettingsFields() is spread into every /api/settings PUT body in this file (see the doc comment on
+  // nodeControllerUrl's useState above), always carrying the last-saved value so an unrelated save (timezone, a
+  // certificate) never clears these two fields.
+  function nodeSettingsFields() {
+    return { nodeControllerUrl: savedNodeControllerUrl, nodeImage: savedNodeImage }
+  }
 
   function applyCertificateLists(settings) {
     setRootCertificates(Array.isArray(settings.rootCertificates) ? settings.rootCertificates : [])
@@ -64,11 +92,12 @@ export default function SystemSettings({ api, onChange }) {
     try {
       const settings = await api('/settings', {
         method: 'PUT',
-        body: JSON.stringify({ timeZone, rootCertificates: rootCertificates.map(cleanRootCertificate) }),
+        body: JSON.stringify({ timeZone, rootCertificates: rootCertificates.map(cleanRootCertificate), ...nodeSettingsFields() }),
       })
       const zone = settings.timeZone || 'UTC'
       setTimeZone(zone)
       setSavedTimeZone(zone)
+      applyNodeSettings(settings)
       applyCertificateLists(settings)
       setSettingsMessage('系统时区已保存。')
       onChange?.()
@@ -89,8 +118,10 @@ export default function SystemSettings({ api, onChange }) {
         body: JSON.stringify({
           timeZone: savedTimeZone,
           rootCertificates: nextCertificates.map(cleanRootCertificate),
+          ...nodeSettingsFields(),
         }),
       })
+      applyNodeSettings(settings)
       applyCertificateLists(settings)
       setSavedTimeZone(settings.timeZone || 'UTC')
       setSettingsLoaded(true)
@@ -112,12 +143,41 @@ export default function SystemSettings({ api, onChange }) {
       body: JSON.stringify({
         timeZone: savedTimeZone,
         rootCertificates: rootCertificates.map(cleanRootCertificate),
+        ...nodeSettingsFields(),
         [field]: nextCertificates,
       }),
     })
+    applyNodeSettings(settings)
     applyCertificateLists(settings)
     setSavedTimeZone(settings.timeZone || 'UTC')
     onChange?.()
+  }
+
+  async function saveNodeSettings(event) {
+    event.preventDefault()
+    setSavingNodeSettings(true)
+    setNodeSettingsError('')
+    setNodeSettingsMessage('')
+    try {
+      const settings = await api('/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          timeZone: savedTimeZone,
+          rootCertificates: rootCertificates.map(cleanRootCertificate),
+          nodeControllerUrl: nodeControllerUrl.trim(),
+          nodeImage: nodeImage.trim(),
+        }),
+      })
+      applyNodeSettings(settings)
+      applyCertificateLists(settings)
+      setSavedTimeZone(settings.timeZone || 'UTC')
+      setNodeSettingsMessage('节点部署默认值已保存。')
+      onChange?.()
+    } catch (err) {
+      setNodeSettingsError(err.message)
+    } finally {
+      setSavingNodeSettings(false)
+    }
   }
 
   async function saveRootCertificate(event) {
@@ -209,6 +269,24 @@ export default function SystemSettings({ api, onChange }) {
           </label>
           {settingsMessage && <div className="log-success settings-message wide">{settingsMessage}</div>}
           <button className="primary" disabled={!canManageSettings || savingTimeZone || timeZone === savedTimeZone}>{savingTimeZone ? '保存中…' : '保存时区'}</button>
+        </form>}
+      </section>
+
+      <section className="settings-panel">
+        <h3>节点部署默认值</h3>
+        <p>供“新建节点”弹窗里的节点接入向导使用，两者都可留空。</p>
+        {nodeSettingsError && <div className="error settings-message">{nodeSettingsError}</div>}
+        {settingsLoaded && <form className="settings-form" onSubmit={saveNodeSettings}>
+          <label className="wide">控制器地址
+            <input value={nodeControllerUrl} onChange={event => setNodeControllerUrl(event.target.value)} disabled={!canManageSettings || savingNodeSettings} placeholder="https://controller.example.com:7443"/>
+            <span>节点接入向导里“控制器地址”的默认值，形如 https://host[:port]，不能带路径或查询参数。留空则由向导根据浏览器地址和 southbound 端口自动推导。</span>
+          </label>
+          <label className="wide">节点镜像
+            <input value={nodeImage} onChange={event => setNodeImage(event.target.value)} disabled={!canManageSettings || savingNodeSettings} placeholder="registry.example.com/rpop:1.4.0"/>
+            <span>节点接入向导里 docker run / docker-compose recipe 使用的镜像名，不能包含空白字符。留空则默认为 rpop:&lt;控制器版本&gt;。</span>
+          </label>
+          {nodeSettingsMessage && <div className="log-success settings-message wide">{nodeSettingsMessage}</div>}
+          <button className="primary" disabled={!canManageSettings || savingNodeSettings || (nodeControllerUrl === savedNodeControllerUrl && nodeImage === savedNodeImage)}>{savingNodeSettings ? '保存中…' : '保存节点部署默认值'}</button>
         </form>}
       </section>
 

@@ -1,0 +1,31 @@
+.copyable-code {
+  margin: 8px 0 14px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  max-width: 100%;
+}
+.copyable-code__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px 5px 10px;
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
+}
+.copyable-code__label {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.copyable-code__body {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--bg-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  white-space: pre;
+  overflow-x: auto;
+  max-width: 100%;
+}
