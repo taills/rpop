@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api.js'
 import { useAuthStore } from '../stores/auth.js'
+import { useBusyAction } from '../busyAction.js'
 
 // AuthGate blocks the whole console behind the admin password: it checks the session once, then shows the
 // same setup/login screen the console always has until authenticated. Every route renders only once this
@@ -11,6 +12,7 @@ export default function AuthGate({ children }) {
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [error, setError] = useState('')
+  const { busy, run } = useBusyAction()
 
   useEffect(() => { api('/auth/status').then(setAuth).catch((e) => setError(e.message)) }, [setAuth])
 
@@ -18,13 +20,15 @@ export default function AuthGate({ children }) {
     event.preventDefault()
     const setup = !auth?.configured
     if (setup && password !== confirm) { setError('两次输入的密码不一致'); return }
-    try {
-      await api(`/auth/${setup ? 'setup' : 'login'}`, { method: 'POST', body: JSON.stringify({ password }) })
-      setAuth({ configured: true, authenticated: true }); setPassword(''); setConfirm(''); setError('')
-    } catch (e) { setError(e.message) }
+    await run(async () => {
+      try {
+        await api(`/auth/${setup ? 'setup' : 'login'}`, { method: 'POST', body: JSON.stringify({ password }) })
+        setAuth({ configured: true, authenticated: true }); setPassword(''); setConfirm(''); setError('')
+      } catch (e) { setError(e.message) }
+    })
   }
 
   if (!auth) return <div className="auth-screen"><section className="auth-card"><div className="brand-mark">r<span>p</span></div><h1>正在检查管理会话</h1><p>请稍候…</p></section></div>
-  if (!auth.authenticated) return <div className="auth-screen"><form className="auth-card" onSubmit={submit}><div className="brand-mark">r<span>p</span></div><div className="eyebrow">RPOP CONTROL PLANE</div><h1>{auth.configured ? '管理员登录' : '设置管理密码'}</h1><p>{auth.configured ? '请输入管理密码继续。' : '首次使用请设置至少 12 个字符的管理密码。'}</p>{error && <div className="error">{error}</div>}<label>管理密码<input type="password" required minLength="12" autoComplete={auth.configured ? 'current-password' : 'new-password'} value={password} onChange={e => setPassword(e.target.value)}/></label>{!auth.configured && <label>确认密码<input type="password" required minLength="12" autoComplete="new-password" value={confirm} onChange={e => setConfirm(e.target.value)}/></label>}<button className="primary" type="submit">{auth.configured ? '登录' : '保存密码并进入'}</button></form></div>
+  if (!auth.authenticated) return <div className="auth-screen"><form className="auth-card" onSubmit={submit}><div className="brand-mark">r<span>p</span></div><div className="eyebrow">RPOP CONTROL PLANE</div><h1>{auth.configured ? '管理员登录' : '设置管理密码'}</h1><p>{auth.configured ? '请输入管理密码继续。' : '首次使用请设置至少 12 个字符的管理密码。'}</p>{error && <div className="error">{error}</div>}<label>管理密码<input type="password" required minLength="12" autoComplete={auth.configured ? 'current-password' : 'new-password'} value={password} disabled={!!busy} onChange={e => setPassword(e.target.value)}/></label>{!auth.configured && <label>确认密码<input type="password" required minLength="12" autoComplete="new-password" value={confirm} disabled={!!busy} onChange={e => setConfirm(e.target.value)}/></label>}<button className="primary" type="submit" disabled={!!busy} aria-busy={!!busy || undefined}>{busy ? (auth.configured ? '登录中…' : '保存中…') : (auth.configured ? '登录' : '保存密码并进入')}</button></form></div>
   return children
 }
