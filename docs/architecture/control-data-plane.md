@@ -360,6 +360,12 @@
 - 部分协议安全边界与内部实现常量(解压/单行大小上限、跳号阈值、查询窗口天数、隧道事件句柄缓存大小与清理周期)按阶段 7 设计的决定始终保持代码常量,不开放 CLI/环境变量,原因见"阶段 7(长尾)设计"③。
 - 文件/S3 access log 适配器的去重只发生在查询聚合阶段(按 `dedup_key` 保留首条),磁盘上的重复记录本身不会被清理,不解决存储层面的重复字节。
 
+**移除 YAML 配置导入/导出、清理死代码** 的落地要点:
+
+- 应用户要求整体移除 `PUT/GET /api/config.yaml`(YAML 全量配置导入/导出):`internal/control/control.go` 删除 `yamlConfig` 类型、其 handler 与路由注册,以及 `gopkg.in/yaml.v3` 的直接 import(`go mod tidy` 后该包仍作为 `go.uber.org/zap` 的间接依赖留在 `go.sum`,属预期);`internal/store/model.go`/`internal/routing/routing.go` 里所有结构体字段的 `yaml:"..."` 标签一并删除,JSON 标签不变;前端 `SitesPage.jsx` 删除"导出 YAML"链接、"导入 YAML"上传控件与 `importYaml` 函数,`Rpop.css` 删除对应的 `.yaml-link`/`.yaml-upload` 样式;`internal/control/control_test.go` 删除 `TestYAMLConfigImportExport`。README 的功能列表与 API 列表相应删除该条;原"YAML example"一节与"跨节点上游路径"一节里用于说明站点配置字段含义的 YAML 代码块,改写为等价的 JSON 示例(对应 `POST /api/sites` 请求体),字段说明原样保留、未随格式一起丢失。SQLite schema 与既有数据不受影响。
+- 顺带清理确认零引用的死代码。Go 侧交叉使用 `golang.org/x/tools/cmd/deadcode -test ./...` 与 `honnef.co/go/tools/cmd/staticcheck -checks U1000 ./...` 两个独立工具,定位到 `internal/control/publish.go` 的 `(*publication).wake` 方法从未被任何调用方引用(唯一同名方法 `wakeLocked` 是它自身持锁后另外调用的方法,不构成引用),予以删除;两个工具确认之后只剩测试辅助代码里的 `blockingSink.count`(`internal/overlay/events_test.go`),按约定原样保留。前端侧逐个人工核实类名在 `.jsx`/`.js` 里的引用次数后删除:`Admin.css` 里被 `KeyedCertificateManager.jsx` 重构取代、此前未清理的旧版 CA/客户端证书表单样式(`.ca-settings*`/`.ca-certificate*`/`.ca-help`/`.ca-remove`/`.ca-empty`/`.client-certificate-*`;新实现复用的是同文件里仍在使用的 `.ca-management-*`/`.ca-record-*`/`.ca-editor-*`);`Logs.css` 里被 `LogDetailDrawer.jsx` 的 `.log-drawer-*` 取代、此前未清理的旧版 `.log-detail*` 抽屉样式;`styles/base.css` 里从未被任何页面引用的工具类 `.ui-panel`/`.ui-toolbar`/`.ui-toolbar-right`/`.grid-3`。`internal/sharedport/*`、DEV 专用的组件目录/Demo/Token 页面、`components/ui/*` UI kit 组件、测试辅助代码按要求原样保留,未做改动。
+- 验证:`gofmt -l ./cmd ./internal` 为空;`go build ./...`、`go vet ./...`、`go test -race -count=3 ./...` 全绿;`web` 目录 `npm test`(163/163)与 `npm run build` 均绿,生产构建的 `index-*.css` 体积从 118.58 KB 降到 116.16 KB。冒烟:自建二进制以 `-web-dir web/dist` 在 `/tmp` 下的临时端口/DB/日志目录启动,认证后 `curl GET/PUT /api/config.yaml` 均返回纯文本 `404`(Go `ServeMux` 的默认 404,不会像未知 `/api/*` 路径那样落到 SPA 的 `index.html` 兜底);站点创建/查询/启动/停止/删除全部验证通过。Playwright 确认站点管理页不再有 YAML 相关入口,1440px 与 390px 两种视口下 `document.documentElement.scrollWidth` 均等于 `clientWidth`,无横向滚动,控制台无新增报错。
+
 ## 6. 非目标
 
 多路径负载均衡/加权分流;请求级透明重试;中继节点完全无入站(NAT 反向建链)。
