@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api.js'
 import '../Rpop.css'
 import '../Admin.css'
@@ -7,6 +7,7 @@ import SiteListItem from '../components/SiteListItem.jsx'
 import SiteEditor from '../components/SiteEditor.jsx'
 import { addUpstream, applySections, blankUpstream, makeDefaultUpstream, prepareSiteForEditing, removeUpstream, sectionsForSite, uploadSlot, validateSections } from '../siteForm.js'
 import { clientCertificateUploads, planSecretUploads, referencedSecrets, stagedConfig } from '../siteSecrets.js'
+import { canStartBusyAction } from '../busyAction.js'
 import { useToast } from '../stores/toast.js'
 
 const blank = { id: '', name: '', autoStart: false, config: { listenAddress: '127.0.0.1', listenPort: 8081, tls: false, certificateId: '', hostnames: [], nodes: [], accessLog: { adapterId: '', includeBodies: false, maxBodyBytes: 1048576 }, upstreams: [blankUpstream()], routes: [] } }
@@ -22,6 +23,13 @@ export default function SitesPage() {
   const [logAdapters, setLogAdapters] = useState([])
   const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
+  // busyRef mirrors `busy` synchronously (see busyAction.js's doc comment): a click handler needs to read it
+  // before React has re-rendered the now-disabled buttons, which is the only way to actually stop a second
+  // click (double-click, or an impatient extra click while the request is slow) from starting a second
+  // start/stop/reload/delete/save against the same in-memory site list. Kept as a plain ref alongside `busy`
+  // (rather than adopting useBusyAction wholesale) so this page's existing per-key `busy` string and the
+  // SiteEditor/SiteListItem props built on it don't need reshaping.
+  const busyRef = useRef(null)
   const [editing, setEditing] = useState(null)
   const [sections, setSections] = useState(null)
   const [formError, setFormError] = useState('')
@@ -60,7 +68,12 @@ export default function SitesPage() {
   useEffect(() => { refresh(); refreshSystemSettings(); const timer = setInterval(refresh, 5000); return () => clearInterval(timer) }, [refresh, refreshSystemSettings])
 
   const actionLabels = { start: '站点已启动', stop: '站点已停止', reload: '站点已重新加载' }
-  async function action(site, op) { setBusy(`${site.id}:${op}`); try { await api(`/sites/${encodeURIComponent(site.id)}/${op}`, { method: 'POST' }); await refresh(); toast.success(actionLabels[op] || '操作已完成') } catch (e) { toast.error(e.message) } finally { setBusy('') } }
+  async function action(site, op) {
+    const key = `${site.id}:${op}`
+    if (!canStartBusyAction(busyRef.current)) return
+    busyRef.current = key; setBusy(key)
+    try { await api(`/sites/${encodeURIComponent(site.id)}/${op}`, { method: 'POST' }); await refresh(); toast.success(actionLabels[op] || '操作已完成') } catch (e) { toast.error(e.message) } finally { busyRef.current = null; setBusy('') }
+  }
   async function openEditor(site) {
     await refreshSystemSettings()
     setCertFile(null); setKeyFile(null)
@@ -87,7 +100,8 @@ export default function SitesPage() {
     const uploading = clientCertificateUploads(editing, sections, upstreamFiles)
     const sectionError = validateSections(editing, sections, { uploadingClientCertificates: uploading })
     if (sectionError) { setFormError(sectionError); return }
-    setBusy('save'); setFormError('')
+    if (!canStartBusyAction(busyRef.current)) return
+    busyRef.current = 'save'; setBusy('save'); setFormError('')
     const persisted = sites.find(x => x.id === editing.id)
     const path = persisted ? `/sites/${encodeURIComponent(editing.id)}` : '/sites'
     const method = persisted ? 'PUT' : 'POST'
@@ -123,9 +137,14 @@ export default function SitesPage() {
         try { await api(`/sites/${encodeURIComponent(editing.id)}`, { method: 'DELETE' }) } catch {}
       }
       setFormError(e.message)
-    } finally { setBusy('') }
+    } finally { busyRef.current = null; setBusy('') }
   }
-  async function remove(site) { if (!window.confirm(`确定删除站点“${site.name}”？`)) return; try { await api(`/sites/${encodeURIComponent(site.id)}`, { method: 'DELETE' }); await refresh(); toast.success('站点已删除') } catch (e) { toast.error(e.message) } }
+  async function remove(site) {
+    if (!canStartBusyAction(busyRef.current)) return
+    if (!window.confirm(`确定删除站点“${site.name}”？`)) return
+    busyRef.current = `${site.id}:delete`; setBusy(`${site.id}:delete`)
+    try { await api(`/sites/${encodeURIComponent(site.id)}`, { method: 'DELETE' }); await refresh(); toast.success('站点已删除') } catch (e) { toast.error(e.message) } finally { busyRef.current = null; setBusy('') }
+  }
 
   const filtered = sites.filter(x => `${x.name} ${x.id} ${(x.config?.upstreams || []).map(up => up.url).join(' ')}`.toLowerCase().includes(query.toLowerCase()))
   const running = sites.filter(x => x.running).length

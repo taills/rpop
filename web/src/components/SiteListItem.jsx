@@ -1,3 +1,5 @@
+import { UiSpinner } from '@/components/ui'
+
 // SiteListItem renders one row of the site list: status, live metrics, tags and the row-level actions. Split out
 // of SitesPage so that component stays focused on data flow rather than markup.
 export default function SiteListItem({ site, metrics, logAdapters, busy, onAction, onEdit, onRemove }) {
@@ -5,6 +7,11 @@ export default function SiteListItem({ site, metrics, logAdapters, busy, onActio
   const upstream = upstreams[0] || {}
   const routeCount = (site.config?.routes || []).length
   const logAdapter = logAdapters.find((adapter) => adapter.id === site.config?.accessLog?.adapterId)
+  // Only one site-level action runs at a time (SitesPage's `busy` is a single string, see action()/remove()
+  // there), so any non-empty busy disables every row's buttons — otherwise starting site A while site B's
+  // reload is still in flight would fire two overlapping mutations against the same in-memory site list.
+  const disabled = Boolean(busy)
+  const isBusy = (op) => busy === `${site.id}:${op}`
   return <article className="site">
     <div className="site-icon">↗</div>
     <div className="site-info">
@@ -35,11 +42,11 @@ export default function SiteListItem({ site, metrics, logAdapters, busy, onActio
     </div>
     <div className="actions">
       {site.running
-        ? <button className="icon-btn" title="停止" onClick={() => onAction(site, 'stop')} disabled={Boolean(busy)}>Ⅱ</button>
-        : <button className="icon-btn start" title="启动" onClick={() => onAction(site, 'start')} disabled={Boolean(busy)}>▶</button>}
-      <button className="icon-btn" title="重启/热重载" onClick={() => onAction(site, 'reload')} disabled={Boolean(busy)}>↻</button>
-      <button className="icon-btn" title="编辑" onClick={() => onEdit(site)}>✎</button>
-      <button className="icon-btn danger" title="删除" onClick={() => onRemove(site)}>⌫</button>
+        ? <button className="icon-btn" title="停止" aria-label="停止" aria-busy={isBusy('stop') || undefined} disabled={disabled} onClick={() => onAction(site, 'stop')}>{isBusy('stop') ? <UiSpinner size="sm" label="处理中"/> : 'Ⅱ'}</button>
+        : <button className="icon-btn start" title="启动" aria-label="启动" aria-busy={isBusy('start') || undefined} disabled={disabled} onClick={() => onAction(site, 'start')}>{isBusy('start') ? <UiSpinner size="sm" label="处理中"/> : '▶'}</button>}
+      <button className="icon-btn" title="重启/热重载" aria-label="重启/热重载" aria-busy={isBusy('reload') || undefined} disabled={disabled} onClick={() => onAction(site, 'reload')}>{isBusy('reload') ? <UiSpinner size="sm" label="处理中"/> : '↻'}</button>
+      <button className="icon-btn" title="编辑" aria-label="编辑" disabled={disabled} onClick={() => onEdit(site)}>✎</button>
+      <button className="icon-btn danger" title="删除" aria-label="删除" aria-busy={isBusy('delete') || undefined} disabled={disabled} onClick={() => onRemove(site)}>{isBusy('delete') ? <UiSpinner size="sm" label="处理中"/> : '⌫'}</button>
     </div>
   </article>
 }

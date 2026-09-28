@@ -70,9 +70,9 @@ export default function SiteEditor({ site, isNew, sections, catalog, saving, err
   const setUpstreamSections = index => next => onSectionsChange({ ...sections, upstreams: sections.upstreams.map((item, i) => i === index ? next : item) })
   const setAccessLog = patch => setConfig({ accessLog: { ...accessLog, ...patch } })
 
-  return <div className="overlay" onMouseDown={event => event.target === event.currentTarget && onCancel()}>
+  return <div className="overlay" onMouseDown={event => event.target === event.currentTarget && !saving && onCancel()}>
     <form className="modal site-modal" onSubmit={onSubmit}>
-      <div className="modal-head"><div><div className="eyebrow">SITE CONFIGURATION</div><h2>{isNew ? '新建站点' : '编辑站点'}</h2></div><button type="button" className="close" onClick={onCancel}>×</button></div>
+      <div className="modal-head"><div><div className="eyebrow">SITE CONFIGURATION</div><h2>{isNew ? '新建站点' : '编辑站点'}</h2></div><button type="button" className="close" disabled={saving} onClick={onCancel}>×</button></div>
       {error && <div className="error modal-error" role="alert">{error}</div>}
       <div className="form-grid">
         <FormSection title="基本信息">
@@ -115,7 +115,7 @@ export default function SiteEditor({ site, isNew, sections, catalog, saving, err
           <AccessLogFields accessLog={accessLog} enabled={sections.accessLog} logAdapters={logAdapters} onToggle={accessLogEnabled => onSectionsChange({ ...sections, accessLog: accessLogEnabled })} setAccessLog={setAccessLog}/>
         </FormSection>
       </div>
-      <div className="modal-foot"><button type="button" className="secondary" onClick={onCancel}>取消</button><button className="primary" disabled={saving}>{saving ? '保存中…' : '保存配置'}</button></div>
+      <div className="modal-foot"><button type="button" className="secondary" disabled={saving} onClick={onCancel}>取消</button><button className="primary" disabled={saving} aria-busy={saving || undefined}>{saving ? '保存中…' : '保存配置'}</button></div>
     </form>
   </div>
 }
