@@ -125,13 +125,14 @@ func httpsGetSNI(t *testing.T, address string, certPEM []byte, serverName string
 // site's own SNI/Host reaches the site over TLS, and a plaintext request for any other Host still falls back to
 // the console, unaffected by the TLS site sharing its address.
 //
-// This does not also add a *plaintext* site to the same address: internal/dataplane.Engine has forbidden mixing
-// a plaintext and a TLS *site* on one address since before shared ports existed (see engine.go's install, "A
-// shared address cannot mix a plaintext and a TLS site") and stage one leaves that rule exactly as it was — only
-// a TLS *owner* (a future relay/southbound listener, not a site) shares an address with a plaintext site's mode
-// freely, which is what dispatch's first-byte classification is for. The three-way console+plaintext-site+
-// TLS-site mix the design doc's Host/SNI dispatch describes is proven at the layer that actually allows it,
-// internal/sharedport.Registry itself, by TestPlainSiteTLSSiteAndPlaintextOwnerShareOneAddress.
+// It also adds a *plaintext* site to the same address (stage three, see
+// docs/architecture/control-data-plane.md §5, "共享端口(第三段)"): internal/dataplane.Engine forbade mixing a
+// plaintext and a TLS *site* on one address from before shared ports existed until this relaxation — sharedport
+// itself never needed the restriction, since it already tells the two encodings apart by the connection's first
+// byte (see engine.go's install), which is exactly what a single-port deployment needs: one port serving both a
+// plaintext and an HTTPS site. The three-way mix is proven at the layer that always allowed it,
+// internal/sharedport.Registry itself, by TestPlainSiteTLSSiteAndPlaintextOwnerShareOneAddress; this test proves
+// the same thing through the real Control/Engine wiring an operator actually runs.
 func TestSharedPortRegistryLetsATLSSiteShareTheConsolesAddress(t *testing.T) {
 	s, _ := openSystemCATestStore(t)
 	logDir := t.TempDir()
@@ -177,11 +178,29 @@ func TestSharedPortRegistryLetsATLSSiteShareTheConsolesAddress(t *testing.T) {
 		t.Fatalf("start tls site: %v", err)
 	}
 
+	plainUpstream := textServer(t, "plain-site")
+	plainSite := store.Site{
+		ID: "plain", Name: "plain",
+		Config: store.Config{
+			ListenAddress: "127.0.0.1", ListenPort: port, Hostnames: []string{"plain.test"},
+			Upstreams: []store.Upstream{{URL: plainUpstream}},
+		},
+	}
+	if err := s.Save(context.Background(), plainSite); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.start(context.Background(), plainSite.ID); err != nil {
+		t.Fatalf("start plaintext site: %v", err)
+	}
+
 	if got := httpsGetSNI(t, address, material.serverPEM, "upstream.test"); got != "tls-site" {
 		t.Fatalf("TLS SNI upstream.test routed to %q, want the TLS site", got)
 	}
+	if got := httpGetHost(t, address, "plain.test"); got != "plain-site" {
+		t.Fatalf("plaintext plain.test routed to %q, want the plaintext site", got)
+	}
 	if got := httpGetHost(t, address, "console.test"); got != "console" {
-		t.Fatalf("plaintext console.test routed to %q, want the console (unaffected by the TLS site)", got)
+		t.Fatalf("plaintext console.test routed to %q, want the console (unaffected by the TLS or plaintext site)", got)
 	}
 }
 

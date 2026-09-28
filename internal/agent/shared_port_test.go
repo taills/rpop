@@ -127,12 +127,12 @@ func encodeTestCertificate(t *testing.T, cert tls.Certificate) (certPEM, keyPEM 
 // relay port (an exact-SNI TLS owner) and a TLS site placed on that same node can share one address, told apart
 // entirely by SNI — the relay's own exact name (pki.NodeName) on one side, the site's configured hostname on the
 // other (dispatch.go's getConfigForClient tries the exact owner first, then TLS sites; see internal/sharedport's
-// TestTLSOwnerAndSiteShareBySNI for the same match order at the package's own level). Unlike a plaintext site
-// (TestSiteSharesItsNodesOwnRelayPort), a TLS site cannot also share this address with a plaintext site: that is
-// a pre-existing internal/dataplane.Engine restriction independent of shared-port (see engine.go's install: "a
-// shared address cannot mix a plaintext and a TLS site"), so the two site kinds are covered in separate tests
-// rather than a single three-way one. It also proves the relay endpoint keeps forwarding tunnels for another
-// node concurrently with the TLS site's own traffic, exactly like the plaintext case.
+// TestTLSOwnerAndSiteShareBySNI for the same match order at the package's own level). It also proves the relay
+// endpoint keeps forwarding tunnels for another node concurrently with the TLS site's own traffic. Adding a
+// plaintext site to the very same address too (stage three, see
+// docs/architecture/control-data-plane.md §5, "共享端口(第三段)") is covered by
+// TestPlaintextAndTLSSitesShareTheirNodesOwnRelayPort right below, once
+// internal/dataplane.Engine stopped forbidding a plaintext and a TLS *site* from sharing one address.
 func TestTLSSiteSharesItsNodesOwnRelayPort(t *testing.T) {
 	c := startController(t)
 	relayAddr := freeAddress(t)
@@ -177,6 +177,79 @@ func TestTLSSiteSharesItsNodesOwnRelayPort(t *testing.T) {
 	})
 	eventually(t, "edge-b's link to edge-a is up", func() bool { return linksUp(edgeB) })
 
+	if body := getSNI(t, relayAddr, "secure.test"); body != "from origin" {
+		t.Fatalf("TLS site sharing the relay's own address: body = %q", body)
+	}
+	target := fmt.Sprintf("http://127.0.0.1:%d/", relayedPort)
+	eventually(t, "the relayed site reaches the origin through edge-a's shared address", func() bool {
+		return probe(target) == "from origin"
+	})
+}
+
+// TestPlaintextAndTLSSitesShareTheirNodesOwnRelayPort covers stage three's relaxation of
+// internal/dataplane.Engine's former "a shared address cannot mix a plaintext and a TLS site" restriction (see
+// docs/architecture/control-data-plane.md §5, "共享端口(第三段)"): a plaintext site, a TLS site, and a node's
+// own relay port (an exact-SNI TLS owner) all share one address at once, each told apart by the connection's
+// first byte and then, within each encoding, by Host/SNI — sharedport.Registry always allowed this (see
+// TestPlainSiteTLSSiteAndPlaintextOwnerShareOneAddress), it was only the engine's own site-to-site rule, a
+// leftover from before shared ports existed, that stood in the way. TestSiteSharesItsNodesOwnRelayPort and
+// TestTLSSiteSharesItsNodesOwnRelayPort above already prove the plaintext-plus-relay and TLS-plus-relay pairs
+// individually; this test is the three-way combination, plus the same "a relayed site through edge-a keeps
+// working" check both of them already make.
+func TestPlaintextAndTLSSitesShareTheirNodesOwnRelayPort(t *testing.T) {
+	c := startController(t)
+	relayAddr := freeAddress(t)
+	tokenA := c.createRelayNode("edge-a", relayAddr)
+	tokenB := c.createNode("edge-b")
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "from origin") }))
+	defer origin.Close()
+
+	// RelayListen pins edge-a's relay bind to the exact address both sites below also listen on; see
+	// TestSiteSharesItsNodesOwnRelayPort's comment on the same line for why this is needed.
+	startAgent(t, Config{ControllerURL: c.southbound.URL, JoinToken: tokenA, DataDir: t.TempDir(), Version: "test", RelayListen: relayAddr})
+	edgeB, _ := startAgent(t, Config{ControllerURL: c.southbound.URL, JoinToken: tokenB, DataDir: t.TempDir(), Version: "test"})
+	eventually(t, "both nodes register", func() bool { return c.inSync("edge-a", "edge-b") })
+
+	host, portStr, err := net.SplitHostPort(relayAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayPort, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	localSite := fmt.Sprintf(`{"id":"local-web","name":"local-web","config":{"nodes":["edge-a"],"hostnames":["local.test"],"listenAddress":%q,"listenPort":%d,
+		"upstreams":[{"url":%q}]}}`, host, relayPort, origin.URL)
+	c.call(http.MethodPost, "/api/sites", localSite, http.StatusCreated)
+	c.call(http.MethodPost, "/api/sites/local-web/start", "", http.StatusOK)
+
+	certServer := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer certServer.Close()
+	certPEM, keyPEM := encodeTestCertificate(t, certServer.TLS.Certificates[0])
+
+	secureSite := fmt.Sprintf(`{"id":"secure-web","name":"secure-web","config":{"nodes":["edge-a"],"hostnames":["secure.test"],"listenAddress":%q,"listenPort":%d,
+		"tls":true,"certificateSecret":"cert","privateKeySecret":"key","upstreams":[{"url":%q}]}}`, host, relayPort, origin.URL)
+	c.call(http.MethodPost, "/api/sites", secureSite, http.StatusCreated)
+	c.call(http.MethodPut, "/api/sites/secure-web/secrets/cert", string(certPEM), http.StatusCreated)
+	c.call(http.MethodPut, "/api/sites/secure-web/secrets/key", string(keyPEM), http.StatusCreated)
+	c.call(http.MethodPost, "/api/sites/secure-web/start", "", http.StatusOK)
+
+	relayedPort := freePort(t)
+	relayedSite := fmt.Sprintf(`{"id":"relayed-web","name":"relayed-web","config":{"nodes":["edge-b"],"listenAddress":"127.0.0.1","listenPort":%d,
+		"upstreams":[{"url":%q,"via":[{"node":"edge-a"}]}]}}`, relayedPort, origin.URL)
+	c.call(http.MethodPost, "/api/sites", relayedSite, http.StatusCreated)
+	c.call(http.MethodPost, "/api/sites/relayed-web/start", "", http.StatusOK)
+
+	eventually(t, "all three sites are running and in sync", func() bool {
+		return c.inSync("edge-a", "edge-b")
+	})
+	eventually(t, "edge-b's link to edge-a is up", func() bool { return linksUp(edgeB) })
+
+	if body := getHost(t, "http://"+relayAddr+"/", "local.test"); body != "from origin" {
+		t.Fatalf("plaintext site sharing the relay's own address: body = %q", body)
+	}
 	if body := getSNI(t, relayAddr, "secure.test"); body != "from origin" {
 		t.Fatalf("TLS site sharing the relay's own address: body = %q", body)
 	}

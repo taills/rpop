@@ -294,21 +294,23 @@ func (e *Engine) install(site snapshot.Site, route *siteRuntime, runtimeKey, cer
 	e.mu.Lock()
 	previous := e.runs[site.ID]
 	group := e.listeners[address]
-	if group != nil && group.tlsEnabled != site.TLS {
-		// A shared address cannot mix a plaintext and a TLS site (sharedport's registry would happily let a TLS
-		// *owner* share this address with a plaintext site, since it tells them apart by their first byte before
-		// either is reached — but two *sites* disagreeing on the mode has never been supported, and still isn't).
-		// Release it first when this site is its only user.
-		if previous == nil || previous.groupKey != address || len(group.siteIDs) != 1 {
-			e.mu.Unlock()
-			return fmt.Errorf("listener %s is already serving the other HTTP/TLS mode", address)
-		}
-		e.mu.Unlock()
-		e.stopLocked(site.ID)
-		e.mu.Lock()
-		previous, group = nil, nil
-	}
+	// A plaintext site and a TLS site are free to share one address (told apart by the connection's first byte,
+	// exactly like a site and a TLS owner already were — see sharedport.Registry.PutSite, which keeps entirely
+	// separate plaintext/TLS site tables per address): this engine used to forbid mixing two *sites*' modes on
+	// one address regardless, a stricter rule than sharedport ever needed that predates shared ports existing at
+	// all. It was relaxed once sharedport's first-byte dispatch made it unnecessary — see
+	// docs/architecture/control-data-plane.md §5, "共享端口(第三段)".
 	newGroup := group == nil
+	// A site staying on this address but flipping its TLS bit needs its stale same-ID registration in the
+	// *other* mode's table detached first: PutSite below only ever replaces the entry in the table matching the
+	// *new* registration's mode (plainSites when !route.TLS, tlsSites when route.TLS — see sharedport's
+	// route.go), so without this the previous mode's entry would linger forever, continuing to route traffic
+	// through the runtime install releases below. This has to run before PutSite, not after — RemoveSite is
+	// by-ID and would otherwise also delete the fresh entry PutSite is about to add.
+	switchingMode := previous != nil && previous.groupKey == address && previous.spec.TLS != site.TLS
+	if switchingMode {
+		e.registry.RemoveSite(address, site.ID)
+	}
 	siteRoute := sharedport.SiteRoute{
 		ID: site.ID, Hostnames: route.hostnames, TLS: site.TLS, Certificate: route.certificate.Load, Handler: route.handler,
 	}
@@ -317,11 +319,26 @@ func (e *Engine) install(site snapshot.Site, route *siteRuntime, runtimeKey, cer
 	// address's listener when this call is what makes newGroup true, and it stays bound, owned by nothing, only
 	// while admission is still being decided inside the same call — never past a failed return.
 	if err := e.registry.PutSite(address, siteRoute, e.leaving); err != nil {
+		if switchingMode {
+			// The stale entry removed above was this site's only working registration (D8: a site that fails to
+			// apply keeps serving its previous config); put it back under its old mode so the site does not go
+			// dark just because the new mode couldn't be admitted. previous.route has not been release()d yet —
+			// that only happens once install fully succeeds, below — so its handler and certificate are still
+			// good to hand back to the registry.
+			oldRoute := sharedport.SiteRoute{
+				ID: site.ID, Hostnames: previous.route.hostnames, TLS: previous.spec.TLS,
+				Certificate: previous.route.certificate.Load, Handler: previous.route.handler,
+			}
+			if restoreErr := e.registry.PutSite(address, oldRoute, e.leaving); restoreErr != nil {
+				e.log.Error("could not restore previous registration after a failed TLS/plaintext switch",
+					zap.String("site_id", site.ID), zap.Error(restoreErr))
+			}
+		}
 		e.mu.Unlock()
 		return err
 	}
 	if newGroup {
-		group = &addressGroup{tlsEnabled: site.TLS, siteIDs: make(map[string]bool)}
+		group = &addressGroup{siteIDs: make(map[string]bool)}
 		e.listeners[address] = group
 	}
 	group.siteIDs[site.ID] = true

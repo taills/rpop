@@ -35,16 +35,14 @@ func (r *siteRuntime) release() {
 	}
 }
 
-// addressGroup tracks, per shared address, the one thing this engine must still enforce that sharedport itself
-// does not: a site's listener has never been allowed to mix plaintext and TLS on the same address (sharedport's
-// registry, by contrast, happily lets a plaintext owner/site and a TLS owner/site share one address — that is
-// the entire point of the package — because it tells them apart by the first byte of each connection before
-// either one is reached). Preserving the stricter, pre-existing site-to-site rule exactly is what
-// Engine.install's mode-conflict check (and this type) is for; the registry does everything else (binding,
-// admission, routing, listener lifecycle).
+// addressGroup tracks which sites currently share one address, so Engine.install/stopLocked know when the last
+// of them leaves and the address can be forgotten from e.listeners; sharedport.Registry itself owns binding,
+// admission, routing, and listener lifecycle. A plaintext site and a TLS site may freely belong to the same
+// group — sharedport tells them apart by the first byte of each connection, exactly like it already does for a
+// site sharing an address with a TLS owner (see engine.go's install and
+// docs/architecture/control-data-plane.md §5, "共享端口(第三段)").
 type addressGroup struct {
-	tlsEnabled bool
-	siteIDs    map[string]bool
+	siteIDs map[string]bool
 }
 
 // NormalizeHostnames re-exports sharedport.NormalizeHostnames: internal/control's pre-save validation and this
