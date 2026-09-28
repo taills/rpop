@@ -78,11 +78,13 @@ func (p *port) removeTLSOwner(sni string) {
 
 // PutDefaultTLSOwner registers owner as address's fallback for a TLS connection whose SNI — including no SNI at
 // all — matched neither an exact TLS owner (PutTLSOwner) nor a TLS site's hostname (see dispatch.go's
-// getConfigForClient for the full match order). Southbound is the first user: a node whose -controller URL
-// names an IP address, or one that predates pinning the bootstrap SNI to pki.ControllerName, never sends a
-// matching SNI at all, and must still reach the controller when southbound shares its address with other
-// owners/sites. At most one default TLS owner may be registered per address at a time; tlsConfig is used as-is,
-// exactly like PutTLSOwner's.
+// getConfigForClient for the full match order). Southbound is the first user: a node whose binary predates
+// pinning the bootstrap SNI to pki.ControllerName (see pki.BootstrapClientConfig's doc comment) sends no SNI at
+// all when its -controller URL names a literal IP address, or an arbitrary, non-matching one otherwise — a
+// current node's bootstrap dial, by contrast, always sends pki.ControllerName as SNI regardless of the
+// -controller URL's own host, so it reaches the exact TLS owner above instead; the default owner here exists for
+// the older node, and for any other client that dials with no SNI on purpose. At most one default TLS owner may
+// be registered per address at a time; tlsConfig is used as-is, exactly like PutTLSOwner's.
 //
 // Registering fails if address already has a TLS site with no configured hostname: that site currently answers
 // every SNI the address's other TLS owners/sites do not claim (see siteTable.only), which would otherwise

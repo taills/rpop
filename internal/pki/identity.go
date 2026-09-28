@@ -127,11 +127,15 @@ func PeerNodeID(state *tls.ConnectionState) (string, bool) {
 // present a chain containing the CA with the pinned fingerprint and a certificate for ControllerName from it.
 // ServerName pins the TLS SNI to ControllerName regardless of the -controller URL's own host, so the shared-port
 // registry's southbound listener (internal/sharedport.Registry.PutTLSOwner) can route the connection by SNI
-// without depending on the operator's DNS name for the controller matching anything the registry knows about. A
-// -controller URL naming a literal IP address still sends no SNI at all — crypto/tls omits it for an IP host
-// regardless of what ServerName is set to (RFC 6066 §3) — which is exactly why southbound also registers a
-// default TLS owner (PutDefaultTLSOwner) as a fallback for that case, and for any node old enough to predate
-// this fix.
+// without depending on the operator's DNS name for the controller matching anything the registry knows about.
+// crypto/tls decides whether to send SNI from Config.ServerName's own value (omitting it only when that string
+// itself parses as an IP literal, RFC 6066 §3 — see hostnameInSNI in the standard library), not from the address
+// being dialed, so this always sends SNI = ControllerName, even when the -controller URL names a literal IP
+// address. Southbound still also registers a default TLS owner (PutDefaultTLSOwner) as a fallback: a node whose
+// binary predates this function pinning ServerName here sends whatever net/http fills in from the -controller
+// URL's own host instead (an arbitrary, unrelated hostname, or, for a literal IP URL, no SNI at all — the case
+// this comment used to attribute to every IP-addressed -controller URL, current nodes included, which crypto/tls
+// does not actually do once ServerName is set explicitly as above).
 func BootstrapClientConfig(caFingerprint string) *tls.Config {
 	return &tls.Config{
 		MinVersion:         tls.VersionTLS13,

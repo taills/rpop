@@ -8,10 +8,12 @@ import (
 	"testing"
 )
 
-// dialNoSNI completes a TLS handshake against address sending no SNI at all — the same thing a client dialing a
-// literal IP address does (crypto/tls omits ServerName from the ClientHello whenever it parses as an IP; see
-// hostnameInSNI in the standard library), and what a node bootstrapping against a -controller URL with an IP
-// host does before this stage's pki.BootstrapClientConfig fix, and still does afterward (see identity.go).
+// dialNoSNI completes a TLS handshake against address sending no SNI at all (an explicitly empty
+// tls.Config.ServerName; crypto/tls omits the SNI extension whenever ServerName is empty or parses as an IP —
+// see hostnameInSNI in the standard library) — what a node whose binary predates pinning the bootstrap SNI to
+// pki.ControllerName sends when its -controller URL names a literal IP host (see pki.BootstrapClientConfig's doc
+// comment for the fixed, current behavior: it pins ServerName explicitly, so a current node's bootstrap dial
+// sends SNI = pki.ControllerName regardless of the -controller URL's own host, and no longer takes this path).
 func dialNoSNI(t *testing.T, address string, tlsConfig *tls.Config) (*tls.Conn, error) {
 	t.Helper()
 	raw, err := net.Dial("tcp", address)
@@ -41,7 +43,8 @@ func TestDefaultTLSOwnerServesUnmatchedAndEmptySNI(t *testing.T) {
 	t.Cleanup(func() { owner.Close() })
 
 	pool := func() *tls.Config { c := &tls.Config{InsecureSkipVerify: true}; return c }
-	// No SNI at all (e.g. a bootstrap dial to a controller named by IP).
+	// No SNI at all (e.g. a bootstrap dial from a node old enough to predate pinning the SNI, against a
+	// -controller URL naming a literal IP — see dialNoSNI's doc comment).
 	conn, err := dialNoSNI(t, address, pool())
 	if err != nil {
 		t.Fatalf("handshake with no SNI: %v", err)

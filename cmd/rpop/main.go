@@ -217,12 +217,13 @@ func runController(ctx context.Context, logger *zap.Logger, o options, overlayCf
 // startSouthbound serves the southbound API through registry instead of its own raw listener, so it can share
 // -southbound-addr with the console (-addr) or a site when their normalized addresses coincide (see
 // docs/architecture/control-data-plane.md §5). It registers twice at addr, through the same *http.Server and
-// the same TLS config: once as the exact-SNI TLS owner for pki.ControllerName (every node past its first
-// registration dials with that SNI pinned, see pki.Identity.ControllerClientConfig), and once as the address's
+// the same TLS config: once as the exact-SNI TLS owner for pki.ControllerName (every southbound call a current
+// node makes, including its first-ever registration, dials with that SNI pinned — see
+// pki.BootstrapClientConfig's and pki.Identity.ControllerClientConfig's doc comments), and once as the address's
 // default TLS owner (internal/sharedport.Registry.PutDefaultTLSOwner) — the fallback for a connection that sends
-// no SNI at all, which a node's first-ever registration still does whenever its -controller URL names a literal
-// IP address (see pki.BootstrapClientConfig's doc comment), and which any node old enough to predate pinning
-// that SNI always does.
+// no SNI at all, or one that does not match pki.ControllerName, which only a node old enough to predate pinning
+// the bootstrap SNI still sends (see pki.BootstrapClientConfig's doc comment for exactly what that node sends,
+// which is not simply "no SNI for an IP -controller URL": that describes the older client, not the current one).
 func startSouthbound(ctx context.Context, logger *zap.Logger, service *control.Control, registry *sharedport.Registry, addr string, maxStreamsPerConn int) *http.Server {
 	tlsConfig, err := service.SouthboundTLSConfig(ctx)
 	if err != nil {
