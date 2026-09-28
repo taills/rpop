@@ -125,9 +125,17 @@ func PeerNodeID(state *tls.ConnectionState) (string, bool) {
 
 // BootstrapClientConfig lets a node that holds only a join token authenticate the controller: the controller must
 // present a chain containing the CA with the pinned fingerprint and a certificate for ControllerName from it.
+// ServerName pins the TLS SNI to ControllerName regardless of the -controller URL's own host, so the shared-port
+// registry's southbound listener (internal/sharedport.Registry.PutTLSOwner) can route the connection by SNI
+// without depending on the operator's DNS name for the controller matching anything the registry knows about. A
+// -controller URL naming a literal IP address still sends no SNI at all — crypto/tls omits it for an IP host
+// regardless of what ServerName is set to (RFC 6066 §3) — which is exactly why southbound also registers a
+// default TLS owner (PutDefaultTLSOwner) as a fallback for that case, and for any node old enough to predate
+// this fix.
 func BootstrapClientConfig(caFingerprint string) *tls.Config {
 	return &tls.Config{
 		MinVersion:         tls.VersionTLS13,
+		ServerName:         ControllerName,
 		InsecureSkipVerify: true, // replaced by the pinned-CA check below
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 			pool := x509.NewCertPool()

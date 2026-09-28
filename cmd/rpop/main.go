@@ -21,6 +21,7 @@ import (
 	"github.com/rpop-project/rpop/internal/agent"
 	"github.com/rpop-project/rpop/internal/control"
 	"github.com/rpop-project/rpop/internal/overlay"
+	"github.com/rpop-project/rpop/internal/pki"
 	"github.com/rpop-project/rpop/internal/sharedport"
 	"github.com/rpop-project/rpop/internal/spool"
 	"github.com/rpop-project/rpop/internal/store"
@@ -175,26 +176,29 @@ func runController(ctx context.Context, logger *zap.Logger, o options, overlayCf
 	if err != nil {
 		logger.Fatal("parse -console-hostnames", zap.Error(err))
 	}
-	// The registry, the embedded local node's engine wiring, and the console's own registration all have to be
-	// in place before StartAutoSites runs any site: an auto-started site sharing -addr admits (or rejects) a
-	// hostname-less registration based on whether an owner is already on that address (see
-	// internal/sharedport's admit()), and that only holds if the console got there first.
+	// The registry, the embedded local node's engine wiring, and the console's and southbound's own
+	// registrations all have to be in place before StartAutoSites runs any site: an auto-started site sharing
+	// -addr or -southbound-addr admits (or rejects) a hostname-less registration based on whether an owner is
+	// already on that address (see internal/sharedport's admit()), and that only holds if the console and
+	// southbound got there first.
 	registry := sharedport.NewRegistry()
 	service.SetSharedPortRegistry(registry)
 	if err := registry.PutPlaintextOwner(o.serverAddr, consoleHandler(logger, service, o.webDir), consoleHostnames); err != nil {
 		logger.Fatal("register control console", zap.Error(err))
 	}
+	var southbound *http.Server
+	if o.southboundAddr != "" {
+		southbound = startSouthbound(ctx, logger, service, registry, o.southboundAddr, o.southboundMaxStreamsPerConn)
+	}
 	logger.Info("control API listening", zap.String("addr", o.serverAddr), zap.String("mode", o.mode), zap.String("version", Version))
 	if err := service.StartAutoSites(context.Background()); err != nil {
 		logger.Fatal("load auto-start sites", zap.Error(err))
 	}
-	var southbound *http.Server
-	if o.southboundAddr != "" {
-		southbound = startSouthbound(ctx, logger, service, o.southboundAddr, o.southboundMaxStreamsPerConn)
-	}
 	<-ctx.Done()
 	if southbound != nil {
 		// Watch streams never go idle, so graceful shutdown would only wait; nodes reconnect on their own.
+		// Server.Close also closes every listener it Serve-d (both the exact-SNI and the default-SNI shared-port
+		// registrations startSouthbound made), unregistering southbound from the registry.
 		_ = southbound.Close()
 	}
 	// Unregister the console, then stop every site: internal/sharedport.Registry frees a shared address's real
@@ -210,17 +214,45 @@ func runController(ctx context.Context, logger *zap.Logger, o options, overlayCf
 	cancelDrain()
 }
 
-func startSouthbound(ctx context.Context, logger *zap.Logger, service *control.Control, addr string, maxStreamsPerConn int) *http.Server {
+// startSouthbound serves the southbound API through registry instead of its own raw listener, so it can share
+// -southbound-addr with the console (-addr) or a site when their normalized addresses coincide (see
+// docs/architecture/control-data-plane.md §5). It registers twice at addr, through the same *http.Server and
+// the same TLS config: once as the exact-SNI TLS owner for pki.ControllerName (every node past its first
+// registration dials with that SNI pinned, see pki.Identity.ControllerClientConfig), and once as the address's
+// default TLS owner (internal/sharedport.Registry.PutDefaultTLSOwner) — the fallback for a connection that sends
+// no SNI at all, which a node's first-ever registration still does whenever its -controller URL names a literal
+// IP address (see pki.BootstrapClientConfig's doc comment), and which any node old enough to predate pinning
+// that SNI always does.
+func startSouthbound(ctx context.Context, logger *zap.Logger, service *control.Control, registry *sharedport.Registry, addr string, maxStreamsPerConn int) *http.Server {
 	tlsConfig, err := service.SouthboundTLSConfig(ctx)
 	if err != nil {
 		logger.Fatal("prepare southbound TLS", zap.Error(err))
 	}
-	server := &http.Server{Addr: addr, Handler: service.SouthboundHandler(), TLSConfig: tlsConfig,
-		ReadHeaderTimeout: control.HeaderTimeout, IdleTimeout: 2 * time.Minute, HTTP2: control.SouthboundHTTP2Config(maxStreamsPerConn)}
+	ownerListener, err := registry.PutTLSOwner(addr, pki.ControllerName, tlsConfig)
+	if err != nil {
+		logger.Fatal("register southbound API", zap.Error(err))
+	}
+	defaultListener, err := registry.PutDefaultTLSOwner(addr, tlsConfig)
+	if err != nil {
+		logger.Fatal("register southbound API (default SNI fallback)", zap.Error(err))
+	}
+	server := &http.Server{
+		Handler: service.SouthboundHandler(), ReadHeaderTimeout: control.HeaderTimeout,
+		IdleTimeout: 2 * time.Minute, HTTP2: control.SouthboundHTTP2Config(maxStreamsPerConn),
+	}
 	go func() {
 		logger.Info("southbound API listening", zap.String("addr", addr))
-		if err := server.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		// Serve, not ListenAndServeTLS: ownerListener already hands over completed *tls.Conn values (dispatched
+		// by SNI in internal/sharedport), so the handshake must not run a second time; leaving TLSConfig nil
+		// keeps Go's automatic HTTP/2 negotiation working for a caller that terminated TLS itself before calling
+		// Serve (mirrors internal/overlay's relay port; see relay.go's startRelay).
+		if err := server.Serve(ownerListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Fatal("serve southbound API", zap.Error(err))
+		}
+	}()
+	go func() {
+		if err := server.Serve(defaultListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Fatal("serve southbound API (default SNI fallback)", zap.Error(err))
 		}
 	}()
 	return server
