@@ -14,19 +14,19 @@ import (
 // each value may be exact, "prefix*", "*suffix" or "*substring*"; values are ORed.
 // No values means the header must be present; Absent means it must not be present.
 type HeaderMatch struct {
-	Name   string   `json:"name" yaml:"name"`
-	Values []string `json:"values,omitempty" yaml:"values,omitempty"`
-	Absent bool     `json:"absent,omitempty" yaml:"absent,omitempty"`
+	Name   string   `json:"name"`
+	Values []string `json:"values,omitempty"`
+	Absent bool     `json:"absent,omitempty"`
 }
 
 // Route sends matching requests to Upstreams[Upstream]. Path is exact unless it ends in "*"
 // (prefix match) and is compared case-insensitively; an empty Path matches every path.
 // All header conditions must hold. StripPrefix removes the matched path prefix before proxying.
 type Route struct {
-	Path        string        `json:"path,omitempty" yaml:"path,omitempty"`
-	Headers     []HeaderMatch `json:"headers,omitempty" yaml:"headers,omitempty"`
-	StripPrefix bool          `json:"stripPrefix,omitempty" yaml:"stripPrefix,omitempty"`
-	Upstream    int           `json:"upstream" yaml:"upstream"`
+	Path        string        `json:"path,omitempty"`
+	Headers     []HeaderMatch `json:"headers,omitempty"`
+	StripPrefix bool          `json:"stripPrefix,omitempty"`
+	Upstream    int           `json:"upstream"`
 }
 
 // Route matching follows Caddy's handle/handle_path semantics: paths are exact unless they end in "*",

@@ -47,16 +47,24 @@ A node's log spool (access logs and tunnel events awaiting upload) defaults to a
 
 An upstream can reach its origin through other nodes and external proxies instead of connecting directly. `paths` lists candidate routes in priority order; each `via` is an ordered mix of nodes and registered proxies, and an empty `via` connects directly. `via` on the upstream itself is shorthand for a single path.
 
-```yaml
-upstreams:
-  - url: https://example.com
-    paths:
-      - via: [{proxy: socks5-A}, {node: node2}, {node: node3}, {proxy: socks5-B}]  # client > node1 > socks5-A > node2 > node3 > socks5-B > origin
-      - via: [{proxy: socks5-A}, {node: node2}, {node: node3}]
-      - via: [{node: node2}, {node: node3}]
-      - via: [{node: node3}]
-      - via: []                                                                   # direct
+```json
+{
+  "upstreams": [
+    {
+      "url": "https://example.com",
+      "paths": [
+        { "via": [{"proxy": "socks5-A"}, {"node": "node2"}, {"node": "node3"}, {"proxy": "socks5-B"}] },
+        { "via": [{"proxy": "socks5-A"}, {"node": "node2"}, {"node": "node3"}] },
+        { "via": [{"node": "node2"}, {"node": "node3"}] },
+        { "via": [{"node": "node3"}] },
+        { "via": [] }
+      ]
+    }
+  ]
+}
 ```
+
+The first path is `client > node1 > socks5-A > node2 > node3 > socks5-B > origin`; the last (`via: []`) connects directly.
 
 - The site's own node (here `node1`, from `config.nodes`) terminates the client connection and keeps all HTTP logic: routing, access logs, metrics, and the upstream's TLS settings. Upstream TLS runs end to end from that node to the origin, so relays and proxies only ever see ciphertext.
 - Relay nodes serve no sites. Each opens a relay port that only accepts nodes holding a certificate from the controller's CA and forwards a tunnel only along a route the controller rendered for the node it came from. Give a relay node a `relayAddress` (`host:port` other nodes dial); it binds that port on every interface, or `-relay-listen` (env `RPOP_RELAY_LISTEN`) when port forwarding maps it elsewhere. A node that relays for a site cannot be deleted or lose its relay address.
@@ -76,7 +84,6 @@ Register proxies with `POST /api/proxies` (`{"id":"socks5-A","name":"A","type":"
 - Caddy-style request routing (`config.routes`) sends requests to different upstreams by path and header. A path matches exactly unless it ends in `*`, which makes it a prefix match (`/api/*` matches `/api/x` but not `/api`; `/api*` also matches `/api` and `/apix`); matching is case-insensitive and uses the cleaned path (`..` and `//` resolved). Header conditions match exact, `prefix*`, `*suffix`, or `*contains*` values (case-sensitive; values of one header are ORed, different headers are ANDed), require the header to exist when `values` is empty, or require it to be missing with `absent: true`; `Host` matches the request host. Like Caddy's `handle`, the most specific rule wins: longer path first, exact before prefix, more header conditions first, then configuration order. `stripPrefix` removes the matched prefix (Caddy `handle_path`) before the upstream URL's own path is prepended. Requests that match no rule go to the default upstream, `upstreams[0]`.
 - The site editor manages any number of upstreams (make one the default, add or remove them with their routes remapped) and routing rules, and includes a route simulator: enter a URL, method, and headers to see which rule matches, why the other rules did not, and the path before and after rewriting. It evaluates the unsaved configuration with the same server code as live traffic via `POST /api/routes/simulate`.
 - Multi-hop `paths` (see below) get a dedicated editor listing every candidate route as an ordered list of node/proxy hops; the route simulator's response also renders the full candidate path for the matched upstream, each hop's live health, and which path the engine would pick right now.
-- YAML configuration import/export at `PUT/GET /api/config.yaml`. YAML contains configuration and secret *references*, not private key bytes; SQLite remains the canonical store.
 - A site emits access logs only when its `config.accessLog.adapterId` selects a configured adapter; an empty ID disables access logging. Body capture and sensitive-header options remain site-specific. Sensitive headers are redacted unless explicitly enabled. Log writes use a bounded asynchronous queue so storage I/O does not block forwarding; queue saturation drops records and increments the site's dropped-log metric.
 - Per-site in-memory metrics: request/error counts, status codes, in-flight requests, bytes in/out, average TTFB, average and maximum response time, and approximate P95 response time.
 - Administrator password setup, login/logout, and password changes from the System Settings page. Passwords are PBKDF2-HMAC-SHA256 hashed; the UI uses HttpOnly, SameSite session cookies, and failed logins are rate-limited.
@@ -88,48 +95,55 @@ Register proxies with `POST /api/proxies` (`{"id":"socks5-A","name":"A","type":"
 - The console's Nodes page covers the full node lifecycle (create, rename/re-point relay address, reissue join token, delete) plus per-node overlay link, upstream path, and log-spool health; a Topology page graphs every node's inferred entry/relay/exit role and the links between them; a Proxies page manages named overlay proxies.
 - The Trace page looks up a request's full journey by its `Rpop-Track-Id` or tunnel ID, laying out entry/relay/exit timing per hop with protocol-version and clock-skew badges, plus an optional client-side toggle that corrects the displayed timeline for a reporting node's clock skew (display-only; it never rewrites stored timestamps).
 
-## YAML example
+## Site configuration example
 
-```yaml
-sites:
-  - id: example
-    name: Example site
-    autoStart: true
-    config:
-      listenAddress: 127.0.0.1
-      listenPort: 8443
-      hostnames: [app.example.test, api.example.test]
-      tls: true
-      certificateSecret: site-cert
-      privateKeySecret: site-key
-      accessLog:
-        adapterId: default
-        includeBodies: true
-        maxBodyBytes: 1048576
-      upstreams:
-        - url: https://origin.example.test
-          proxyUrl: socks5://127.0.0.1:1080
-          proxyType: proxy
-          serverName: origin.example.test
-          dialAddress: 192.0.2.10:443
-          insecureSkipVerify: false
-          clientCertSecret: upstream-client-cert
-          clientKeySecret: upstream-client-key
-        - url: http://10.0.0.5:8080/v1
-      routes:
-        # /api/users -> http://10.0.0.5:8080/v1/users
-        - path: /api/*
-          stripPrefix: true
-          upstream: 1
-        # Canary traffic for /api/* keeps its path and goes to the default upstream
-        - path: /api/*
-          headers:
-            - name: X-Canary
-              values: ["1", "true"]
-          upstream: 0
+Request body for `POST /api/sites` (also accepted by `PUT /api/sites/{id}`):
+
+```json
+{
+  "id": "example",
+  "name": "Example site",
+  "autoStart": true,
+  "config": {
+    "listenAddress": "127.0.0.1",
+    "listenPort": 8443,
+    "hostnames": ["app.example.test", "api.example.test"],
+    "tls": true,
+    "certificateSecret": "site-cert",
+    "privateKeySecret": "site-key",
+    "accessLog": {
+      "adapterId": "default",
+      "includeBodies": true,
+      "maxBodyBytes": 1048576
+    },
+    "upstreams": [
+      {
+        "url": "https://origin.example.test",
+        "proxyUrl": "socks5://127.0.0.1:1080",
+        "proxyType": "proxy",
+        "serverName": "origin.example.test",
+        "dialAddress": "192.0.2.10:443",
+        "insecureSkipVerify": false,
+        "clientCertSecret": "upstream-client-cert",
+        "clientKeySecret": "upstream-client-key"
+      },
+      { "url": "http://10.0.0.5:8080/v1" }
+    ],
+    "routes": [
+      { "path": "/api/*", "stripPrefix": true, "upstream": 1 },
+      {
+        "path": "/api/*",
+        "headers": [{ "name": "X-Canary", "values": ["1", "true"] }],
+        "upstream": 0
+      }
+    ]
+  }
+}
 ```
 
-`rootCertificateIds` selects one or more CA certificates from System Settings by their SHA-256 DER fingerprint IDs. The selected roots are added to the OS trust pool for that upstream; a legacy upstream `caBundle` is also accepted. With no selected system roots, an explicit `caBundle` retains its existing exclusive-pool behavior, while an empty bundle uses OS defaults. For mutual TLS, either set `clientCertificateId` to a Client certificate managed in System Settings (the SHA-256 fingerprint of its leaf certificate), or configure `clientCertSecret`/`clientKeySecret`; the two options are mutually exclusive and require an HTTPS upstream. A system Client certificate selected by any site cannot be removed. Site-scoped certificate and private-key bytes are stored in SQLite secrets, not YAML. Upload PEM bytes with `PUT /api/sites/{siteId}/secrets/{name}` using an `application/octet-stream` body. The authenticated `DELETE /api/sites/{siteId}/secrets/{name}` endpoint removes an unused secret.
+The first route sends `/api/users` to `http://10.0.0.5:8080/v1/users` (path prefix stripped). The second is more specific (it also matches on the `X-Canary` header) and wins for canary traffic on `/api/*`, keeping the path and going to the default upstream (`upstreams[0]`).
+
+`rootCertificateIds` selects one or more CA certificates from System Settings by their SHA-256 DER fingerprint IDs. The selected roots are added to the OS trust pool for that upstream; a legacy upstream `caBundle` is also accepted. With no selected system roots, an explicit `caBundle` retains its existing exclusive-pool behavior, while an empty bundle uses OS defaults. For mutual TLS, either set `clientCertificateId` to a Client certificate managed in System Settings (the SHA-256 fingerprint of its leaf certificate), or configure `clientCertSecret`/`clientKeySecret`; the two options are mutually exclusive and require an HTTPS upstream. A system Client certificate selected by any site cannot be removed. Site-scoped certificate and private-key bytes are stored in SQLite secrets, referenced by name rather than sent inline. Upload PEM bytes with `PUT /api/sites/{siteId}/secrets/{name}` using an `application/octet-stream` body. The authenticated `DELETE /api/sites/{siteId}/secrets/{name}` endpoint removes an unused secret.
 
 ## API
 
@@ -147,7 +161,6 @@ sites:
 - `GET /api/topology` returns every node (with its inferred `entry`/`relay`/`exit` roles), the directed links between them (health, proxy chain, connection/tunnel counters), and the registered named proxies, for the console's topology graph.
 - `GET /api/proxies`, `POST /api/proxies`, `PUT/DELETE /api/proxies/{id}`. Entries report `hasPassword` and the sites that use them in `usedBy`.
 - `PUT/DELETE /api/sites/{id}/secrets/{name}`
-- `GET /api/config.yaml` (download), `PUT /api/config.yaml` (transactional upsert import)
 
 ## Security / current limitations
 

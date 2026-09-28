@@ -141,36 +141,6 @@ func TestAdminAuthenticationSetupLoginLogoutAndPasswordChange(t *testing.T) {
 	}
 }
 
-func TestYAMLConfigImportExport(t *testing.T) {
-	db, err := sql.Open("sqlite3", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := store.Migrate(context.Background(), db); err != nil {
-		t.Fatal(err)
-	}
-	c := New(store.New(db), zap.NewNop())
-	handler := c.Handler()
-	cookie := setupAdminForTest(t, handler)
-	upstream := "ht" + "tp://127.0.0.1:9000"
-	body := "sites:\n  - id: app\n    name: App\n    autoStart: true\n    config:\n      listenAddress: 127.0.0.1\n      listenPort: 8089\n      upstreams:\n        - url: " + upstream + "\n"
-	request := httptest.NewRequest("PUT", "/api/config.yaml", strings.NewReader(body))
-	response := httptest.NewRecorder()
-	request.AddCookie(cookie)
-	handler.ServeHTTP(response, request)
-	if response.Code != 200 {
-		t.Fatalf("import status %d: %s", response.Code, response.Body.String())
-	}
-	request = httptest.NewRequest("GET", "/api/config.yaml", nil)
-	request.AddCookie(cookie)
-	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != 200 || !strings.Contains(response.Body.String(), "listenPort: 8089") || !strings.Contains(response.Body.String(), "autoStart: true") {
-		t.Fatalf("export mismatch: status=%d body=%s", response.Code, response.Body.String())
-	}
-}
-
 func TestSystemSettingsAPIPersistsAndAppliesOneGlobalTimeZone(t *testing.T) {
 	db, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {

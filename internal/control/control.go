@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"gopkg.in/yaml.v3"
 
 	"github.com/rpop-project/rpop/internal/accesslog"
 	"github.com/rpop-project/rpop/internal/dataplane"
@@ -177,7 +176,6 @@ func (c *Control) Handler() http.Handler {
 	m.HandleFunc("/api/logs", c.searchLogs)
 	m.HandleFunc("/api/logging/trace/", c.loggingTrace)
 	m.HandleFunc("/api/logging/tunnels/", c.loggingTunnelEvents)
-	m.HandleFunc("/api/config.yaml", c.yamlConfig)
 	m.HandleFunc("/api/sites", c.sites)
 	m.HandleFunc("/api/sites/", c.site)
 	m.HandleFunc("/api/routes/simulate", c.simulateRoute)
@@ -189,75 +187,6 @@ func (c *Control) Handler() http.Handler {
 	return c.authMiddleware(m)
 }
 
-type yamlConfig struct {
-	Sites []store.Site `yaml:"sites"`
-}
-
-func (c *Control) yamlConfig(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		sites, err := c.store.List(r.Context())
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-		c.opMu.Lock()
-		for i := range sites {
-			sites[i].Running = c.siteRunning(sites[i])
-		}
-		c.opMu.Unlock()
-		data, err := yaml.Marshal(yamlConfig{Sites: sites})
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-		w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
-		w.Header().Set("Content-Disposition", "attachment; filename=sites.yaml")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(data)
-	case http.MethodPut:
-		defer r.Body.Close()
-		decoder := yaml.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20))
-		decoder.KnownFields(true)
-		var cfg yamlConfig
-		if err := decoder.Decode(&cfg); err != nil {
-			writeJSON(w, 400, apiError{err.Error()})
-			return
-		}
-		c.opMu.Lock()
-		defer c.opMu.Unlock()
-		for _, site := range cfg.Sites {
-			if err := validate(site); err != nil {
-				writeError(w, fmt.Errorf("site %q: %w", site.ID, err))
-				return
-			}
-			if err := c.validateSystemCertificateReferences(site); err != nil {
-				writeError(w, fmt.Errorf("site %q: %w", site.ID, err))
-				return
-			}
-			if err := c.validateUpstreamTLSMaterial(r.Context(), site); err != nil {
-				writeError(w, fmt.Errorf("site %q: %w", site.ID, err))
-				return
-			}
-			if err := c.validateAccessLogAdapter(site); err != nil {
-				writeError(w, fmt.Errorf("site %q: %w", site.ID, err))
-				return
-			}
-			if err := c.validateNodeReferences(r.Context(), site); err != nil {
-				writeError(w, fmt.Errorf("site %q: %w", site.ID, err))
-				return
-			}
-		}
-		if err := c.store.SaveMany(r.Context(), cfg.Sites); err != nil {
-			writeError(w, err)
-			return
-		}
-		writeJSON(w, 200, map[string]int{"imported": len(cfg.Sites)})
-	default:
-		w.Header().Set("Allow", "GET, PUT")
-		writeJSON(w, 405, apiError{"method not allowed"})
-	}
-}
 func (c *Control) health(w http.ResponseWriter, r *http.Request) {
 	if err := c.store.Check(r.Context()); err != nil {
 		writeJSON(w, 503, apiError{err.Error()})

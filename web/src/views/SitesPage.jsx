@@ -118,7 +118,6 @@ export default function SitesPage() {
       setFormError(e.message)
     } finally { setBusy('') }
   }
-  async function importYaml(file) { if (!file) return; try { await api('/config.yaml', { method: 'PUT', headers: { 'Content-Type': 'application/yaml' }, body: file }); await refresh(); toast.success('配置已导入') } catch (e) { toast.error(e.message) } }
   async function remove(site) { if (!window.confirm(`确定删除站点“${site.name}”？`)) return; try { await api(`/sites/${encodeURIComponent(site.id)}`, { method: 'DELETE' }); await refresh(); toast.success('站点已删除') } catch (e) { toast.error(e.message) } }
 
   const filtered = sites.filter(x => `${x.name} ${x.id} ${(x.config?.upstreams || []).map(up => up.url).join(' ')}`.toLowerCase().includes(query.toLowerCase()))
@@ -133,7 +132,7 @@ export default function SitesPage() {
     />
     {error && <div className="error">{error}<button onClick={() => setError('')}>×</button></div>}
     <section className="stats"><article><small>站点总数</small><strong>{sites.length.toString().padStart(2, '0')}</strong><span>已配置代理站点</span></article><article><small>运行中</small><strong className="green">{running.toString().padStart(2, '0')}</strong><span>正在接收流量</span></article><article><small>已停止</small><strong>{(sites.length - running).toString().padStart(2, '0')}</strong><span>可随时启动</span></article><article className="health"><small>系统状态</small><strong><i className="live-dot"/> HEALTHY</strong><span>SQLite 持久化 · API 正常</span></article></section>
-    <section className="list-head"><div><h2>代理站点</h2><p>每个站点拥有独立监听器、TLS 与上游连接策略</p></div><label className="search">⌕ <input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索站点"/></label><a className="yaml-link" href="/api/config.yaml">导出 YAML</a><label className="yaml-upload">导入 YAML<input type="file" accept=".yaml,.yml" onChange={e => importYaml(e.target.files?.[0])}/></label></section>
+    <section className="list-head"><div><h2>代理站点</h2><p>每个站点拥有独立监听器、TLS 与上游连接策略</p></div><label className="search">⌕ <input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索站点"/></label></section>
     <section className="site-list">
       {filtered.map(site => <SiteListItem key={site.id} site={site} metrics={metrics[site.id]} logAdapters={logAdapters} busy={busy} onAction={action} onEdit={openEditor} onRemove={remove}/>)}
       {!filtered.length && <div className="empty"><div>⌘</div><b>{sites.length ? '没有匹配的站点' : '还没有代理站点'}</b><p>{sites.length ? '调整搜索词，或清空搜索。' : '新建站点后即可配置监听地址、TLS 证书和上游代理。'}</p>{!sites.length && <button className="primary" onClick={() => openEditor(blank)}>创建第一个站点</button>}</div>}
