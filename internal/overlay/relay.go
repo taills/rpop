@@ -26,7 +26,12 @@ const (
 	relayPingTimeout   = 15 * time.Second
 )
 
-// relayServer is a node's relay port: an HTTP/2 mutual-TLS listener that forwards CONNECT streams.
+// relayServer is a node's relay port: an HTTP/2 mutual-TLS listener that forwards CONNECT streams. It is
+// registered as an exact-SNI TLS owner of the overlay's internal/sharedport.Registry (PutTLSOwner, under
+// pki.NodeName(o.identity.NodeID)), so the port can be shared with the node's own dataplane sites and, when the
+// addresses coincide, with the console or southbound; TLS termination, and the accept-time socket tuning that
+// used to be tunedListener's job here, both happen once in sharedport's own accept loop (see
+// internal/sharedport/dispatch.go and sockopt.go) rather than being duplicated per owner.
 type relayServer struct {
 	address  string
 	server   *http.Server
@@ -37,13 +42,12 @@ type relayServer struct {
 }
 
 func (o *Overlay) startRelay(address string) (*relayServer, error) {
-	listener, err := net.Listen("tcp", address)
+	listener, err := o.registry.PutTLSOwner(address, pki.NodeName(o.identity.NodeID), o.identity.RelayServerConfig())
 	if err != nil {
 		return nil, err
 	}
 	server := &http.Server{
 		Handler:           http.HandlerFunc(o.serveRelay),
-		TLSConfig:         o.identity.RelayServerConfig(),
 		ReadHeaderTimeout: relayHeaderTimeout,
 		ConnContext:       rememberTLSConn,
 		ErrorLog:          log.New(io.Discard, "", 0),
@@ -54,7 +58,13 @@ func (o *Overlay) startRelay(address string) (*relayServer, error) {
 	}
 	r := &relayServer{address: address, server: server, listener: listener}
 	go func() {
-		err := server.ServeTLS(tunedListener{listener}, "", "")
+		// Serve, not ServeTLS: listener (from PutTLSOwner) already hands over completed *tls.Conn values, so
+		// the handshake must not run a second time. Server.TLSConfig stays nil (RelayServerConfig already drove
+		// the real handshake in sharedport's dispatch loop), which keeps Go's automatic HTTP/2 negotiation
+		// working for a caller that terminated TLS itself before calling Serve — see
+		// internal/sharedport/registry.go's newPort for the same trick applied to shared TLS sites, and
+		// TestTLSOwnerMTLSOverHTTP2 for proof it actually negotiates h2 end to end.
+		err := server.Serve(listener)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) && !r.draining.Load() {
 			o.log.Error("relay port stopped", zap.String("address", address), zap.Error(err))
 		}
@@ -63,10 +73,12 @@ func (o *Overlay) startRelay(address string) (*relayServer, error) {
 	return r, nil
 }
 
-// drain stops accepting tunnels and lets open ones finish in the background. It closes the listener itself
-// synchronously, rather than through server.Shutdown (which only closes it after some unbounded delay for
-// whichever goroutine actually runs the call), so a new relay port at the same address can always start right
-// after drain returns: the address is never held open waiting for tunnels that are still draining.
+// drain unregisters the relay port's TLS owner (see PutTLSOwner's Close semantics: the shared address's real
+// listener only closes once nothing else is registered on it) and lets tunnels already open finish in the
+// background. It closes the listener itself synchronously, rather than through server.Shutdown (which only
+// closes it after some unbounded delay for whichever goroutine actually runs the call), so a new relay port —
+// at the same address or a different one — can always start right after drain returns: the registration is
+// never held open waiting for tunnels that are still draining.
 func (r *relayServer) drain() {
 	r.draining.Store(true)
 	_ = r.listener.Close()
@@ -95,16 +107,6 @@ func peerState(r *http.Request) *tls.ConnectionState {
 		return &state
 	}
 	return nil
-}
-
-type tunedListener struct{ net.Listener }
-
-func (l tunedListener) Accept() (net.Conn, error) {
-	conn, err := l.Listener.Accept()
-	if err == nil {
-		tuneConn(conn)
-	}
-	return conn, err
 }
 
 // tunnelOpenFromRequest derives the tunnelOpen a CONNECT request carries. TunnelIDHeader comes from whichever

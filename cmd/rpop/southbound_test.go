@@ -33,8 +33,8 @@ func freeAddress(t *testing.T) string {
 
 // consoleClient drives a running console (see startController) over real HTTP, the way an operator's browser
 // would — unlike internal/agent's own test helper, which calls service.Handler() in-process, this one exercises
-// the console listening through the shared-port registry (registry.PutPlaintextOwner) on a real TCP socket, the
-// same socket TestSouthboundSharesAddressWithConsole also serves southbound's TLS traffic on.
+// the console listening through the shared-port registry (registry.PutPlaintextOwner) on a real TCP socket,
+// possibly the same socket startSouthbound also serves southbound's TLS traffic on.
 type consoleClient struct {
 	t      *testing.T
 	base   string
@@ -42,7 +42,10 @@ type consoleClient struct {
 	cookie *http.Cookie
 }
 
-func startController(t *testing.T, base string) *consoleClient {
+// startController starts a controller with the console listening at consoleAddr and southbound at
+// southboundAddr — the same address for both (told apart by first byte: plaintext console, TLS southbound) or a
+// distinct one (the regression case: southbound behaves the same whether or not it shares a port).
+func startController(t *testing.T, consoleAddr, southboundAddr string) *consoleClient {
 	t.Helper()
 	db, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
@@ -59,20 +62,19 @@ func startController(t *testing.T, base string) *consoleClient {
 
 	registry := sharedport.NewRegistry()
 	service.SetSharedPortRegistry(registry)
-	addr := strings.TrimPrefix(base, "http://")
-	if err := registry.PutPlaintextOwner(addr, service.Handler(), nil); err != nil {
+	if err := registry.PutPlaintextOwner(consoleAddr, service.Handler(), nil); err != nil {
 		t.Fatalf("PutPlaintextOwner: %v", err)
 	}
-	t.Cleanup(func() { registry.RemovePlaintextOwner(addr) })
+	t.Cleanup(func() { registry.RemovePlaintextOwner(consoleAddr) })
 
 	ctx, cancel := context.WithCancel(context.Background())
-	southbound := startSouthbound(ctx, zap.NewNop(), service, registry, addr, control.DefaultMaxConcurrentSouthboundStreamsPerConn)
+	southbound := startSouthbound(ctx, zap.NewNop(), service, registry, southboundAddr, control.DefaultMaxConcurrentSouthboundStreamsPerConn)
 	t.Cleanup(func() {
 		cancel()
 		_ = southbound.Close()
 	})
 
-	c := &consoleClient{t: t, base: base, client: &http.Client{Timeout: 5 * time.Second}}
+	c := &consoleClient{t: t, base: "http://" + consoleAddr, client: &http.Client{Timeout: 5 * time.Second}}
 	c.call(http.MethodPost, "/api/auth/setup", `{"password":"test-admin-password-2026"}`, http.StatusOK)
 	return c
 }
@@ -154,11 +156,22 @@ func (c *consoleClient) node(id string) southboundTestNodeState {
 // second) proves both.
 func TestSouthboundSharesAddressWithConsoleAndServesBothSNIPaths(t *testing.T) {
 	addr := freeAddress(t)
-	c := startController(t, "http://"+addr)
+	testSouthboundRegistersAndWatches(t, addr, addr)
+}
+
+// TestSouthboundStillWorksOnItsOwnAddress is the regression case: southbound behaves the same when it does not
+// share a port with the console (-southbound-addr distinct from -addr, the common production default).
+func TestSouthboundStillWorksOnItsOwnAddress(t *testing.T) {
+	testSouthboundRegistersAndWatches(t, freeAddress(t), freeAddress(t))
+}
+
+func testSouthboundRegistersAndWatches(t *testing.T, consoleAddr, southboundAddr string) {
+	t.Helper()
+	c := startController(t, consoleAddr, southboundAddr)
 	token := c.createRelayNode("edge-1", "")
 
 	node, err := agent.New(agent.Config{
-		ControllerURL: "https://" + addr, JoinToken: token, DataDir: t.TempDir(), Version: "test",
+		ControllerURL: "https://" + southboundAddr, JoinToken: token, DataDir: t.TempDir(), Version: "test",
 	}, zap.NewNop())
 	if err != nil {
 		t.Fatal(err)

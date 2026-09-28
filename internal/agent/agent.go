@@ -24,6 +24,7 @@ import (
 	"github.com/rpop-project/rpop/internal/dataplane"
 	"github.com/rpop-project/rpop/internal/overlay"
 	"github.com/rpop-project/rpop/internal/pki"
+	"github.com/rpop-project/rpop/internal/sharedport"
 	"github.com/rpop-project/rpop/internal/snapshot"
 	"github.com/rpop-project/rpop/internal/southbound"
 	"github.com/rpop-project/rpop/internal/spool"
@@ -89,6 +90,11 @@ type Agent struct {
 	started time.Time
 	current atomic.Pointer[session]
 	kick    chan struct{}
+	// registry is this node's shared-port registry (internal/sharedport): both engine's site listeners and every
+	// overlay use() builds bind through it, so a site can share the relay port's address (told apart by SNI/Host)
+	// instead of needing its own. Set once by New and never replaced afterward — unlike overlay itself, which a
+	// fresh registration does replace — so reading it needs no lock.
+	registry *sharedport.Registry
 	// spool and uploader are created once at the start of Run, before any goroutine that might read them
 	// starts, and never replaced afterward (unlike overlay, which re-registration does replace); reading them
 	// without a lock is therefore safe.
@@ -138,7 +144,11 @@ func New(cfg Config, log *zap.Logger) (*Agent, error) {
 	} else if err := overlay.ValidateConfig(cfg.OverlayConfig); err != nil {
 		return nil, err
 	}
-	a := &Agent{cfg: cfg, base: base, log: log, engine: dataplane.New(log), started: time.Now(), kick: make(chan struct{}, 1)}
+	a := &Agent{
+		cfg: cfg, base: base, log: log, registry: sharedport.NewRegistry(),
+		started: time.Now(), kick: make(chan struct{}, 1),
+	}
+	a.engine = dataplane.New(log, dataplane.WithRegistry(a.registry))
 	a.engine.SetPathDialer(agentPaths{a})
 	if cfg.PathActiveProbe != nil {
 		a.engine.SetPathActiveProbe(*cfg.PathActiveProbe)
@@ -241,7 +251,7 @@ func (a *Agent) use(identity *pki.Identity) {
 	if previous != nil {
 		previous.client.CloseIdleConnections()
 	}
-	next := overlay.New(identity, a.log.Named("overlay"), a.cfg.OverlayConfig)
+	next := overlay.New(identity, a.log.Named("overlay"), a.cfg.OverlayConfig, overlay.WithRegistry(a.registry))
 	if a.spool != nil {
 		next.SetTunnelEventSink(a.spool)
 	}

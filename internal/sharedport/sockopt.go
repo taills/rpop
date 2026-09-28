@@ -9,11 +9,14 @@ import (
 // buffer and a small, latency-sensitive frame (an SSE token, a WebSocket message, a relay tunnel's interactive
 // frame) multiplexed on the same connection waits behind megabytes; with it the writer keeps the backlog in user
 // space, where frames interleave. Every connection a shared listener accepts gets this treatment, matching (and
-// slightly extending, to plaintext dataplane traffic) what internal/overlay's tunedListener already applied to
+// slightly extending, to plaintext dataplane traffic) what internal/overlay's tunedListener used to apply to
 // every relay connection before the relay port started sharing listeners through this package.
 //
-// This duplicates internal/overlay/sockopt.go's tuneConn (deliberately: this package must not import overlay, so
-// its relay port can register with it, see the package doc comment).
+// This used to duplicate internal/overlay/sockopt.go's tuneConn, back when the relay port ran its own listener
+// (deliberately: this package must not import overlay, so its relay port can register with it, see the package
+// doc comment); stage two of shared-port removed that now-redundant copy from overlay once the relay port
+// started registering here instead, since every connection it accepts already gets this same treatment before
+// dispatch.go even classifies it as TLS or plaintext.
 const notSentLowat = 16 << 10
 
 // tuneAcceptedConn applies the TCP_NOTSENT_LOWAT socket option to a freshly accepted connection.

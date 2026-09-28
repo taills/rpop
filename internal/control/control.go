@@ -59,6 +59,11 @@ type Control struct {
 	// with (D31, see SetOverlayConfig); read under opMu when newLocalOverlay creates that overlay, the same lock
 	// that guards overlay itself.
 	overlayConfig overlay.Config
+	// registry is the internal/sharedport.Registry the embedded node's overlay binds its relay port through, when
+	// one is set (see SetSharedPortRegistry); nil means newLocalOverlay lets the overlay fall back to a private
+	// registry of its own, so the embedded node's relay port cannot share -addr/-southbound-addr with anything.
+	// Guarded by opMu, like overlayConfig; read in the same place, under the same lock.
+	registry *sharedport.Registry
 	// clockSkewWarnThresholdMillis is nodeView/topologyAPI's cutoff (D28, see SetClockSkewWarnThreshold and
 	// DefaultClockSkewWarnThresholdMillis) for marking a node's reported clock skew "warn" instead of "ok". It is
 	// its own atomic rather than another opMu-guarded setting like overlayConfig: clockSkewView reads it from
@@ -104,12 +109,17 @@ func (c *Control) SetOverlayConfig(cfg overlay.Config) {
 	c.overlayConfig = cfg
 }
 
-// SetSharedPortRegistry gives the embedded local node's engine the same internal/sharedport.Registry the
-// console's own listener binds through (see cmd/rpop.runController and dataplane.Engine.SetRegistry), so an
-// embedded site can share -addr with the console (told apart by hostname) instead of needing its own port.
+// SetSharedPortRegistry gives the embedded local node's engine, and its overlay's relay port (see
+// newLocalOverlay), the same internal/sharedport.Registry the console's own listener binds through (see
+// cmd/rpop.runController and dataplane.Engine.SetRegistry), so an embedded site can share -addr with the
+// console (told apart by hostname), and the embedded node's relay port can share either of those addresses
+// (told apart by SNI), instead of each needing its own port.
 // Call before StartAutoSites: like SetOverlayConfig, this is startup-time wiring, not something that moves
-// already-running sites off the engine's previous (private) registry.
+// already-running sites (or an already-created overlay) off their previous (private) registry.
 func (c *Control) SetSharedPortRegistry(registry *sharedport.Registry) {
+	c.opMu.Lock()
+	c.registry = registry
+	c.opMu.Unlock()
 	c.engine.SetRegistry(registry)
 }
 

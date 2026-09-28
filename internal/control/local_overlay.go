@@ -77,7 +77,11 @@ func (c *Control) newLocalOverlay(ctx context.Context) (*localOverlay, error) {
 	if err != nil {
 		return nil, err
 	}
-	local := &localOverlay{Overlay: overlay.New(identity, c.log.Named("overlay"), c.overlayConfig), identity: identity, keyPEM: keyPEM}
+	var opts []overlay.Option
+	if c.registry != nil {
+		opts = append(opts, overlay.WithRegistry(c.registry))
+	}
+	local := &localOverlay{Overlay: overlay.New(identity, c.log.Named("overlay"), c.overlayConfig, opts...), identity: identity, keyPEM: keyPEM}
 	// The embedded node runs in this same process, so its tunnel events go straight to the controller's own
 	// store instead of through a spool and an upload (item 4 of stage 5 step 3); its access logs already write
 	// directly through registryWriter for the same reason.

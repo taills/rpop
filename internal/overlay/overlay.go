@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/rpop-project/rpop/internal/pki"
+	"github.com/rpop-project/rpop/internal/sharedport"
 	"github.com/rpop-project/rpop/internal/snapshot"
 	"github.com/rpop-project/rpop/internal/traceid"
 )
@@ -31,8 +32,12 @@ type Overlay struct {
 	// config holds the HTTP/2 window and stream settings (D31) every link and the relay port are built with;
 	// set once by New and never modified afterward, so reading it needs no lock.
 	config Config
-	peers  atomic.Pointer[map[string]snapshot.Peer]
-	routes atomic.Pointer[map[string]snapshot.RelayRoute]
+	// registry binds the relay port's TLS owner registration (PutTLSOwner, see startRelay); set once by New
+	// (WithRegistry, or a private registry of its own by default — see New's doc comment) and never modified
+	// afterward, so reading it needs no lock, like config.
+	registry *sharedport.Registry
+	peers    atomic.Pointer[map[string]snapshot.Peer]
+	routes   atomic.Pointer[map[string]snapshot.RelayRoute]
 
 	mu    sync.Mutex
 	links map[string]*link
@@ -45,10 +50,31 @@ type Overlay struct {
 	protocolVersionState
 }
 
+// Option configures an Overlay at construction time.
+type Option func(*Overlay)
+
+// WithRegistry makes the overlay bind its relay port through registry instead of the private one New creates by
+// default, so the relay port can share an address with the node's own dataplane sites (internal/dataplane.Engine,
+// given the same registry via WithRegistry/SetRegistry) and, when the addresses coincide, with the console or
+// southbound — see internal/sharedport and docs/architecture/control-data-plane.md §5. A caller that does not
+// need this (most overlay tests, and any node whose relay port never shares an address with anything else) can
+// simply omit it: New's own private registry behaves exactly as a raw net.Listen-backed relay port did before
+// this option existed, since nothing else ever registers on it.
+func WithRegistry(registry *sharedport.Registry) Option {
+	return func(o *Overlay) { o.registry = registry }
+}
+
 // New creates the overlay of the node identity names, tuned with cfg's HTTP/2 window and stream settings (D31;
-// see DefaultConfig for the zero-configuration values).
-func New(identity *pki.Identity, log *zap.Logger, cfg Config) *Overlay {
-	o := &Overlay{identity: identity, log: log, config: cfg, links: make(map[string]*link), events: newEventQueue(log)}
+// see DefaultConfig for the zero-configuration values). Its relay port binds through a private
+// internal/sharedport.Registry unless an Option (WithRegistry) says otherwise.
+func New(identity *pki.Identity, log *zap.Logger, cfg Config, opts ...Option) *Overlay {
+	o := &Overlay{
+		identity: identity, log: log, config: cfg, links: make(map[string]*link), events: newEventQueue(log),
+		registry: sharedport.NewRegistry(),
+	}
+	for _, opt := range opts {
+		opt(o)
+	}
 	o.peers.Store(&map[string]snapshot.Peer{})
 	o.routes.Store(&map[string]snapshot.RelayRoute{})
 	return o
