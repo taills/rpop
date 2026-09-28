@@ -6,6 +6,7 @@ import {
 } from '@/components/ui'
 import { PROXY_TYPES, blankProxyForm, buildProxyMutation, proxyDeleteProblem, proxyFormFromView, proxyFormProblem } from '../proxyForm.js'
 import { useToast } from '../stores/toast.js'
+import './ProxiesPage.css'
 
 const typeOptions = PROXY_TYPES.map((value) => ({ label: value, value }))
 
@@ -62,7 +63,7 @@ export default function ProxiesPage() {
     { key: 'name', title: '名称', render: (row) => <>{row.name}<div className="ui-owner-line ui-mono">{row.id}</div></> },
     { key: 'type', title: '类型', width: '110px', render: (row) => <UiTag tone="type">{row.type}</UiTag> },
     { key: 'address', title: '地址', mono: true },
-    { key: 'auth', title: '认证', width: '160px', render: (row) => row.username ? <span className="row" style={{ flexWrap: 'nowrap' }}>{row.username}{row.hasPassword && <UiTag tone="success">已设密码</UiTag>}</span> : '—' },
+    { key: 'auth', title: '认证', width: '160px', render: (row) => row.username ? <span className="row proxies-auth-cell">{row.username}{row.hasPassword && <UiTag tone="success">已设密码</UiTag>}</span> : '—' },
     { key: 'usedBy', title: '使用中', width: '110px', render: usedByLabel },
     {
       key: 'ops', title: '操作', width: '140px', align: 'right',

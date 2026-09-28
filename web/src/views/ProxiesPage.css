@@ -1,0 +1,7 @@
+/* ProxiesPage — page-specific tweaks that don't belong in the shared .row utility (see styles/base.css). */
+
+/* "认证" 列：用户名后紧跟"已设密码"标签时，.row 默认的 flex-wrap: wrap 会在窄列宽下把标签挤到下一行，
+ * 与同列其它单行文字错位（见 docs/architecture/control-data-plane.md §5，"控制台:全站页面样式统一"记录）。 */
+.proxies-auth-cell {
+  flex-wrap: nowrap;
+}
