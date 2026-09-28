@@ -88,6 +88,40 @@ volumes:
 
 Node mode's `-health-check` (what the Docker image's built-in `HEALTHCHECK` runs, see above) has no local control API listener to probe the way `controller`/`all-in-one` do; instead it checks that `-data-dir` holds a complete node identity (cert/key/CA from a successful registration). A node that has never registered — bad join token, unreachable controller, wrong `-controller` — reports unhealthy, the failure an operator most wants surfaced; once registered it keeps reporting healthy through a later, transient controller outage, since the node keeps serving its cached snapshot and retries registration on its own rather than needing the container restarted.
 
+### Single-port deployment
+
+The console (`-addr`), southbound (`-southbound-addr`), a node's relay port (the wildcard address derived from its `relayAddress`'s port, or its own `-relay-listen` override), and site listeners can all share one physical port. `internal/sharedport` tells plaintext and TLS apart by a connection's first byte, then dispatches to the right occupant by the plaintext `Host` header or the TLS SNI. This also lifts the earlier restriction against mixing a plaintext and a TLS *site* on the same address — dispatch happens at the first byte, independently of a site's own mode. Two occupants sharing a port must have listen addresses that normalize identically (`sharedport.NormalizeAddress`; a wildcard address — `""`/`0.0.0.0`/`::`/`*` — cannot share a port with a specific one), and once more than one occupant is on an address, every site there needs `hostnames` (SNI for a TLS site) to tell it apart from the rest.
+
+Saving or starting a site pre-validates these rules and returns a Chinese error before anything is actually applied, instead of only failing once the configuration is really used. The console, southbound, and the relay port of every node the site is placed on are always compared, since they occupy their address whether or not any site is running; another site sharing a node is only compared against once it is actually running (or is itself what is being started/restarted), so saving several site configurations at the same address and starting them one at a time, without them ever colliding, still works. A node's own `-relay-listen` override is invisible to the controller (pre-validation only ever sees the wildcard address it guesses from `relayAddress`), so that specific mismatch stays the node's own job to report once it actually tries to bind. Sites auto-started at controller startup (`autoStart: true`, applied by `StartAutoSites`) skip this pre-validation and go through the real admission checks instead; a site that loses that race fails on its own and keeps its previous configuration (D8), logged, rather than blocking every other auto-started site. See `docs/architecture/control-data-plane.md` §2/§5 for the full "共享端口" decision and implementation record across all three stages.
+
+The three examples below can be run as shown, with the addresses/hostnames replaced by real ones:
+
+**(a) all-in-one: the console shares a port with a site.** `-console-hostnames` restricts the console to the given Host; a Host claimed by neither a site nor the console's own list gets a 404:
+
+```sh
+rpop -addr 0.0.0.0:8443 -console-hostnames console.example.com -db data/rpop.db -log-dir logs
+```
+
+Create a site whose `listenAddress`/`listenPort` normalize the same as `-addr` (here `"0.0.0.0"` + `8443`) and whose `hostnames` differ from `console.example.com` (for example `["app.example.com"]`). The console then answers `Host: console.example.com`, the site answers its own hostnames, and neither interferes with the other on the shared port.
+
+**(b) `controller` mode: the console shares a port with southbound.** The console is plaintext and southbound is TLS (nodes connect over mTLS), so the two are told apart by the first byte alone, with no extra configuration needed:
+
+```sh
+rpop -mode controller -addr 0.0.0.0:8443 -southbound-addr 0.0.0.0:8443 -db data/rpop.db -log-dir logs
+```
+
+Nodes still use that same address as `-controller` (for example `https://controller.example.com:8443`).
+
+**(c) `node` mode: a node's relay port shares a port with a site placed on it.** A node binds its relay port on the wildcard address for `relayAddress`'s port by default (unless overridden with `-relay-listen`); placing a site on that same port shares it:
+
+```sh
+rpop -mode node -controller https://controller.example.com:7443 -join-token <join-token> -data-dir data/node -log-dir logs
+```
+
+The matching site: `config.nodes` includes this node's ID, `listenPort` equals the node's `relayAddress` port, `listenAddress` is left empty to match the node's default wildcard bind, `tls: true`, and `hostnames` avoids both the node's own certificate name (`<nodeID>.nodes.rpop`) and the controller's (`controller.rpop`). The relay listener itself only binds once this node is actually relaying for another node's path (a non-empty `Relay` entry in its snapshot, see `internal/overlay.Overlay.applyRelayLocked`) — a node nobody ever routes through never opens that port, so until then the site alone occupies it (not a conflict, just not actually shared yet).
+
+> **Security note**: once the console is served on a plaintext port (no TLS), the login password and session cookie travel in plaintext — if examples (a)/(b) need to accept connections from an untrusted network, put the console behind a TLS reverse proxy rather than exposing a plaintext console directly to the internet, consistent with the earlier advice to keep the console on loopback or behind a trusted HTTPS reverse proxy.
+
 ### Upstream paths across nodes
 
 An upstream can reach its origin through other nodes and external proxies instead of connecting directly. `paths` lists candidate routes in priority order; each `via` is an ordered mix of nodes and registered proxies, and an empty `via` connects directly. `via` on the upstream itself is shorthand for a single path.
