@@ -1,11 +1,14 @@
 import { create } from 'zustand'
-import { DEFAULT_NAV_MODE, NAV_MODES, applyNavMode, navModeById } from '@/themes/nav'
+import { NAV_MODES, applyNavMode, navModeById, resolveNavMode } from '@/themes/nav'
 
 const STORAGE_KEY = 'towere-ui-kit-nav-mode'
 
+// 生产构建下 resolveNavMode 无视 saved，固定竖版侧栏（哪怕 localStorage 里还留着升级前的 'hybrid'）；
+// 只有 DEV 的导航布局切换器需要跨刷新记住用户选择。
 function loadModeId() {
+  const isDev = Boolean(import.meta.env?.DEV)
   const saved = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null
-  return saved && navModeById(saved).id === saved ? saved : DEFAULT_NAV_MODE
+  return resolveNavMode({ isDev, storedId: saved })
 }
 
 /** 由当前布局推导所有派生状态（对应 Vue 版的 computed） */

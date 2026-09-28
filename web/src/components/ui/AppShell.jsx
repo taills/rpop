@@ -3,7 +3,18 @@ import { cx } from '@/utils/cx'
 import AppTopNav from './AppTopNav'
 import AppSideNav from './AppSideNav'
 import { useNavStore } from '@/stores/nav'
+import { isNarrowViewport, NARROW_VIEWPORT_BREAKPOINT } from '@/utils/viewport'
 import './AppShell.css'
+
+// 窄屏（见 viewport.js 的断点，与 CSS 媒体查询一致）首次渲染就把侧栏收成图标栏，避免生产竖版的 8 个
+// 一级菜单在 390px 宽度下把内容区挤没；用户之后手动展开/收起仍走下面的 sideCollapsed state，不受影响。
+function initialSideCollapsed() {
+  if (typeof window === 'undefined') return false
+  if (typeof window.matchMedia === 'function') {
+    return window.matchMedia(`(max-width: ${NARROW_VIEWPORT_BREAKPOINT}px)`).matches
+  }
+  return isNarrowViewport(window.innerWidth)
+}
 
 export default function AppShell({
   title = 'ProtoUI Kit',
@@ -22,7 +33,7 @@ export default function AppShell({
   children,
 }) {
   const navStore = useNavStore()
-  const [sideCollapsed, setSideCollapsed] = useState(false)
+  const [sideCollapsed, setSideCollapsed] = useState(initialSideCollapsed)
 
   // 竖版切换到混排时，避免侧栏一直折叠
   useEffect(() => {

@@ -26,10 +26,11 @@ export const NAV_MODES = [
   },
 ]
 
-export const DEFAULT_NAV_MODE = 'hybrid'
+// 生产控制台固定竖版侧栏（见 resolveNavMode）；混排/横版仅在 DEV 的组件目录 / Token 演示页里可切换体验。
+export const DEFAULT_NAV_MODE = 'vertical'
 
 export function navModeById(id) {
-  return NAV_MODES.find((m) => m.id === id) || NAV_MODES[2]
+  return NAV_MODES.find((m) => m.id === id) || NAV_MODES.find((m) => m.id === DEFAULT_NAV_MODE)
 }
 
 export function applyNavMode(id) {
@@ -38,4 +39,16 @@ export function applyNavMode(id) {
     document.documentElement.setAttribute('data-nav', mode.id)
   }
   return mode
+}
+
+/**
+ * 解析启动时应生效的导航模式。
+ * 生产构建无视 localStorage 里的历史值（包括升级前残留的 'hybrid'），一律固定竖版侧栏；
+ * 只有 DEV 下的导航布局切换器需要跨刷新记住用户选择，才读取并校验 storedId。
+ * @param {{ isDev?: boolean, storedId?: string | null }} [options]
+ * @returns {string} 合法的 NAV_MODES id
+ */
+export function resolveNavMode({ isDev = false, storedId = null } = {}) {
+  if (!isDev) return DEFAULT_NAV_MODE
+  return storedId && navModeById(storedId).id === storedId ? storedId : DEFAULT_NAV_MODE
 }
