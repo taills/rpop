@@ -29,10 +29,10 @@ Publish the admin port only on loopback or behind a trusted HTTPS reverse proxy.
 
 `deploy/docker-compose.example.yml` (with `deploy/.env.example`) runs the image with optional RustFS (S3), ClickHouse, and Elasticsearch services for access-log storage. Enable them through `COMPOSE_PROFILES` (`s3`, `clickhouse`, `elasticsearch`) and delete any service you do not deploy; the file's comments list the adapter settings for each service.
 
-Prebuilt releases: every `v*` tag publishes archives for linux (amd64/arm64, statically linked), macOS (amd64/arm64), and windows (amd64) on [GitHub Releases](https://github.com/taills/rpop/releases) with a `SHA256SUMS` file, and a multi-platform image (linux/amd64, linux/arm64) on Docker Hub as `taills/rpop:<version>` and `taills/rpop:latest`; every push to `main` also refreshes `taills/rpop:edge`.
+Prebuilt releases: every `v*` tag publishes archives for linux (amd64/arm64, statically linked), macOS (amd64/arm64), and windows (amd64) on [GitHub Releases](https://github.com/taills/rpop/releases) with a `SHA256SUMS` file, and a multi-platform image (linux/amd64, linux/arm64) on Docker Hub as `nil2026/rpop:<version>` and `nil2026/rpop:latest`; every push to `main` also refreshes `nil2026/rpop:edge`.
 
 ```sh
-docker run -d --name rpop -p 127.0.0.1:8080:8080 -v rpop-data:/app/data -v rpop-logs:/app/logs taills/rpop:latest
+docker run -d --name rpop -p 127.0.0.1:8080:8080 -v rpop-data:/app/data -v rpop-logs:/app/logs nil2026/rpop:latest
 ```
 
 `.github/workflows/release.yml` builds those archives. go-sqlite3 needs CGO, so each platform compiles on a runner that can build C for it: linux uses the Dockerfile's `binary` target on native amd64/arm64 runners (the same static musl binary the image ships), macOS uses clang with `-arch`, and windows uses MinGW-w64 gcc from MSYS2. Pull requests and pushes to `main` run the same builds and keep the archives as workflow artifacts. `.github/workflows/docker.yml` builds each image platform on a native runner, pushes it by digest, and merges the manifest list; it needs the repository variable `DOCKERHUB_USERNAME` and the secret `DOCKERHUB_TOKEN` (a Docker Hub access token with read/write scope). Both workflows pass `--build-arg NPM_REGISTRY=https://registry.npmjs.org` and `--build-arg GOPROXY=https://proxy.golang.org,direct`, overriding the Dockerfile's default China mirrors.
