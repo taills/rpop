@@ -109,82 +109,6 @@
   outline-color: var(--accent);
   resize: vertical;
 }
-.ca-settings {
-  display: grid;
-  gap: 12px;
-}
-.ca-settings-heading {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-}
-.ca-settings-heading > div {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.ca-settings-heading strong {
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-.ca-settings-heading span,
-.ca-help,
-.ca-empty {
-  font-size: 12px;
-  color: var(--text-secondary);
-  line-height: 1.6;
-}
-.ca-help,
-.ca-empty {
-  margin: 0;
-}
-.ca-certificate-list {
-  display: grid;
-  gap: 12px;
-}
-.ca-certificate {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: end;
-  padding: 14px;
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border-primary);
-  border-radius: 10px;
-}
-.ca-certificate label {
-  min-width: 0;
-}
-.ca-certificate .ca-remove {
-  white-space: nowrap;
-}
-.client-certificate-settings {
-  display: grid;
-  gap: 12px;
-}
-.client-certificate-heading {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.client-certificate-heading strong {
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-.client-certificate-heading span {
-  font-size: 11px;
-  color: var(--text-secondary);
-  line-height: 1.6;
-}
-.client-certificate-files {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-.client-certificate-settings .secondary {
-  justify-self: start;
-}
 .settings-message {
   margin-top: 16px;
 }
@@ -200,19 +124,6 @@
   }
   .system-settings-page {
     width: 100%;
-  }
-  .ca-settings-heading {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .ca-certificate {
-    grid-template-columns: 1fr;
-  }
-  .ca-certificate .ca-remove {
-    justify-self: start;
-  }
-  .client-certificate-files {
-    grid-template-columns: 1fr;
   }
 }
 .system-settings-page {
