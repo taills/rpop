@@ -4,12 +4,14 @@ import ErrorBoundary from '@/components/ErrorBoundary.jsx'
 import { useToast } from '@/stores/toast'
 import { api } from '@/api'
 import { useAuthStore } from '@/stores/auth'
+import { useBusyAction } from '../busyAction.js'
 
 export default function ShellView() {
   const location = useLocation()
   const navigate = useNavigate()
   const { toast } = useToast()
   const markUnauthenticated = useAuthStore((state) => state.markUnauthenticated)
+  const { busy: loggingOut, run } = useBusyAction()
 
   const menus = [
     { key: 'sites', label: '站点管理', icon: 'dashboard', to: '/sites' },
@@ -101,9 +103,11 @@ export default function ShellView() {
   }
 
   async function logout() {
-    try { await api('/auth/logout', { method: 'POST' }) } catch {}
-    markUnauthenticated()
-    navigate('/sites')
+    await run(async () => {
+      try { await api('/auth/logout', { method: 'POST' }) } catch {}
+      markUnauthenticated()
+      navigate('/sites')
+    })
   }
 
   return (
@@ -126,7 +130,7 @@ export default function ShellView() {
           {import.meta.env.DEV && <UiTypeSwitcher />}
           {import.meta.env.DEV && <UiNavLayoutSwitcher />}
           <UiThemeSwitcher />
-          <UiButton variant="ghost" size="sm" icon="external" onClick={logout}>退出登录</UiButton>
+          <UiButton variant="ghost" size="sm" icon="external" loading={Boolean(loggingOut)} onClick={logout}>退出登录</UiButton>
         </>
       }
     >
