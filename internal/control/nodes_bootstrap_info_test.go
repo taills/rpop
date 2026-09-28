@@ -26,7 +26,7 @@ func TestNodeBootstrapInfoAPIRequiresAuthentication(t *testing.T) {
 // than nodeAPI's id-based dispatch (which would otherwise treat "bootstrap-info" as an unknown node id and 404).
 func TestNodeBootstrapInfoAPIReportsVersionModeAndSouthbound(t *testing.T) {
 	control := newTestControl(t)
-	control.SetBootstrapInfo("1.2.3", "controller", ":7443")
+	control.SetBootstrapInfo("1.2.3", "controller", ":7443", "127.0.0.1:8080", []string{"console.test"})
 	handler := control.Handler()
 	cookie := setupAdminForTest(t, handler)
 	get := func() nodeBootstrapInfo {
@@ -52,14 +52,20 @@ func TestNodeBootstrapInfoAPIReportsVersionModeAndSouthbound(t *testing.T) {
 	if !info.SouthboundEnabled || info.SouthboundAddr != ":7443" || info.SouthboundPort != 7443 {
 		t.Fatalf("expected southbound enabled on port 7443: %#v", info)
 	}
+	if info.ConsoleAddr != "127.0.0.1:8080" || len(info.ConsoleHostnames) != 1 || info.ConsoleHostnames[0] != "console.test" {
+		t.Fatalf("expected consoleAddr/consoleHostnames to be reported verbatim: %#v", info)
+	}
 	if info.NodeControllerURL != "" || info.NodeImage != "" {
 		t.Fatalf("expected empty node settings before any are configured: %#v", info)
 	}
 
-	control.SetBootstrapInfo("1.2.3", "all-in-one", "")
+	control.SetBootstrapInfo("1.2.3", "all-in-one", "", "127.0.0.1:8080", nil)
 	info = get()
 	if info.SouthboundEnabled || info.SouthboundAddr != "" || info.SouthboundPort != 0 {
 		t.Fatalf("expected southbound disabled: %#v", info)
+	}
+	if len(info.ConsoleHostnames) != 0 {
+		t.Fatalf("expected no console hostname restriction: %#v", info)
 	}
 
 	settingsRequest := httptest.NewRequest(http.MethodPut, "/api/settings",

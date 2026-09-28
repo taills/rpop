@@ -142,7 +142,15 @@ func renderUpstreamFailover(f *store.UpstreamFailover) *snapshot.UpstreamFailove
 
 // startLocked starts a site, or rebuilds it from the stored configuration when it already runs.
 func (c *Control) startLocked(ctx context.Context, id string) error {
-	if _, err := c.store.Get(ctx, id); err != nil {
+	site, err := c.store.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	// Re-run the same shared-port pre-check the save path already ran (see control.go's sites/site handlers and
+	// validateSharedPortPlacement's doc comment): the stored config was fine when it was last saved, but the
+	// controller's own console/southbound addresses, or another node's relayAddress, can still have changed
+	// since then (an operator restarted with different flags, or re-tokened a node onto a new relay address).
+	if err := c.validateSharedPortPlacement(ctx, site); err != nil {
 		return err
 	}
 	wasDesired := c.desired[id]

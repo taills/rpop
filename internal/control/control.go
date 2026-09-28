@@ -79,13 +79,16 @@ type Control struct {
 	tunnelEvents     *tunnelEventStore
 	systemSettingsMu sync.RWMutex
 	systemSettings   systemSettings
-	// bootstrapVersion/bootstrapMode/bootstrapSouthboundAddr are set once at startup by SetBootstrapInfo and read
-	// by nodeBootstrapInfoAPI (GET /api/nodes/bootstrap-info); see that method's doc comment.
-	bootstrapVersion, bootstrapMode, bootstrapSouthboundAddr string
-	authMu                                                   sync.Mutex
-	setupMu                                                  sync.Mutex
-	sessions                                                 map[string]time.Time
-	loginAttempts                                            map[string]loginAttempt
+	// bootstrapVersion/bootstrapMode/bootstrapSouthboundAddr/bootstrapConsoleAddr/bootstrapConsoleHostnames are
+	// set once at startup by SetBootstrapInfo and read by nodeBootstrapInfoAPI (GET /api/nodes/bootstrap-info)
+	// and by validateSharedPortPlacement's pre-save shared-port checks (see
+	// docs/architecture/control-data-plane.md §5, "共享端口(第三段)"); see SetBootstrapInfo's doc comment.
+	bootstrapVersion, bootstrapMode, bootstrapSouthboundAddr, bootstrapConsoleAddr string
+	bootstrapConsoleHostnames                                                      []string
+	authMu                                                                         sync.Mutex
+	setupMu                                                                        sync.Mutex
+	sessions                                                                       map[string]time.Time
+	loginAttempts                                                                  map[string]loginAttempt
 }
 type apiError struct {
 	Error string `json:"error"`
@@ -174,16 +177,22 @@ func (c *Control) SetTunnelEventStoreCapacity(maxBytes int64) {
 	c.tunnelEvents.maxBytes = maxBytes
 }
 
-// SetBootstrapInfo records the version, process mode ("all-in-one", "controller", or "node"), and resolved
-// southbound listen address cmd/rpop starts with, for nodeBootstrapInfoAPI (GET /api/nodes/bootstrap-info) to
-// hand the console's node onboarding guide. Like SetEmbeddedNode and SetOverlayConfig, this is startup-time
-// wiring: call once before serving console traffic. southboundAddr must already be resolved (see cmd/rpop's
-// southboundAddress) — an empty string here means southbound is off, exactly as it does in runController's own
-// "southboundAddr != """ check before starting that listener.
-func (c *Control) SetBootstrapInfo(version, mode, southboundAddr string) {
+// SetBootstrapInfo records the version, process mode ("all-in-one", "controller", or "node"), resolved
+// southbound listen address, console listen address, and console hostname restriction cmd/rpop starts with. Two
+// things read it: nodeBootstrapInfoAPI (GET /api/nodes/bootstrap-info), which hands version/mode/southbound (and
+// now consoleAddr/consoleHostnames) to the console's node onboarding guide; and validateSharedPortPlacement,
+// which compares a site's listen address against consoleAddr/southboundAddr before the site is even saved (see
+// docs/architecture/control-data-plane.md §5, "共享端口(第三段)"). Like SetEmbeddedNode and SetOverlayConfig,
+// this is startup-time wiring: call once before serving console traffic. southboundAddr must already be resolved
+// (see cmd/rpop's southboundAddress) — an empty string here means southbound is off, exactly as it does in
+// runController's own "southboundAddr != """ check before starting that listener. consoleAddr is cmd/rpop's own
+// -addr, always non-empty; consoleHostnames is the already-parsed -console-hostnames list (nil means
+// unrestricted), exactly what runController hands PutPlaintextOwner.
+func (c *Control) SetBootstrapInfo(version, mode, southboundAddr, consoleAddr string, consoleHostnames []string) {
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
 	c.bootstrapVersion, c.bootstrapMode, c.bootstrapSouthboundAddr = version, mode, southboundAddr
+	c.bootstrapConsoleAddr, c.bootstrapConsoleHostnames = consoleAddr, consoleHostnames
 }
 
 func (c *Control) Handler() http.Handler {
@@ -264,6 +273,10 @@ func (c *Control) sites(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
+		if err := c.validateSharedPortPlacement(r.Context(), x); err != nil {
+			writeError(w, err)
+			return
+		}
 		if err := c.store.Save(r.Context(), x); err != nil {
 			writeError(w, err)
 			return
@@ -331,6 +344,10 @@ func (c *Control) site(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := c.validateNodeReferences(r.Context(), x); err != nil {
+			writeError(w, err)
+			return
+		}
+		if err := c.validateSharedPortPlacement(r.Context(), x); err != nil {
 			writeError(w, err)
 			return
 		}

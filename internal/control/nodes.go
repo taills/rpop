@@ -549,6 +549,12 @@ type nodeBootstrapInfo struct {
 	SouthboundEnabled bool   `json:"southboundEnabled"`
 	SouthboundAddr    string `json:"southboundAddr,omitempty"`
 	SouthboundPort    int    `json:"southboundPort,omitempty"`
+	// ConsoleAddr/ConsoleHostnames mirror cmd/rpop's own -addr/-console-hostnames verbatim (see
+	// SetBootstrapInfo), so the console's site editor can tell, without a second endpoint, whether a site's own
+	// listen address would reuse the console's shared port and, if so, which hostnames are already claimed (see
+	// docs/architecture/control-data-plane.md §5, "共享端口(第三段)").
+	ConsoleAddr      string   `json:"consoleAddr"`
+	ConsoleHostnames []string `json:"consoleHostnames,omitempty"`
 	// NodeControllerURL and NodeImage mirror the matching /api/settings fields verbatim (including "" when
 	// unset); the console derives its own defaults (a URL guessed from the browser's hostname, an image name
 	// built from Version) rather than this endpoint baking them in.
@@ -567,12 +573,14 @@ func (c *Control) nodeBootstrapInfoAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	c.opMu.Lock()
 	version, mode, southboundAddr := c.bootstrapVersion, c.bootstrapMode, c.bootstrapSouthboundAddr
+	consoleAddr, consoleHostnames := c.bootstrapConsoleAddr, c.bootstrapConsoleHostnames
 	c.opMu.Unlock()
 	c.systemSettingsMu.RLock()
 	nodeControllerURL, nodeImage := c.systemSettings.NodeControllerURL, c.systemSettings.NodeImage
 	c.systemSettingsMu.RUnlock()
 	info := nodeBootstrapInfo{
 		Version: version, Mode: mode,
+		ConsoleAddr: consoleAddr, ConsoleHostnames: consoleHostnames,
 		NodeControllerURL: nodeControllerURL, NodeImage: nodeImage,
 	}
 	if southboundAddr != "" {

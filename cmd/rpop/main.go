@@ -172,7 +172,11 @@ func runController(ctx context.Context, logger *zap.Logger, o options, overlayCf
 	if err != nil {
 		logger.Fatal("initialize access log adapter", zap.Error(err))
 	}
-	service.SetBootstrapInfo(Version, o.mode, o.southboundAddr)
+	consoleHostnames, err := parseConsoleHostnames(o.consoleHostnames)
+	if err != nil {
+		logger.Fatal("parse -console-hostnames", zap.Error(err))
+	}
+	service.SetBootstrapInfo(Version, o.mode, o.southboundAddr, o.serverAddr, consoleHostnames)
 	service.SetEmbeddedNode(o.mode == modeAllInOne)
 	service.SetOverlayConfig(overlayCfg)
 	service.SetLogIngestLimits(o.logIngestMaxConcurrent, o.logIngestRateBytesPerSecond)
@@ -181,10 +185,6 @@ func runController(ctx context.Context, logger *zap.Logger, o options, overlayCf
 	service.SetClockSkewWarnThreshold(o.clockSkewWarnThresholdMillis)
 	service.SetPathActiveProbe(o.pathActiveProbe)
 
-	consoleHostnames, err := parseConsoleHostnames(o.consoleHostnames)
-	if err != nil {
-		logger.Fatal("parse -console-hostnames", zap.Error(err))
-	}
 	// The registry, the embedded local node's engine wiring, and the console's and southbound's own
 	// registrations all have to be in place before StartAutoSites runs any site: an auto-started site sharing
 	// -addr or -southbound-addr admits (or rejects) a hostname-less registration based on whether an owner is
