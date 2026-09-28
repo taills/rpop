@@ -133,6 +133,27 @@ func loadIdentity(dir string) (*pki.Identity, error) {
 	return identity, nil
 }
 
+// Healthy reports whether dir holds a complete node identity, i.e. registration with the controller has
+// succeeded at least once. Node mode has no local HTTP listener to probe the way controller and all-in-one modes
+// do (see cmd/rpop's "-health-check" flag), so that flag uses this instead as its container health signal: a
+// freshly started node that has not yet registered (bad join token, unreachable controller, ...) reports
+// unhealthy, exactly the failure an operator most wants a container orchestrator to surface, while a node that
+// has ever registered reports healthy from then on — Agent.Run keeps serving the cached snapshot and retrying
+// registration on its own when the controller is later unreachable, so flapping the container over that would
+// not help and would drop the identity's continuity for nothing.
+func Healthy(dir string) error {
+	for _, name := range []string{certFile, keyFile, caFile} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			return fmt.Errorf("node has not completed registration: %w", err)
+		}
+		if info.Size() == 0 {
+			return fmt.Errorf("%s is empty", name)
+		}
+	}
+	return nil
+}
+
 // register exchanges a join token for a certificate. The controller is authenticated by the CA fingerprint the
 // token pins, and the new private key never leaves the node.
 func register(ctx context.Context, base *url.URL, dir, joinToken string) (*pki.Identity, error) {

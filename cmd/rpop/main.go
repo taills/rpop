@@ -79,6 +79,14 @@ func main() {
 	flag.Parse()
 
 	if *healthCheck {
+		// Node mode runs no control API listener to probe (see runNode); agent.Healthy checks the node's local
+		// identity instead. See its doc comment for why that is a meaningful signal here.
+		if o.mode == modeNode {
+			if err := agent.Healthy(o.dataDir); err != nil {
+				log.Fatal(err)
+			}
+			return
+		}
 		hostHeader := ""
 		names, err := parseConsoleHostnames(o.consoleHostnames)
 		if err != nil {
@@ -164,6 +172,7 @@ func runController(ctx context.Context, logger *zap.Logger, o options, overlayCf
 	if err != nil {
 		logger.Fatal("initialize access log adapter", zap.Error(err))
 	}
+	service.SetBootstrapInfo(Version, o.mode, o.southboundAddr)
 	service.SetEmbeddedNode(o.mode == modeAllInOne)
 	service.SetOverlayConfig(overlayCfg)
 	service.SetLogIngestLimits(o.logIngestMaxConcurrent, o.logIngestRateBytesPerSecond)

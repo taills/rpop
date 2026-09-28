@@ -538,6 +538,55 @@ func (c *Control) nodeAPILocal(w http.ResponseWriter) {
 	writeJSON(w, http.StatusOK, c.localNodeView())
 }
 
+// nodeBootstrapInfo answers GET /api/nodes/bootstrap-info: everything the console's node onboarding guide needs
+// to render a working "rpop -mode node ..." command and deployment recipes without the operator having to know
+// the controller's own configuration.
+type nodeBootstrapInfo struct {
+	Version string `json:"version"`
+	Mode    string `json:"mode"`
+	// SouthboundEnabled mirrors whether cmd/rpop actually started the southbound listener nodes register
+	// against; SouthboundAddr/SouthboundPort are only meaningful when this is true.
+	SouthboundEnabled bool   `json:"southboundEnabled"`
+	SouthboundAddr    string `json:"southboundAddr,omitempty"`
+	SouthboundPort    int    `json:"southboundPort,omitempty"`
+	// NodeControllerURL and NodeImage mirror the matching /api/settings fields verbatim (including "" when
+	// unset); the console derives its own defaults (a URL guessed from the browser's hostname, an image name
+	// built from Version) rather than this endpoint baking them in.
+	NodeControllerURL string `json:"nodeControllerUrl"`
+	NodeImage         string `json:"nodeImage"`
+}
+
+// nodeBootstrapInfoAPI handles GET /api/nodes/bootstrap-info. Read-only and requires a session like every other
+// route (see Handler/authMiddleware); it carries no secrets, but the controller's version, mode, and southbound
+// listen address are still only ever handed to an authenticated console.
+func (c *Control) nodeBootstrapInfoAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSON(w, http.StatusMethodNotAllowed, apiError{"method not allowed"})
+		return
+	}
+	c.opMu.Lock()
+	version, mode, southboundAddr := c.bootstrapVersion, c.bootstrapMode, c.bootstrapSouthboundAddr
+	c.opMu.Unlock()
+	c.systemSettingsMu.RLock()
+	nodeControllerURL, nodeImage := c.systemSettings.NodeControllerURL, c.systemSettings.NodeImage
+	c.systemSettingsMu.RUnlock()
+	info := nodeBootstrapInfo{
+		Version: version, Mode: mode,
+		NodeControllerURL: nodeControllerURL, NodeImage: nodeImage,
+	}
+	if southboundAddr != "" {
+		info.SouthboundEnabled = true
+		info.SouthboundAddr = southboundAddr
+		if _, port, err := net.SplitHostPort(southboundAddr); err == nil {
+			if number, err := strconv.Atoi(port); err == nil {
+				info.SouthboundPort = number
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
 // nodeAPIToken handles POST /api/nodes/{id}/token: issue a fresh join token, invalidating any earlier one.
 // Called with c.opMu already held (see nodeAPI).
 func (c *Control) nodeAPIToken(w http.ResponseWriter, r *http.Request, node store.Node) {

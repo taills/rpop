@@ -9,10 +9,14 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	_ "time/tzdata"
+	"unicode"
 
 	"github.com/rpop-project/rpop/internal/store"
 )
@@ -35,6 +39,14 @@ type systemSettings struct {
 	RootCertificates   []systemRootCertificate   `json:"rootCertificates"`
 	ClientCertificates []systemClientCertificate `json:"clientCertificates"`
 	ServerCertificates []systemServerCertificate `json:"serverCertificates"`
+	// NodeControllerURL is the address the node onboarding guide (GET /api/nodes/bootstrap-info) prefills for
+	// new nodes to reach this controller's southbound listener, e.g. "https://controller.example.com:7443".
+	// Empty means "let the console guess it from the browser's own hostname and the southbound port instead."
+	NodeControllerURL string `json:"nodeControllerUrl"`
+	// NodeImage is the Docker image the guide's docker-run and docker-compose recipes use for new nodes, e.g.
+	// "registry.example.com/rpop:1.4.0". Empty means "default to rpop:<controller version>" (the console applies
+	// that default, not this settings layer, so the stored value and the API response both keep "" visible).
+	NodeImage string `json:"nodeImage"`
 }
 
 func defaultSystemSettings() systemSettings {
@@ -65,7 +77,66 @@ func normalizeSystemSettings(settings systemSettings) (systemSettings, *time.Loc
 	if err != nil {
 		return systemSettings{}, nil, err
 	}
+	settings.NodeControllerURL, err = normalizeNodeControllerURL(settings.NodeControllerURL)
+	if err != nil {
+		return systemSettings{}, nil, err
+	}
+	settings.NodeImage, err = normalizeNodeImage(settings.NodeImage)
+	if err != nil {
+		return systemSettings{}, nil, err
+	}
 	return settings, location, nil
+}
+
+// normalizeNodeControllerURL requires either an empty string or exactly "https://host[:port]": no path, query,
+// fragment, or user info, so the node onboarding guide can build a "-controller" flag value by simply trimming
+// the result rather than having to re-validate or reassemble it. net/url accepts (and this rejects) the forms
+// that would silently break a node's TLS handshake or get misread as part of a shell command, e.g. a trailing
+// slash that looks harmless but is not what "-controller" expects on the wire.
+func normalizeNodeControllerURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("nodeControllerUrl must be a valid URL: %w", err)
+	}
+	if parsed.Scheme != "https" {
+		return "", fmt.Errorf("nodeControllerUrl must use the https scheme")
+	}
+	if parsed.User != nil {
+		return "", fmt.Errorf("nodeControllerUrl must not contain user info")
+	}
+	if parsed.Host == "" {
+		return "", fmt.Errorf("nodeControllerUrl must contain a host")
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return "", fmt.Errorf("nodeControllerUrl must not contain a path")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("nodeControllerUrl must not contain a query or fragment")
+	}
+	if _, port, err := net.SplitHostPort(parsed.Host); err == nil && port != "" {
+		if number, err := strconv.Atoi(port); err != nil || number < 1 || number > 65535 {
+			return "", fmt.Errorf("nodeControllerUrl port must be 1-65535")
+		}
+	}
+	return "https://" + parsed.Host, nil
+}
+
+// normalizeNodeImage requires either an empty string (the console then defaults to rpop:<version>) or a name
+// with no whitespace; Docker image references never contain spaces, so this only needs to catch pasting a stray
+// newline or a run command instead of an image name, not fully validate registry/repository/tag syntax.
+func normalizeNodeImage(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", nil
+	}
+	if strings.IndexFunc(trimmed, unicode.IsSpace) >= 0 {
+		return "", fmt.Errorf("nodeImage must not contain whitespace")
+	}
+	return trimmed, nil
 }
 
 func normalizeSystemRootCertificates(certificates []systemRootCertificate) ([]systemRootCertificate, error) {

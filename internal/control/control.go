@@ -79,10 +79,13 @@ type Control struct {
 	tunnelEvents     *tunnelEventStore
 	systemSettingsMu sync.RWMutex
 	systemSettings   systemSettings
-	authMu           sync.Mutex
-	setupMu          sync.Mutex
-	sessions         map[string]time.Time
-	loginAttempts    map[string]loginAttempt
+	// bootstrapVersion/bootstrapMode/bootstrapSouthboundAddr are set once at startup by SetBootstrapInfo and read
+	// by nodeBootstrapInfoAPI (GET /api/nodes/bootstrap-info); see that method's doc comment.
+	bootstrapVersion, bootstrapMode, bootstrapSouthboundAddr string
+	authMu                                                   sync.Mutex
+	setupMu                                                  sync.Mutex
+	sessions                                                 map[string]time.Time
+	loginAttempts                                            map[string]loginAttempt
 }
 type apiError struct {
 	Error string `json:"error"`
@@ -171,6 +174,18 @@ func (c *Control) SetTunnelEventStoreCapacity(maxBytes int64) {
 	c.tunnelEvents.maxBytes = maxBytes
 }
 
+// SetBootstrapInfo records the version, process mode ("all-in-one", "controller", or "node"), and resolved
+// southbound listen address cmd/rpop starts with, for nodeBootstrapInfoAPI (GET /api/nodes/bootstrap-info) to
+// hand the console's node onboarding guide. Like SetEmbeddedNode and SetOverlayConfig, this is startup-time
+// wiring: call once before serving console traffic. southboundAddr must already be resolved (see cmd/rpop's
+// southboundAddress) — an empty string here means southbound is off, exactly as it does in runController's own
+// "southboundAddr != """ check before starting that listener.
+func (c *Control) SetBootstrapInfo(version, mode, southboundAddr string) {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	c.bootstrapVersion, c.bootstrapMode, c.bootstrapSouthboundAddr = version, mode, southboundAddr
+}
+
 func (c *Control) Handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("/api/health", c.health)
@@ -189,6 +204,10 @@ func (c *Control) Handler() http.Handler {
 	m.HandleFunc("/api/sites", c.sites)
 	m.HandleFunc("/api/sites/", c.site)
 	m.HandleFunc("/api/routes/simulate", c.simulateRoute)
+	// Registered ahead of the "/api/nodes/" subtree below: ServeMux always prefers the longest matching pattern,
+	// so this exact path wins over nodeAPI's id-based dispatch regardless of registration order (nodeAPI would
+	// otherwise treat "bootstrap-info" as a node id and 404).
+	m.HandleFunc("/api/nodes/bootstrap-info", c.nodeBootstrapInfoAPI)
 	m.HandleFunc("/api/nodes", c.nodesAPI)
 	m.HandleFunc("/api/nodes/", c.nodeAPI)
 	m.HandleFunc("/api/topology", c.topologyAPI)

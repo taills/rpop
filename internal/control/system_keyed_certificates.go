@@ -79,6 +79,8 @@ type systemSettingsResponse struct {
 	RootCertificates   []systemRootCertificate      `json:"rootCertificates"`
 	ClientCertificates []systemKeyedCertificateView `json:"clientCertificates"`
 	ServerCertificates []systemKeyedCertificateView `json:"serverCertificates"`
+	NodeControllerURL  string                       `json:"nodeControllerUrl"`
+	NodeImage          string                       `json:"nodeImage"`
 }
 
 func normalizeSystemClientCertificates(certificates []systemKeyedCertificate) ([]systemKeyedCertificate, error) {
@@ -284,6 +286,8 @@ func systemSettingsView(settings systemSettings) systemSettingsResponse {
 		RootCertificates:   append([]systemRootCertificate{}, settings.RootCertificates...),
 		ClientCertificates: keyedCertificateViews(settings.ClientCertificates),
 		ServerCertificates: keyedCertificateViews(settings.ServerCertificates),
+		NodeControllerURL:  settings.NodeControllerURL,
+		NodeImage:          settings.NodeImage,
 	}
 }
 
