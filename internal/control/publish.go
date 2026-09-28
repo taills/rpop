@@ -75,13 +75,6 @@ func (p *publication) watch(nodeID string) (snapshot.Snapshot, bool, <-chan stru
 	return s, ok, p.changed
 }
 
-// wake makes every watch stream look at the publication again.
-func (p *publication) wake() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.wakeLocked()
-}
-
 func (p *publication) wakeLocked() {
 	close(p.changed)
 	p.changed = make(chan struct{})
