@@ -75,3 +75,76 @@ func (p *port) removeTLSOwner(sni string) {
 		p.teardown()
 	}
 }
+
+// PutDefaultTLSOwner registers owner as address's fallback for a TLS connection whose SNI — including no SNI at
+// all — matched neither an exact TLS owner (PutTLSOwner) nor a TLS site's hostname (see dispatch.go's
+// getConfigForClient for the full match order). Southbound is the first user: a node whose -controller URL
+// names an IP address, or one that predates pinning the bootstrap SNI to pki.ControllerName, never sends a
+// matching SNI at all, and must still reach the controller when southbound shares its address with other
+// owners/sites. At most one default TLS owner may be registered per address at a time; tlsConfig is used as-is,
+// exactly like PutTLSOwner's.
+//
+// Registering fails if address already has a TLS site with no configured hostname: that site currently answers
+// every SNI the address's other TLS owners/sites do not claim (see siteTable.only), which would otherwise
+// silently race the new default owner for the same fallback role. Once a default owner is registered, PutSite
+// requires every TLS site sharing this address to have a hostname (mirroring how an exact TLS owner already
+// does), so this conflict can only arise from registration order, not from a later PutSite call.
+//
+// Closing the returned listener unregisters the owner; if it was the address's last registration, the address is
+// freed synchronously (see port.teardown), exactly like PutTLSOwner's.
+func (r *Registry) PutDefaultTLSOwner(address string, tlsConfig *tls.Config) (net.Listener, error) {
+	p, err := r.acquirePort(address, "默认 TLS 所有者")
+	if err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return nil, fmt.Errorf("共享端口 %s 正在关闭,请重试", address)
+	}
+	current := p.routes.Load()
+	if current.defaultOwner != nil {
+		return nil, fmt.Errorf("地址 %s 已经注册了默认 TLS 所有者", address)
+	}
+	if _, ok := current.tlsSites.only(); ok {
+		return nil, fmt.Errorf("地址 %s 已有未配置 hostname 的 TLS 站点,请先为它配置 hostname 再注册默认 TLS 所有者", address)
+	}
+	entry := &tlsOwnerEntry{config: tlsConfig, listener: newVirtualListener(p.listener.Addr())}
+	next := current.clone()
+	next.defaultOwner = entry
+	p.routes.Store(next)
+	return &defaultTLSOwnerListener{virtualListener: entry.listener, port: p}, nil
+}
+
+// defaultTLSOwnerListener is the net.Listener PutDefaultTLSOwner hands its caller; closing it removes the
+// default owner's registration in addition to the usual virtualListener.Close behavior.
+type defaultTLSOwnerListener struct {
+	*virtualListener
+	port *port
+	once sync.Once
+}
+
+func (l *defaultTLSOwnerListener) Close() error {
+	l.once.Do(func() {
+		l.virtualListener.Close()
+		l.port.removeDefaultTLSOwner()
+	})
+	return nil
+}
+
+func (p *port) removeDefaultTLSOwner() {
+	p.mu.Lock()
+	current := p.routes.Load()
+	if current.defaultOwner == nil {
+		p.mu.Unlock()
+		return
+	}
+	next := current.clone()
+	next.defaultOwner = nil
+	p.routes.Store(next)
+	empty := next.occupants() == 0
+	p.mu.Unlock()
+	if empty {
+		p.teardown()
+	}
+}

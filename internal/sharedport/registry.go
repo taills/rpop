@@ -153,6 +153,9 @@ func (p *port) describeLocked() string {
 	for name := range table.tlsOwners {
 		uses = append(uses, "TLS 所有者 "+name)
 	}
+	if table.defaultOwner != nil {
+		uses = append(uses, "默认 TLS 所有者")
+	}
 	if len(uses) == 0 {
 		return "另一个用途"
 	}
@@ -227,7 +230,11 @@ func (r *Registry) PutSite(address string, route SiteRoute, ignore map[string]bo
 	current := p.routes.Load()
 	table, hasOwner := current.plainSites, current.plainOwner != nil
 	if route.TLS {
-		table, hasOwner = current.tlsSites, len(current.tlsOwners) > 0
+		// A default TLS owner (PutDefaultTLSOwner) claims every SNI an exact owner or a site's own hostname does
+		// not, exactly like siteTable.only's "lone site with no hostname" fallback does when there is no owner
+		// at all — so once one is registered, a TLS site sharing this address must have a hostname of its own,
+		// the same requirement an exact TLS owner already imposes.
+		table, hasOwner = current.tlsSites, len(current.tlsOwners) > 0 || current.defaultOwner != nil
 	}
 	if err := table.admit(route.ID, route.Hostnames, hasOwner, ignore); err != nil {
 		return err

@@ -101,6 +101,20 @@ func hasSuffix(host, suffix string) bool {
 	return len(host) >= len(suffix) && host[len(host)-len(suffix):] == suffix
 }
 
+// matchesHost reports whether host would resolve to a route in this table: either an exact/wildcard hostname
+// match (findByHost), or, when it does not, the table's lone hostname-less route (only). Used by
+// getConfigForClient to decide whether an unmatched-by-owner TLS connection belongs to this port's shared
+// TLS-sites config before falling further back to a default owner (see Registry.PutDefaultTLSOwner) — kept
+// separate from tlsSiteConfig's own GetCertificate (which needs the route itself, not just whether one exists)
+// so both stay in sync without one calling the other.
+func (t *siteTable) matchesHost(host string) bool {
+	if _, ok := t.findByHost(host); ok {
+		return true
+	}
+	_, ok := t.only()
+	return ok
+}
+
 // only returns the table's sole route, if it has exactly one and that route was registered with no hostname at
 // all — exactly as it did before sites shared a registry (a lone hostname-less site on an address caught every
 // request, since there was nothing to disambiguate by). A route that does have a configured hostname never
@@ -206,8 +220,12 @@ type tlsOwnerEntry struct {
 type routeTable struct {
 	plainOwner *plaintextOwner
 	tlsOwners  map[string]*tlsOwnerEntry // key: exact SNI
-	plainSites *siteTable
-	tlsSites   *siteTable
+	// defaultOwner is this address's fallback for a TLS connection whose SNI (including no SNI at all) matched
+	// neither an exact tlsOwners entry nor a tlsSites hostname; see Registry.PutDefaultTLSOwner and
+	// dispatch.go's getConfigForClient for the match order. At most one per address.
+	defaultOwner *tlsOwnerEntry
+	plainSites   *siteTable
+	tlsSites     *siteTable
 }
 
 func emptyRouteTable() *routeTable {
@@ -222,13 +240,16 @@ func (t *routeTable) clone() *routeTable {
 	for k, v := range t.tlsOwners {
 		owners[k] = v
 	}
-	return &routeTable{plainOwner: t.plainOwner, tlsOwners: owners, plainSites: t.plainSites, tlsSites: t.tlsSites}
+	return &routeTable{plainOwner: t.plainOwner, tlsOwners: owners, defaultOwner: t.defaultOwner, plainSites: t.plainSites, tlsSites: t.tlsSites}
 }
 
 // occupants counts how many owners and sites this table has, for the port's refcounted lifecycle.
 func (t *routeTable) occupants() int {
 	n := t.plainSites.len() + t.tlsSites.len() + len(t.tlsOwners)
 	if t.plainOwner != nil {
+		n++
+	}
+	if t.defaultOwner != nil {
 		n++
 	}
 	return n

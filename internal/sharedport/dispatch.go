@@ -104,11 +104,14 @@ func (p *port) dispatchTLS(conn net.Conn) {
 	}
 }
 
-// getConfigForClient is the port's TLS route selector. An exact SNI match against a registered owner wins first;
-// owner names and site hostnames never overlap (the control plane rejects a site hostname in the internal
-// namespace an owner's name lives in), so there is never an ambiguous case to break a tie for. Otherwise the
-// port's shared TLS-sites config decides by the same hostname/wildcard rules dispatchPlain's Host routing uses.
-// Recording the chosen destination in target lets dispatchTLS avoid repeating this lookup.
+// getConfigForClient is the port's TLS route selector, tried in order: an exact SNI match against a registered
+// owner (PutTLSOwner) wins first — owner names and site hostnames never overlap (the control plane rejects a
+// site hostname in the internal namespace an owner's name lives in), so there is never an ambiguous case to
+// break a tie for; then the port's shared TLS-sites config, by the same hostname/wildcard rules dispatchPlain's
+// Host routing uses (including its own "lone site with no hostname" fallback, siteTable.only); then, if
+// registered, the default TLS owner (PutDefaultTLSOwner) — southbound's fallback for a connection whose SNI
+// (including no SNI at all) matched none of the above. A connection matching none of the three fails the
+// handshake. Recording the chosen destination in target lets dispatchTLS avoid repeating this lookup.
 func (p *port) getConfigForClient(target *tlsDispatchTarget) func(*tls.ClientHelloInfo) (*tls.Config, error) {
 	return func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 		routes := p.routes.Load()
@@ -117,11 +120,15 @@ func (p *port) getConfigForClient(target *tlsDispatchTarget) func(*tls.ClientHel
 			target.listener = owner.listener
 			return owner.config, nil
 		}
-		if routes.tlsSites.len() == 0 {
-			return nil, fmt.Errorf("没有为 SNI %q 配置的 TLS 证书", hello.ServerName)
+		if routes.tlsSites.matchesHost(host) {
+			target.listener = p.tlsListener
+			return p.tlsSiteConfig(), nil
 		}
-		target.listener = p.tlsListener
-		return p.tlsSiteConfig(), nil
+		if routes.defaultOwner != nil {
+			target.listener = routes.defaultOwner.listener
+			return routes.defaultOwner.config, nil
+		}
+		return nil, fmt.Errorf("没有为 SNI %q 配置的 TLS 证书", hello.ServerName)
 	}
 }
 
