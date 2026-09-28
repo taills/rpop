@@ -1,15 +1,13 @@
 .ui-theme-switcher {
+  position: relative;
   display: inline-flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  align-items: center;
 }
-.ui-theme-switcher__chip {
+.ui-theme-switcher__trigger {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 30px;
-  padding: 4px 10px 4px 6px;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 10px 4px 8px;
   border-radius: var(--radius-pill);
   border: 1px solid var(--border-primary);
   background: var(--bg-card);
@@ -20,23 +18,20 @@
   cursor: pointer;
   transition: border-color 0.12s, color 0.12s, box-shadow 0.12s, background 0.12s;
 }
-.ui-theme-switcher__chip:hover {
+.ui-theme-switcher__trigger:hover {
   color: var(--text-primary);
   border-color: var(--border-secondary);
 }
-.ui-theme-switcher__chip.on {
-  border-color: var(--accent);
-  color: var(--text-accent);
-  background: var(--soft-blue);
-  box-shadow: var(--shadow-xs);
-}
-.ui-theme-switcher__chip:focus-visible {
+.ui-theme-switcher.open .ui-theme-switcher__trigger,
+.ui-theme-switcher__trigger:focus-visible {
   outline: none;
+  border-color: var(--accent);
   box-shadow: var(--focus-ring);
 }
 .ui-theme-switcher__swatches {
   display: inline-flex;
   gap: 2px;
+  flex-shrink: 0;
 }
 .ui-theme-switcher__swatches i {
   width: 8px;
@@ -44,15 +39,104 @@
   border-radius: 50%;
   border: 1px solid rgba(0, 0, 0, 0.08);
 }
+.ui-theme-switcher__name {
+  white-space: nowrap;
+}
+.ui-theme-switcher__caret {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: transform 0.15s;
+}
+.ui-theme-switcher__caret.open {
+  transform: rotate(180deg);
+}
 
-/* Narrow screens (see AppTopNav.css): six theme chips with full names is the single widest thing in the top
-   bar; dropping to swatches-only (same treatment UiNavLayoutSwitcher already gives its own chip names) keeps
-   the header from forcing horizontal scroll on the whole page. */
+.ui-theme-switcher__panel {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 240px;
+  max-width: calc(100vw - 32px);
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: 6px;
+  max-height: 320px;
+  overflow: auto;
+}
+.ui-theme-switcher__group + .ui-theme-switcher__group {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-primary);
+}
+.ui-theme-switcher__group-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 4px 8px 6px;
+}
+.ui-theme-switcher__option {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.ui-theme-switcher__option:hover,
+.ui-theme-switcher__option.is-active {
+  background: var(--bg-tertiary);
+}
+.ui-theme-switcher__option.on {
+  background: var(--soft-blue);
+  color: var(--text-accent);
+}
+.ui-theme-switcher__option-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.ui-theme-switcher__option-name {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-theme-switcher__option-desc {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-theme-switcher__check {
+  flex-shrink: 0;
+  color: var(--text-accent);
+}
+
+/* Narrow screens (see AppTopNav.css): drop the trigger's theme name, same treatment UiNavLayoutSwitcher already
+   gives its own chip names, so the header keeps its swatch + caret without forcing horizontal scroll; the
+   panel itself is capped to the viewport width so it can never push the page wider than the screen. */
 @media (max-width: 640px) {
   .ui-theme-switcher__name {
     display: none;
   }
-  .ui-theme-switcher__chip {
+  .ui-theme-switcher__trigger {
     padding: 4px 8px;
+  }
+  .ui-theme-switcher__panel {
+    width: min(240px, calc(100vw - 32px));
   }
 }

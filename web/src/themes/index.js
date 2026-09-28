@@ -61,3 +61,18 @@ export function applyTheme(id) {
   }
   return theme
 }
+
+const MODE_LABELS = { light: '浅色', dark: '深色' }
+const MODE_ORDER = ['light', 'dark']
+
+/**
+ * 把主题列表按 mode 分组，供 UiThemeSwitcher 下拉的"浅色 / 深色"分组渲染复用。
+ * 固定 light 在前、dark 在后；组内保持 themes 原有顺序；某个 mode 一个主题都没有时不返回空分组。
+ * @param {Array<{id: string, mode: 'light' | 'dark'}>} themes
+ * @returns {Array<{mode: string, label: string, items: Array}>}
+ */
+export function groupThemesByMode(themes) {
+  return MODE_ORDER
+    .map((mode) => ({ mode, label: MODE_LABELS[mode], items: themes.filter((t) => t.mode === mode) }))
+    .filter((group) => group.items.length > 0)
+}
