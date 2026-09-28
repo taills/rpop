@@ -37,6 +37,18 @@ func NodeName(nodeID string) string {
 	return nodeID + nodeNameSuffix
 }
 
+// IsInternalHostname reports whether host is one of the DNS names this package's certificates already own:
+// the controller's own name, or a node's name (including the "*.nodes.rpop" wildcard pattern a site could use to
+// shadow every node's name — it shares the same suffix check). A site hostname must never collide with these —
+// sharedport dispatches TLS purely by exact SNI/wildcard match with no notion of "this name belongs to overlay,
+// not to a site", so callers that admit site hostnames (the dataplane engine, and eventually the control
+// plane's own pre-validation) call this to reject the collision themselves before it ever reaches sharedport,
+// which deliberately does not import this package.
+func IsInternalHostname(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	return host == ControllerName || strings.HasSuffix(host, nodeNameSuffix)
+}
+
 // NodeIDFromCertificate extracts the node ID from a node certificate.
 func NodeIDFromCertificate(certificate *x509.Certificate) (string, bool) {
 	for _, name := range certificate.DNSNames {

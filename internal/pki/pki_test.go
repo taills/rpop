@@ -161,3 +161,23 @@ func mustCA(t *testing.T) *CA {
 	}
 	return ca
 }
+
+func TestIsInternalHostname(t *testing.T) {
+	cases := []struct {
+		host string
+		want bool
+	}{
+		{"controller.rpop", true},
+		{"Controller.RPOP", true}, // case-insensitive, like every other hostname comparison in this codebase
+		{"edge-1.nodes.rpop", true},
+		{"*.nodes.rpop", true},
+		{"nodes.rpop", false}, // missing the leading label; not the wildcard and not a node name
+		{"example.com", false},
+		{"controller.rpop.example.com", false}, // suffix match only, never a substring match
+	}
+	for _, tc := range cases {
+		if got := IsInternalHostname(tc.host); got != tc.want {
+			t.Errorf("IsInternalHostname(%q) = %v, want %v", tc.host, got, tc.want)
+		}
+	}
+}
