@@ -150,7 +150,10 @@ func (c *Control) startLocked(ctx context.Context, id string) error {
 	// validateSharedPortPlacement's doc comment): the stored config was fine when it was last saved, but the
 	// controller's own console/southbound addresses, or another node's relayAddress, can still have changed
 	// since then (an operator restarted with different flags, or re-tokened a node onto a new relay address).
-	if err := c.validateSharedPortPlacement(ctx, site); err != nil {
+	// Unlike the save path, this always compares against sibling sites (compareSiblings=true): starting (or
+	// restarting) is exactly what is about to make this site desired and so a real collision surface, whether or
+	// not it already was one.
+	if err := c.validateSharedPortPlacement(ctx, site, true); err != nil {
 		return err
 	}
 	wasDesired := c.desired[id]

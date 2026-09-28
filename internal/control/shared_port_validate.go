@@ -29,7 +29,18 @@ import (
 // address the controller computes from its relayAddress (see relayListenAddress), and the controller has no way
 // to know that locally-set override. That case remains the node's own job to catch, and it reports it back
 // through node.errors like any other apply failure — see docs/architecture/control-data-plane.md §5.
-func (c *Control) validateSharedPortPlacement(ctx context.Context, site store.Site) error {
+//
+// compareSiblings selects whether sibling *sites* placed on the same node are compared against at all (owner
+// checks — console/southbound/a node's relay port — always run regardless, since those addresses are occupied
+// whether or not this site ever starts). A saved-but-never-started site is not a real collision surface: only
+// c.desired holds the sites publishLocked actually registers (see desiredSiblingSitesLocked), so a caller that is
+// not about to make this site desired must pass false, or an unrelated, still-unstarted sibling saved earlier at
+// the same address (a legitimate "several configs parked on one port, started one at a time" setup) would wrongly
+// block this save. Callers: POST /api/sites always passes false (a new site is never auto-started); PUT
+// /api/sites/{id} passes whether the site is already in c.desired (it only auto-restarts in that case, see
+// control.go's site handler); startLocked always passes true (starting — or restarting — is exactly what is
+// about to make it desired).
+func (c *Control) validateSharedPortPlacement(ctx context.Context, site store.Site, compareSiblings bool) error {
 	hostnames, err := sharedport.NormalizeHostnames(site.Config.Hostnames)
 	if err != nil {
 		return err
@@ -44,16 +55,40 @@ func (c *Control) validateSharedPortPlacement(ctx context.Context, site store.Si
 		return fmt.Errorf("listenAddress/listenPort: %w", err)
 	}
 
-	sites, err := c.store.List(ctx)
-	if err != nil {
-		return err
+	var siblings []store.Site
+	if compareSiblings {
+		if siblings, err = c.desiredSiblingSitesLocked(ctx, site.ID); err != nil {
+			return err
+		}
 	}
 	for _, nodeID := range siteNodes(site.Config) {
-		if err := c.validateSharedPortForNodeLocked(ctx, site, hostnames, siteAddr, nodeID, sites); err != nil {
+		if err := c.validateSharedPortForNodeLocked(ctx, site, hostnames, siteAddr, nodeID, siblings); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// desiredSiblingSitesLocked fetches every currently-desired site other than excludeID: exactly the sites
+// publishLocked will (re)register for real (see publish.go), and so the only sites a placement can actually
+// collide with. Fetched by ID rather than c.store.List so this pre-save check never has to read the whole site
+// table while c.opMu is held (it runs on every site save, not just on start).
+func (c *Control) desiredSiblingSitesLocked(ctx context.Context, excludeID string) ([]store.Site, error) {
+	var siblings []store.Site
+	for id := range c.desired {
+		if id == excludeID {
+			continue
+		}
+		sibling, err := c.store.Get(ctx, id)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				continue // a desired site vanishing mid-validation is impossible under opMu; skip defensively
+			}
+			return nil, err
+		}
+		siblings = append(siblings, sibling)
+	}
+	return siblings, nil
 }
 
 // sharedPortOwner is a known, fixed-role occupant of a shared address: the console (always plaintext) or a
@@ -79,7 +114,9 @@ type sharedPortOwner struct {
 // validateSharedPortForNodeLocked runs validateSharedPortPlacement's checks for one of the site's placement
 // nodes. nodeID is either LocalNodeID (the embedded node — console/southbound share its process) or a
 // registered node's ID (only its own relay port shares its process; see internal/agent.Agent's private registry).
-func (c *Control) validateSharedPortForNodeLocked(ctx context.Context, site store.Site, hostnames []string, siteAddr, nodeID string, sites []store.Site) error {
+// siblings is whatever validateSharedPortPlacement's compareSiblings decided to pass: either every other
+// currently-desired site (desiredSiblingSitesLocked), or nil when this save is not comparing siblings at all.
+func (c *Control) validateSharedPortForNodeLocked(ctx context.Context, site store.Site, hostnames []string, siteAddr, nodeID string, siblings []store.Site) error {
 	var owners []sharedPortOwner
 	if nodeID == LocalNodeID {
 		if c.bootstrapConsoleAddr != "" {
@@ -123,7 +160,7 @@ func (c *Control) validateSharedPortForNodeLocked(ctx context.Context, site stor
 	}
 
 	siblingHostnames := map[string][]string{}
-	for _, other := range sites {
+	for _, other := range siblings {
 		if other.ID == site.ID || !slices.Contains(siteNodes(other.Config), nodeID) {
 			continue
 		}

@@ -273,7 +273,10 @@ func (c *Control) sites(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
-		if err := c.validateSharedPortPlacement(r.Context(), x); err != nil {
+		// A freshly POSTed site is never auto-started (see the site handler's PUT case below, which is), so this
+		// save cannot collide with anything that is not already running: no sibling comparison (see
+		// validateSharedPortPlacement's compareSiblings doc comment).
+		if err := c.validateSharedPortPlacement(r.Context(), x, false); err != nil {
 			writeError(w, err)
 			return
 		}
@@ -347,11 +350,14 @@ func (c *Control) site(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
-		if err := c.validateSharedPortPlacement(r.Context(), x); err != nil {
+		// active mirrors whether this save auto-restarts the site below: only then can it actually collide with a
+		// sibling, so only then does validateSharedPortPlacement compare against one (see its compareSiblings doc
+		// comment). Read before the save (nothing under opMu changes it in between) so both uses agree.
+		active := c.desired[id]
+		if err := c.validateSharedPortPlacement(r.Context(), x, active); err != nil {
 			writeError(w, err)
 			return
 		}
-		active := c.desired[id]
 		var previous store.Site
 		if active {
 			previousSite, getErr := c.store.Get(r.Context(), id)

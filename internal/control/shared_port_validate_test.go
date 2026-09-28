@@ -159,3 +159,116 @@ func TestValidateSharedPortPlacementAllowsLegitimateReuseToSaveAndStart(t *testi
 		t.Fatalf("console.test routed to %q, want the console", got)
 	}
 }
+
+// TestValidateSharedPortPlacementAllowsSavingAnUnstartedSiblingMissingHostname is the regression test for the
+// stage 3 review's first CRITICAL finding: pre-validation used to compare a new site against every *stored*
+// site, not just the ones actually registered (c.desired) — so saving a second, still-unstarted site at the
+// same address as a first, also still-unstarted, hostname-less site was wrongly rejected as if both were about to
+// share the address at once. Neither site is ever started here; both saves must succeed.
+func TestValidateSharedPortPlacementAllowsSavingAnUnstartedSiblingMissingHostname(t *testing.T) {
+	handler := newTestControl(t).Handler()
+	cookie := setupAdminForTest(t, handler)
+	port := freeLoopbackPort(t)
+	site := func(id string) string {
+		return `{"id":"` + id + `","name":"` + id + `","config":{"listenAddress":"127.0.0.1","listenPort":` + strconv.Itoa(port) + `,"upstreams":[{"url":"http://upstream.example"}]}}`
+	}
+	sharedPortAPICall(t, handler, cookie, http.MethodPost, "/api/sites", site("a"), http.StatusCreated)
+	sharedPortAPICall(t, handler, cookie, http.MethodPost, "/api/sites", site("b"), http.StatusCreated)
+}
+
+// TestValidateSharedPortPlacementAllowsSavingAnUnstartedSiblingWithConflictingScope is the review's second repro:
+// two still-unstarted sites whose addresses share a port but do not normalize to the same address (one wildcard,
+// one specific — sharedport.Classify's Conflicting case) must still both save. A scope conflict between two
+// sites only matters once both are actually registered on the same listener, and neither is here.
+func TestValidateSharedPortPlacementAllowsSavingAnUnstartedSiblingWithConflictingScope(t *testing.T) {
+	handler := newTestControl(t).Handler()
+	cookie := setupAdminForTest(t, handler)
+	port := freeLoopbackPort(t)
+	a := `{"id":"a","name":"a","config":{"listenAddress":"","listenPort":` + strconv.Itoa(port) + `,"hostnames":["a.test"],"upstreams":[{"url":"http://upstream.example"}]}}`
+	b := `{"id":"b","name":"b","config":{"listenAddress":"127.0.0.1","listenPort":` + strconv.Itoa(port) + `,"hostnames":["b.test"],"upstreams":[{"url":"http://upstream.example"}]}}`
+	sharedPortAPICall(t, handler, cookie, http.MethodPost, "/api/sites", a, http.StatusCreated)
+	sharedPortAPICall(t, handler, cookie, http.MethodPost, "/api/sites", b, http.StatusCreated)
+}
+
+// TestValidateSharedPortPlacementIgnoresAnUnstartedSiblingWhenStarting is the review's third repro: a legitimate
+// site's start must not be rejected just because some other, never-started site was saved earlier at the same
+// address — only c.desired sites are real collision surfaces (see desiredSiblingSitesLocked). "a" here is saved
+// but never started; starting "b" alone at the same address, with no hostname of its own, must succeed exactly as
+// it would if "a" did not exist — this is also the "save several configs on one port, start them one at a time"
+// use case the fix is careful not to break.
+func TestValidateSharedPortPlacementIgnoresAnUnstartedSiblingWhenStarting(t *testing.T) {
+	handler := newTestControl(t).Handler()
+	cookie := setupAdminForTest(t, handler)
+	port := freeLoopbackPort(t)
+	unstarted := `{"id":"a","name":"a","config":{"listenAddress":"127.0.0.1","listenPort":` + strconv.Itoa(port) + `,"upstreams":[{"url":"http://upstream.example"}]}}`
+	sharedPortAPICall(t, handler, cookie, http.MethodPost, "/api/sites", unstarted, http.StatusCreated)
+
+	site := `{"id":"b","name":"b","config":{"listenAddress":"127.0.0.1","listenPort":` + strconv.Itoa(port) + `,"upstreams":[{"url":"http://upstream.example"}]}}`
+	sharedPortAPICall(t, handler, cookie, http.MethodPost, "/api/sites", site, http.StatusCreated)
+	sharedPortAPICall(t, handler, cookie, http.MethodPost, "/api/sites/b/start", "", http.StatusOK)
+}
+
+// TestValidateSharedPortPlacementStillRejectsHostnameOverlapBetweenDesiredSites is the positive counterpart of
+// the three tests above: once a site is actually desired (running), a second site that would genuinely collide
+// with it — here, an overlapping hostname on the same address — must still be rejected when it tries to start,
+// exactly as internal/sharedport.Registry.PutSite would reject it for real.
+func TestValidateSharedPortPlacementStillRejectsHostnameOverlapBetweenDesiredSites(t *testing.T) {
+	handler := newTestControl(t).Handler()
+	cookie := setupAdminForTest(t, handler)
+	port := freeLoopbackPort(t)
+	a := `{"id":"a","name":"a","config":{"listenAddress":"127.0.0.1","listenPort":` + strconv.Itoa(port) + `,"hostnames":["shared.test"],"upstreams":[{"url":"http://upstream.example"}]}}`
+	sharedPortAPICall(t, handler, cookie, http.MethodPost, "/api/sites", a, http.StatusCreated)
+	sharedPortAPICall(t, handler, cookie, http.MethodPost, "/api/sites/a/start", "", http.StatusOK)
+
+	b := `{"id":"b","name":"b","config":{"listenAddress":"127.0.0.1","listenPort":` + strconv.Itoa(port) + `,"hostnames":["shared.test"],"upstreams":[{"url":"http://upstream.example"}]}}`
+	sharedPortAPICall(t, handler, cookie, http.MethodPost, "/api/sites", b, http.StatusCreated)
+	response := sharedPortAPICall(t, handler, cookie, http.MethodPost, "/api/sites/b/start", "", http.StatusBadRequest)
+	if !strings.Contains(response.Body.String(), "重叠") {
+		t.Fatalf("expected a hostname-overlap error, got %s", response.Body.String())
+	}
+}
+
+// TestValidateSharedPortPlacementRejectsStartingASiteAlongsideAHostnamelessDesiredSibling covers "运行中站点
+// A 无 hostname，保存一个不运行的同址站点 B 成功，但 start B 返回 400": A alone,
+// with no hostname, legitimately claims the whole address once running; saving B at the same address without
+// starting it must still succeed (compareSiblings is false for that save), but starting B must be rejected,
+// since A is now a real, hostname-less occupant nothing else may share the address with.
+func TestValidateSharedPortPlacementRejectsStartingASiteAlongsideAHostnamelessDesiredSibling(t *testing.T) {
+	handler := newTestControl(t).Handler()
+	cookie := setupAdminForTest(t, handler)
+	port := freeLoopbackPort(t)
+	a := `{"id":"a","name":"a","config":{"listenAddress":"127.0.0.1","listenPort":` + strconv.Itoa(port) + `,"upstreams":[{"url":"http://upstream.example"}]}}`
+	sharedPortAPICall(t, handler, cookie, http.MethodPost, "/api/sites", a, http.StatusCreated)
+	sharedPortAPICall(t, handler, cookie, http.MethodPost, "/api/sites/a/start", "", http.StatusOK)
+
+	b := `{"id":"b","name":"b","config":{"listenAddress":"127.0.0.1","listenPort":` + strconv.Itoa(port) + `,"hostnames":["b.test"],"upstreams":[{"url":"http://upstream.example"}]}}`
+	sharedPortAPICall(t, handler, cookie, http.MethodPost, "/api/sites", b, http.StatusCreated)
+	response := sharedPortAPICall(t, handler, cookie, http.MethodPost, "/api/sites/b/start", "", http.StatusBadRequest)
+	if !strings.Contains(response.Body.String(), "hostname") {
+		t.Fatalf("expected a hostname-required error, got %s", response.Body.String())
+	}
+}
+
+// TestValidateSharedPortPlacementRevalidatesSiblingsWhenPuttingARunningSite covers the PUT path's own
+// compareSiblings gate: PUT /api/sites/{id} auto-restarts a site only when it is already desired (see
+// control.go's site handler), and pre-validation must compare against siblings in exactly that case — removing
+// "b"'s hostname while its already-running sibling "a" still has one must be rejected at the PUT itself, before
+// the auto-restart even runs (and before the new, invalid config is even saved).
+func TestValidateSharedPortPlacementRevalidatesSiblingsWhenPuttingARunningSite(t *testing.T) {
+	handler := newTestControl(t).Handler()
+	cookie := setupAdminForTest(t, handler)
+	port := freeLoopbackPort(t)
+	a := `{"id":"a","name":"a","config":{"listenAddress":"127.0.0.1","listenPort":` + strconv.Itoa(port) + `,"hostnames":["a.test"],"upstreams":[{"url":"http://upstream.example"}]}}`
+	sharedPortAPICall(t, handler, cookie, http.MethodPost, "/api/sites", a, http.StatusCreated)
+	sharedPortAPICall(t, handler, cookie, http.MethodPost, "/api/sites/a/start", "", http.StatusOK)
+
+	b := `{"id":"b","name":"b","config":{"listenAddress":"127.0.0.1","listenPort":` + strconv.Itoa(port) + `,"hostnames":["b.test"],"upstreams":[{"url":"http://upstream.example"}]}}`
+	sharedPortAPICall(t, handler, cookie, http.MethodPost, "/api/sites", b, http.StatusCreated)
+	sharedPortAPICall(t, handler, cookie, http.MethodPost, "/api/sites/b/start", "", http.StatusOK)
+
+	bNoHostname := `{"id":"b","name":"b","config":{"listenAddress":"127.0.0.1","listenPort":` + strconv.Itoa(port) + `,"upstreams":[{"url":"http://upstream.example"}]}}`
+	response := sharedPortAPICall(t, handler, cookie, http.MethodPut, "/api/sites/b", bNoHostname, http.StatusBadRequest)
+	if !strings.Contains(response.Body.String(), "hostname") {
+		t.Fatalf("expected a hostname-required error, got %s", response.Body.String())
+	}
+}
