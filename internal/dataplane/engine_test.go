@@ -332,6 +332,63 @@ func TestFailedModeSwitchKeepsServingTheOldMode(t *testing.T) {
 	}
 }
 
+// TestFailedModeSwitchRestoreStopsTrackingTheSite covers the case TestFailedModeSwitchKeepsServingTheOldMode
+// cannot: the restore PutSite that puts a site's old registration back after a failed mode switch can itself
+// fail, if something else sharing the registry claims the vacated hostname in the instant between RemoveSite and
+// the restore (see install's switchingMode). install must then stop tracking the site as running — Running()
+// still claiming the site serves its old config once nothing is actually registered for it anymore would violate
+// D8, not honor it. The race is engineered deterministically with the engine's own testAfterModeSwitchRemove test
+// hook, since the real window between the two registry calls is far too small to hit reliably through the public
+// API alone.
+func TestFailedModeSwitchRestoreStopsTrackingTheSite(t *testing.T) {
+	engine := newTestEngine(t)
+	port := freePort(t)
+	sibling := plainSite("sibling", port, textUpstream(t, "sibling").URL)
+	sibling.Hostnames = []string{"sibling.test"}
+	cert := newTestCertificate(t)
+	web := plainSite("web", port, textUpstream(t, "web-tls").URL)
+	web.TLS, web.Hostnames = true, []string{"web.test"}
+	web.Certificate = &snapshot.KeyPair{CertificatePEM: cert.certPEM, PrivateKeyPEM: cert.keyPEM}
+	mustApply(t, engine, sibling, web)
+
+	grabberCert, err := tls.X509KeyPair([]byte(cert.certPEM), []byte(cert.keyPEM))
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	engine.testAfterModeSwitchRemove = func() {
+		// Stand in for something else sharing the registry (an all-in-one process's console/southbound/relay
+		// owner, or another site entirely) grabbing "web"'s just-vacated TLS hostname before install can restore
+		// it, so the restore below fails too.
+		route := sharedport.SiteRoute{
+			ID: "grabber", Hostnames: []string{"web.test"}, TLS: true,
+			Certificate: func() *tls.Certificate { return &grabberCert }, Handler: http.NotFoundHandler(),
+		}
+		if err := engine.registry.PutSite(address, route, nil); err != nil {
+			t.Fatalf("grabber PutSite: %v", err)
+		}
+	}
+
+	// Switching "web" to plaintext with no hostname must fail admission the same way the test above's does (the
+	// plaintext side already has "sibling", which does have a hostname); the restore that would normally put
+	// "web" back as TLS then collides with "grabber" and fails too.
+	webPlain := plainSite("web", port, textUpstream(t, "web-plain").URL)
+	errs := engine.Apply([]snapshot.Site{sibling, webPlain})
+	if errs["web"] == nil {
+		t.Fatal("expected the mode switch to fail admission")
+	}
+
+	if engine.Running("web") {
+		t.Fatal("web should no longer be reported as running once its restore also failed")
+	}
+	engine.mu.Lock()
+	group := engine.listeners[address]
+	engine.mu.Unlock()
+	if group != nil && group.siteIDs["web"] {
+		t.Fatal("web's address group should no longer list it once its restore also failed")
+	}
+}
+
 // TestEngineSharesAddressWithAPlaintextOwner is stage one's coverage for the injection point stage two (and the
 // console, see cmd/rpop.runController) needs: an engine built with WithRegistry shares its registry with
 // something else entirely outside the engine — here a plain http.Handler standing in for the console — and a

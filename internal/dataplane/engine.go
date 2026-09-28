@@ -35,8 +35,15 @@ type Engine struct {
 	// leaving holds, during Apply, the sites that move to another listener; admission on their old listener
 	// ignores them so sites can trade listeners in one snapshot.
 	leaving map[string]bool
-	metrics sync.Map
-	logs    *logQueue
+	// testAfterModeSwitchRemove, when set, runs synchronously inside install right after a mode switch detaches a
+	// site's stale registration (see install's switchingMode) and before either PutSite call that follows. It
+	// exists solely so engine_test.go can deterministically simulate the restore PutSite itself failing — a live
+	// race with some other registrant claiming the vacated hostname in the instant between RemoveSite and the
+	// restore, which the real registry API alone cannot engineer on demand. Always nil outside tests; no exported
+	// constructor or option ever sets it.
+	testAfterModeSwitchRemove func()
+	metrics                   sync.Map
+	logs                      *logQueue
 	// paths dials upstream paths; guarded by mu.
 	paths PathDialer
 	// activeProbe is the engine-wide default for D19 active probing (D30); guarded by mu. SetPathActiveProbe
@@ -310,6 +317,9 @@ func (e *Engine) install(site snapshot.Site, route *siteRuntime, runtimeKey, cer
 	switchingMode := previous != nil && previous.groupKey == address && previous.spec.TLS != site.TLS
 	if switchingMode {
 		e.registry.RemoveSite(address, site.ID)
+		if e.testAfterModeSwitchRemove != nil {
+			e.testAfterModeSwitchRemove()
+		}
 	}
 	siteRoute := sharedport.SiteRoute{
 		ID: site.ID, Hostnames: route.hostnames, TLS: site.TLS, Certificate: route.certificate.Load, Handler: route.handler,
@@ -330,8 +340,25 @@ func (e *Engine) install(site snapshot.Site, route *siteRuntime, runtimeKey, cer
 				Certificate: previous.route.certificate.Load, Handler: previous.route.handler,
 			}
 			if restoreErr := e.registry.PutSite(address, oldRoute, e.leaving); restoreErr != nil {
-				e.log.Error("could not restore previous registration after a failed TLS/plaintext switch",
+				// The old registration is gone for good now: RemoveSite already detached it above, and this restore
+				// attempt could not put it back either — something else (sharing the same registry, e.g. an
+				// all-in-one process's console/southbound/relay owner) must have claimed the vacated hostname in
+				// between. e.runs must stop claiming the site still serves its previous config: D8 promises a site
+				// that fails to apply keeps serving its previous good config, not that Running()/Spec() keep lying
+				// about that once even the restore has failed, so tear it down the same way stopLocked does for a
+				// site that is actually stopped — including releasing its (now unregistered) runtime.
+				e.log.Error("could not restore previous registration after a failed TLS/plaintext switch; site stopped",
 					zap.String("site_id", site.ID), zap.Error(restoreErr))
+				delete(e.runs, site.ID)
+				if group != nil {
+					delete(group.siteIDs, site.ID)
+					if len(group.siteIDs) == 0 {
+						delete(e.listeners, address)
+					}
+				}
+				e.mu.Unlock()
+				previous.route.release()
+				return fmt.Errorf("%w; 恢复旧配置也失败,站点已停止服务: %v", err, restoreErr)
 			}
 		}
 		e.mu.Unlock()
