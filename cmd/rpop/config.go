@@ -6,7 +6,10 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/rpop-project/rpop/internal/sharedport"
 )
 
 const healthCheckTimeout = 5 * time.Second
@@ -82,14 +85,24 @@ func healthCheckURL(addr string) (string, error) {
 	return "http://" + net.JoinHostPort(host, port) + "/api/health", nil
 }
 
-// runHealthCheck probes the local control API and returns an error unless it answers 200 OK.
-func runHealthCheck(addr string) error {
+// runHealthCheck probes the local control API and returns an error unless it answers 200 OK. hostHeader, when
+// non-empty, is sent as the request's Host header — required once -console-hostnames restricts the console to
+// specific hostnames, since the console then answers /api/health only on one of them (see parseConsoleHostnames
+// and cmd/rpop's main, which passes the first configured hostname).
+func runHealthCheck(addr, hostHeader string) error {
 	url, err := healthCheckURL(addr)
 	if err != nil {
 		return err
 	}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	if hostHeader != "" {
+		req.Host = hostHeader
+	}
 	client := &http.Client{Timeout: healthCheckTimeout}
-	response, err := client.Get(url)
+	response, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("health check %s: %w", url, err)
 	}
@@ -125,4 +138,21 @@ func southboundAddress(mode, configured string) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown mode %q; use %s, %s, or %s", mode, modeAllInOne, modeController, modeNode)
 	}
+}
+
+// parseConsoleHostnames splits the -console-hostnames flag on commas and validates each entry with
+// sharedport.NormalizeHostnames — the same validation Registry.PutSite admits a site's own hostnames under, so
+// an invalid entry fails fast at startup instead of silently becoming a literal Host string nothing can ever
+// match. An empty (or whitespace-only) flag returns nil, meaning "no restriction" (see PutPlaintextOwner).
+func parseConsoleHostnames(raw string) ([]string, error) {
+	var names []string
+	for _, part := range strings.Split(raw, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			names = append(names, part)
+		}
+	}
+	if len(names) == 0 {
+		return nil, nil
+	}
+	return sharedport.NormalizeHostnames(names)
 }

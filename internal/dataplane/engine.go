@@ -14,6 +14,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/rpop-project/rpop/internal/pki"
 	"github.com/rpop-project/rpop/internal/sharedport"
 	"github.com/rpop-project/rpop/internal/snapshot"
 )
@@ -60,6 +61,16 @@ type Option func(*Engine)
 // engine's sites, per internal/sharedport's admission rules.
 func WithRegistry(registry *sharedport.Registry) Option {
 	return func(e *Engine) { e.registry = registry }
+}
+
+// SetRegistry replaces the engine's shared-port registry. Call it before Apply ever runs: like
+// SetAccessLogWriter, this is startup-time wiring, not something safe to change on a running engine (a site
+// already bound through the previous registry would not move to the new one). WithRegistry is the same
+// injection point at construction time; this exists for a caller that must build the engine before it has a
+// registry to give it — internal/control.NewWithLogDir builds Control (and its embedded engine) first, then
+// cmd/rpop wires in the registry it also gave the console (see Control.SetSharedPortRegistry).
+func (e *Engine) SetRegistry(registry *sharedport.Registry) {
+	e.registry = registry
 }
 
 // New creates an idle engine. Access logs go to the logger until SetAccessLogWriter provides a destination.
@@ -241,6 +252,11 @@ func (e *Engine) buildRuntime(site snapshot.Site) (*siteRuntime, error) {
 	hostnames, err := NormalizeHostnames(site.Hostnames)
 	if err != nil {
 		return nil, err
+	}
+	for _, hostname := range hostnames {
+		if pki.IsInternalHostname(hostname) {
+			return nil, fmt.Errorf("站点 %s 的 hostname %q 是内部保留名(控制器或节点专用),请改用其他 hostname", site.ID, hostname)
+		}
 	}
 	var certificate *tls.Certificate
 	if site.TLS {

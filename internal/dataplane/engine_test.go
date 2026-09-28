@@ -240,6 +240,26 @@ func TestEngineRejectsHostnamelessSiteSharingAnOwnersAddress(t *testing.T) {
 	}
 }
 
+// TestEngineRejectsInternalHostnames covers pki.IsInternalHostname's own doc comment: the dataplane engine must
+// reject a site hostname that collides with a name rpop's own certificates already own (the controller's own
+// name, or the "*.nodes.rpop" node wildcard) before it ever reaches sharedport, with a clear Chinese error —
+// otherwise a site could shadow the controller's or a node's own TLS identity if it ever shared a port with it.
+func TestEngineRejectsInternalHostnames(t *testing.T) {
+	engine := newTestEngine(t)
+	port := freePort(t)
+	for _, hostname := range []string{"controller.rpop", "edge-1.nodes.rpop", "*.nodes.rpop", "Controller.RPOP"} {
+		site := plainSite("a", port, textUpstream(t, "a").URL)
+		site.Hostnames = []string{hostname}
+		errs := engine.Apply([]snapshot.Site{site})
+		if errs["a"] == nil || !strings.Contains(errs["a"].Error(), "内部保留名") {
+			t.Fatalf("hostname %q: expected an internal-hostname rejection, got %v", hostname, errs)
+		}
+		if engine.Running("a") {
+			t.Fatalf("hostname %q: site should not be running after rejection", hostname)
+		}
+	}
+}
+
 // TestSitesCanTradeListenersInOneApply swaps two sites' listen ports within a single Apply call.
 //
 // The first Apply below is what actually binds portA/portB for the first time; freePort only proves a port was

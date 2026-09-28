@@ -22,6 +22,7 @@ import (
 	"github.com/rpop-project/rpop/internal/overlay"
 	"github.com/rpop-project/rpop/internal/pki"
 	"github.com/rpop-project/rpop/internal/routing"
+	"github.com/rpop-project/rpop/internal/sharedport"
 	"github.com/rpop-project/rpop/internal/store"
 )
 
@@ -102,6 +103,15 @@ func (c *Control) SetOverlayConfig(cfg overlay.Config) {
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
 	c.overlayConfig = cfg
+}
+
+// SetSharedPortRegistry gives the embedded local node's engine the same internal/sharedport.Registry the
+// console's own listener binds through (see cmd/rpop.runController and dataplane.Engine.SetRegistry), so an
+// embedded site can share -addr with the console (told apart by hostname) instead of needing its own port.
+// Call before StartAutoSites: like SetOverlayConfig, this is startup-time wiring, not something that moves
+// already-running sites off the engine's previous (private) registry.
+func (c *Control) SetSharedPortRegistry(registry *sharedport.Registry) {
+	c.engine.SetRegistry(registry)
 }
 
 // SetPathActiveProbe overrides the engine-wide default for D19 active probing (D30, enabled by default; see

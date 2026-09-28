@@ -125,14 +125,38 @@ func TestRunHealthCheck(t *testing.T) {
 				w.WriteHeader(tt.status)
 			}))
 			defer server.Close()
-			err := runHealthCheck(strings.TrimPrefix(server.URL, "http://"))
+			err := runHealthCheck(strings.TrimPrefix(server.URL, "http://"), "")
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("runHealthCheck error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
-	if err := runHealthCheck("127.0.0.1:1"); err == nil {
+	if err := runHealthCheck("127.0.0.1:1", ""); err == nil {
 		t.Fatal("expected an error when nothing is listening")
+	}
+}
+
+// TestRunHealthCheckSendsHostHeader covers -console-hostnames: once the console is restricted to specific
+// hostnames, /api/health only answers on one of them, so runHealthCheck must send it as the request's Host.
+func TestRunHealthCheckSendsHostHeader(t *testing.T) {
+	var gotHost string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		if r.Host != "console.test" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	if err := runHealthCheck(strings.TrimPrefix(server.URL, "http://"), "console.test"); err != nil {
+		t.Fatalf("runHealthCheck with a Host header: %v", err)
+	}
+	if gotHost != "console.test" {
+		t.Fatalf("server observed Host %q, want %q", gotHost, "console.test")
+	}
+	if err := runHealthCheck(strings.TrimPrefix(server.URL, "http://"), ""); err == nil {
+		t.Fatal("expected an error when the Host header is omitted and the console restricts to one hostname")
 	}
 }
 
@@ -152,5 +176,38 @@ func TestSouthboundAddress(t *testing.T) {
 	}
 	if _, err := southboundAddress("edge", ""); err == nil {
 		t.Error("unknown mode was accepted")
+	}
+}
+
+func TestParseConsoleHostnames(t *testing.T) {
+	cases := []struct {
+		name        string
+		raw         string
+		want        []string
+		wantInvalid bool
+	}{
+		{name: "empty is unrestricted", raw: "", want: nil},
+		{name: "whitespace only is unrestricted", raw: "  ,  ,", want: nil},
+		{name: "single hostname", raw: "console.test", want: []string{"console.test"}},
+		{name: "trims and lowercases", raw: " Console.Test , Admin.Test ", want: []string{"console.test", "admin.test"}},
+		{name: "drops empty entries between commas", raw: "console.test,,admin.test", want: []string{"console.test", "admin.test"}},
+		{name: "invalid hostname is rejected", raw: "not a hostname", wantInvalid: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseConsoleHostnames(tc.raw)
+			if tc.wantInvalid {
+				if err == nil {
+					t.Fatalf("parseConsoleHostnames(%q) = %v, want an error", tc.raw, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseConsoleHostnames(%q): %v", tc.raw, err)
+			}
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Errorf("parseConsoleHostnames(%q) = %v, want %v", tc.raw, got, tc.want)
+			}
+		})
 	}
 }

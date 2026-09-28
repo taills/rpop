@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -79,8 +81,12 @@ func newPort(r *Registry, address string, ln net.Listener) *port {
 	return p
 }
 
-// acquirePort returns the port already bound at address, or binds a fresh one.
-func (r *Registry) acquirePort(address string) (*port, error) {
+// acquirePort returns the port already bound at address, or binds a fresh one. use briefly names what is
+// registering (e.g. "控制台", "站点 web", "TLS 所有者 edge-1.nodes.rpop") and is only ever used to build a clear
+// error when address's port turns out to already be bound under a different, conflicting normalization (see
+// Classify) — binding that at the OS level would otherwise fail with a bare "address already in use" that does
+// not say which of the process's own addresses is the problem or how to fix it.
+func (r *Registry) acquirePort(address, use string) (*port, error) {
 	key, dial, err := NormalizeAddress(address)
 	if err != nil {
 		return nil, err
@@ -90,6 +96,9 @@ func (r *Registry) acquirePort(address string) (*port, error) {
 	if p, ok := r.ports[key]; ok {
 		return p, nil
 	}
+	if existingKey, existingUse := r.conflictLocked(key); existingKey != "" {
+		return nil, ConflictError(displayAddress(key), use, displayAddress(existingKey), existingUse)
+	}
 	ln, err := net.Listen("tcp", dial)
 	if err != nil {
 		return nil, err
@@ -97,6 +106,58 @@ func (r *Registry) acquirePort(address string) (*port, error) {
 	p := newPort(r, key, ln)
 	r.ports[key] = p
 	return p, nil
+}
+
+// conflictLocked scans already-bound ports for one whose normalized key conflicts with key (same port, but one
+// wildcard and one specific — see Classify) and returns that port's key and a description of what is registered
+// on it, so acquirePort can report a clear error before ever attempting a bind the OS would refuse. Called with
+// r.mu held.
+func (r *Registry) conflictLocked(key string) (existingKey, use string) {
+	for candidateKey, p := range r.ports {
+		if candidateKey == key {
+			continue
+		}
+		if relation, err := Classify(candidateKey, key); err == nil && relation == Conflicting {
+			return candidateKey, p.describeLocked()
+		}
+	}
+	return "", ""
+}
+
+// displayAddress renders a normalized key ("*:8080") the way an operator actually wrote a wildcard address
+// ("0.0.0.0:8080" or ":8080"), for error messages; NormalizeAddress's own "*:port" spelling is otherwise never
+// something a caller typed.
+func displayAddress(key string) string {
+	if rest, ok := strings.CutPrefix(key, "*:"); ok {
+		return ":" + rest
+	}
+	return key
+}
+
+// describeLocked summarizes what is currently registered on p, for the conflict error acquirePort builds when a
+// different address's port collides with p's. Reads p.routes without p.mu: this only ever runs while the
+// registry's own mu is held (from conflictLocked, itself called from another port's acquirePort), so it never
+// races p's own registration calls for the address this describes, only for the *new* one still being decided.
+func (p *port) describeLocked() string {
+	table := p.routes.Load()
+	var uses []string
+	if table.plainOwner != nil {
+		uses = append(uses, "控制台")
+	}
+	for id := range table.plainSites.byID {
+		uses = append(uses, "站点 "+id)
+	}
+	for id := range table.tlsSites.byID {
+		uses = append(uses, "站点 "+id)
+	}
+	for name := range table.tlsOwners {
+		uses = append(uses, "TLS 所有者 "+name)
+	}
+	if len(uses) == 0 {
+		return "另一个用途"
+	}
+	sort.Strings(uses)
+	return strings.Join(uses, "、")
 }
 
 // lookupPort returns the port already bound at address, if any, without binding one.
@@ -154,7 +215,7 @@ func (r *Registry) PutSite(address string, route SiteRoute, ignore map[string]bo
 	if route.TLS && route.Certificate == nil {
 		return fmt.Errorf("站点 %s 启用了 TLS 但未提供证书", route.ID)
 	}
-	p, err := r.acquirePort(address)
+	p, err := r.acquirePort(address, "站点 "+route.ID)
 	if err != nil {
 		return err
 	}
@@ -223,7 +284,7 @@ func (r *Registry) RemoveSite(address, id string) {
 // means "every Host the sites did not claim" (the default, and the only behavior before console-hostnames
 // existed). At most one plaintext owner may be registered per address at a time.
 func (r *Registry) PutPlaintextOwner(address string, handler http.Handler, hostnames []string) error {
-	p, err := r.acquirePort(address)
+	p, err := r.acquirePort(address, "控制台")
 	if err != nil {
 		return err
 	}

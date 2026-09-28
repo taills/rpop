@@ -22,7 +22,7 @@ func (r *Registry) PutTLSOwner(address, sni string, tlsConfig *tls.Config) (net.
 	if name == "" {
 		return nil, fmt.Errorf("TLS 所有者名称不能为空")
 	}
-	p, err := r.acquirePort(address)
+	p, err := r.acquirePort(address, "TLS 所有者 "+name)
 	if err != nil {
 		return nil, err
 	}

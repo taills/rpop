@@ -306,6 +306,39 @@ func TestTLSOwnerCloseFreesItsNameButKeepsSiteServing(t *testing.T) {
 	}
 }
 
+// TestPlainSiteTLSSiteAndPlaintextOwnerShareOneAddress is the full three-way scenario the control-data-plane
+// design doc describes for a machine with only one open port: a plaintext owner (the console), a plaintext site,
+// and a TLS site all share one address, and a request reaches exactly the one of the three its Host (plaintext)
+// or SNI (TLS) selects — the plaintext owner and the plaintext site are told apart by dispatchPlain's Host
+// routing, and the TLS site is reached over an entirely separate path (dispatchTLS, selected by the connection's
+// first byte), so it does not collide with either even though nothing here restricts a plaintext and a TLS site
+// from sharing an address at this package's level (that stricter rule belongs to internal/dataplane.Engine,
+// which enforces it on top of what this registry allows — see engine.go's install).
+func TestPlainSiteTLSSiteAndPlaintextOwnerShareOneAddress(t *testing.T) {
+	registry := NewRegistry()
+	address := freeTCPAddr(t)
+	if err := registry.PutPlaintextOwner(address, handlerBody("console"), nil); err != nil {
+		t.Fatalf("PutPlaintextOwner: %v", err)
+	}
+	if err := registry.PutSite(address, SiteRoute{ID: "plain", Hostnames: []string{"plain.test"}, Handler: handlerBody("plain-site")}, nil); err != nil {
+		t.Fatalf("PutSite plain: %v", err)
+	}
+	tlsCert := selfSignedCert(t, "secure.test")
+	if err := registry.PutSite(address, SiteRoute{ID: "secure", Hostnames: []string{"secure.test"}, TLS: true, Certificate: staticCert(tlsCert), Handler: handlerBody("tls-site")}, nil); err != nil {
+		t.Fatalf("PutSite secure: %v", err)
+	}
+
+	if status, body := httpGet(t, address, "plain.test", nil); status != 200 || body != "plain-site" {
+		t.Fatalf("plain.test over plaintext: status=%d body=%q", status, body)
+	}
+	if status, body := httpGet(t, address, "anything-else.test", nil); status != 200 || body != "console" {
+		t.Fatalf("unclaimed Host falling back to the console: status=%d body=%q", status, body)
+	}
+	if status, body := httpGet(t, address, "", tlsClientConfig(tlsCert, nil)); status != 200 || body != "tls-site" {
+		t.Fatalf("secure.test over TLS: status=%d body=%q", status, body)
+	}
+}
+
 func TestLastParticipantFreesTheAddressImmediately(t *testing.T) {
 	registry := NewRegistry()
 	address := freeTCPAddr(t)
@@ -401,5 +434,57 @@ func TestBindFailurePropagates(t *testing.T) {
 	registry := NewRegistry()
 	if err := registry.PutSite(blocker.Addr().String(), SiteRoute{ID: "a", Handler: handlerBody("a")}, nil); err == nil {
 		t.Fatal("expected a bind error for an address already in use")
+	}
+}
+
+// TestAcquirePortReportsWildcardVsSpecificConflictInChinese covers the case a bare net.Listen would only ever
+// report as an opaque "address already in use": a wildcard address and a specific address on the same port
+// (see Classify's Conflicting) never share a listener, so the second registrant must fail fast with a Chinese
+// message naming both addresses, what each is for, and how to fix it — instead of ever reaching net.Listen.
+func TestAcquirePortReportsWildcardVsSpecificConflictInChinese(t *testing.T) {
+	registry := NewRegistry()
+	specific := freeTCPAddr(t)
+	_, portStr, err := net.SplitHostPort(specific)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.PutPlaintextOwner(specific, handlerBody("console"), nil); err != nil {
+		t.Fatal(err)
+	}
+	defer registry.RemovePlaintextOwner(specific)
+
+	wildcard := ":" + portStr
+	err = registry.PutSite(wildcard, SiteRoute{ID: "web", Handler: handlerBody("web")}, nil)
+	if err == nil {
+		t.Fatal("expected a conflict error registering a site on the wildcard form of an already-bound specific address")
+	}
+	msg := err.Error()
+	for _, want := range []string{"站点 web", wildcard, specific, "控制台", "改成完全相同的地址", "改用不同端口"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q does not mention %q", msg, want)
+		}
+	}
+}
+
+// TestAcquirePortConflictIsSymmetric covers the reverse order: the wildcard address binds first, and a specific
+// address on the same port is the one that must fail.
+func TestAcquirePortConflictIsSymmetric(t *testing.T) {
+	registry := NewRegistry()
+	wildcard := freeTCPAddr(t)
+	_, portStr, err := net.SplitHostPort(wildcard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wildcard = ":" + portStr
+	if err := registry.PutSite(wildcard, SiteRoute{ID: "web", Handler: handlerBody("web")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	defer registry.RemoveSite(wildcard, "web")
+
+	specific := "127.0.0.1:" + portStr
+	if err := registry.PutPlaintextOwner(specific, handlerBody("console"), nil); err == nil {
+		t.Fatal("expected a conflict error registering the console on a specific address that conflicts with an already-bound wildcard")
+	} else if msg := err.Error(); !strings.Contains(msg, "控制台") || !strings.Contains(msg, "站点 web") {
+		t.Errorf("error %q does not name both sides of the conflict", msg)
 	}
 }

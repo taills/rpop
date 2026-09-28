@@ -21,6 +21,7 @@ import (
 	"github.com/rpop-project/rpop/internal/agent"
 	"github.com/rpop-project/rpop/internal/control"
 	"github.com/rpop-project/rpop/internal/overlay"
+	"github.com/rpop-project/rpop/internal/sharedport"
 	"github.com/rpop-project/rpop/internal/spool"
 	"github.com/rpop-project/rpop/internal/store"
 	"github.com/rpop-project/rpop/web"
@@ -33,6 +34,8 @@ type options struct {
 	mode, serverAddr, southboundAddr, webDir, dbPath, logDir string
 	controllerURL, joinToken, dataDir, relayListen           string
 	logSpoolQuotaBytes, logUploadRateBytes                   int64
+	// consoleHostnames is the raw, comma-separated -console-hostnames flag; see parseConsoleHostnames.
+	consoleHostnames string
 	// D31: overlay HTTP/2 window and stream limits, shared by node mode and the controller's embedded node.
 	overlayStreamWindowBytes, overlayConnectionWindowBytes, overlayMaxStreamsPerConn int
 	// D31: controller-only tuning (southbound concurrency, log ingest limits, tunnel event store).
@@ -58,6 +61,7 @@ func main() {
 	flag.StringVar(&o.joinToken, "join-token", envDefault("RPOP_JOIN_TOKEN", ""), "node mode: join token for the first registration (env RPOP_JOIN_TOKEN)")
 	flag.StringVar(&o.dataDir, "data-dir", envDefault("RPOP_DATA_DIR", "data/node"), "node mode: directory for the node identity and snapshot cache (env RPOP_DATA_DIR)")
 	flag.StringVar(&o.relayListen, "relay-listen", envDefault("RPOP_RELAY_LISTEN", ""), "node mode: bind the relay port here instead of on the port of the node's relay address (env RPOP_RELAY_LISTEN)")
+	flag.StringVar(&o.consoleHostnames, "console-hostnames", envDefault("RPOP_CONSOLE_HOSTNAMES", ""), "comma-separated hostnames the control console answers on when -addr is shared with a site; unset means it answers every Host no site claims, as before this flag existed (env RPOP_CONSOLE_HOSTNAMES)")
 	flag.Int64Var(&o.logSpoolQuotaBytes, "log-spool-quota-bytes", envDefaultInt64("RPOP_LOG_SPOOL_QUOTA_BYTES", spool.DefaultQuotaBytes), "node mode: disk quota for the log spool awaiting upload (env RPOP_LOG_SPOOL_QUOTA_BYTES)")
 	flag.Int64Var(&o.logUploadRateBytes, "log-upload-rate-bytes", envDefaultInt64("RPOP_LOG_UPLOAD_RATE_BYTES", spool.DefaultUploadRateBytesPerSecond), "node mode: max bytes/second spent uploading spooled logs to the controller (env RPOP_LOG_UPLOAD_RATE_BYTES)")
 	flag.IntVar(&o.overlayStreamWindowBytes, "overlay-stream-window", envDefaultInt("RPOP_OVERLAY_STREAM_WINDOW", overlay.DefaultStreamWindowBytes), "HTTP/2 per-stream flow-control window for overlay links and the relay port, in bytes (env RPOP_OVERLAY_STREAM_WINDOW)")
@@ -74,7 +78,15 @@ func main() {
 	flag.Parse()
 
 	if *healthCheck {
-		if err := runHealthCheck(o.serverAddr); err != nil {
+		hostHeader := ""
+		names, err := parseConsoleHostnames(o.consoleHostnames)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if len(names) > 0 {
+			hostHeader = names[0]
+		}
+		if err := runHealthCheck(o.serverAddr, hostHeader); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -158,16 +170,24 @@ func runController(ctx context.Context, logger *zap.Logger, o options, overlayCf
 	service.SetTunnelEventRetention(o.tunnelEventRetentionDays)
 	service.SetClockSkewWarnThreshold(o.clockSkewWarnThresholdMillis)
 	service.SetPathActiveProbe(o.pathActiveProbe)
+
+	consoleHostnames, err := parseConsoleHostnames(o.consoleHostnames)
+	if err != nil {
+		logger.Fatal("parse -console-hostnames", zap.Error(err))
+	}
+	// The registry, the embedded local node's engine wiring, and the console's own registration all have to be
+	// in place before StartAutoSites runs any site: an auto-started site sharing -addr admits (or rejects) a
+	// hostname-less registration based on whether an owner is already on that address (see
+	// internal/sharedport's admit()), and that only holds if the console got there first.
+	registry := sharedport.NewRegistry()
+	service.SetSharedPortRegistry(registry)
+	if err := registry.PutPlaintextOwner(o.serverAddr, consoleHandler(logger, service, o.webDir), consoleHostnames); err != nil {
+		logger.Fatal("register control console", zap.Error(err))
+	}
+	logger.Info("control API listening", zap.String("addr", o.serverAddr), zap.String("mode", o.mode), zap.String("version", Version))
 	if err := service.StartAutoSites(context.Background()); err != nil {
 		logger.Fatal("load auto-start sites", zap.Error(err))
 	}
-	server := &http.Server{Addr: o.serverAddr, Handler: consoleHandler(logger, service, o.webDir), ReadHeaderTimeout: control.HeaderTimeout}
-	go func() {
-		logger.Info("control API listening", zap.String("addr", o.serverAddr), zap.String("mode", o.mode), zap.String("version", Version))
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Fatal("serve control API", zap.Error(err))
-		}
-	}()
 	var southbound *http.Server
 	if o.southboundAddr != "" {
 		southbound = startSouthbound(ctx, logger, service, o.southboundAddr, o.southboundMaxStreamsPerConn)
@@ -177,11 +197,11 @@ func runController(ctx context.Context, logger *zap.Logger, o options, overlayCf
 		// Watch streams never go idle, so graceful shutdown would only wait; nodes reconnect on their own.
 		_ = southbound.Close()
 	}
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		logger.Error("control API shutdown failed", zap.Error(err))
-	}
-	cancelShutdown()
+	// Unregister the console, then stop every site: internal/sharedport.Registry frees a shared address's real
+	// listener synchronously (with a bounded best-effort graceful drain of in-flight requests in the
+	// background) once nothing — owner or site — is left registered on it, so there is no separate "close the
+	// listener" step to take here.
+	registry.RemovePlaintextOwner(o.serverAddr)
 	service.StopAll()
 	drainCtx, cancelDrain := context.WithTimeout(context.Background(), 30*time.Second)
 	if err := service.Close(drainCtx); err != nil {
