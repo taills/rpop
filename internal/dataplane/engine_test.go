@@ -17,6 +17,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/rpop-project/rpop/internal/sharedport"
 	"github.com/rpop-project/rpop/internal/snapshot"
 )
 
@@ -178,11 +179,64 @@ func TestSharedListenerRejectsOverlappingHostnames(t *testing.T) {
 	c := plainSite("c", port, textUpstream(t, "c").URL)
 	c.Hostnames = []string{"api.example.test"}
 	errs := engine.Apply([]snapshot.Site{a, b, c})
-	if errs["c"] == nil || !strings.Contains(errs["c"].Error(), "overlaps") {
+	// internal/sharedport.Registry.PutSite now makes this call, in Chinese (see that package's admit()); the
+	// wording changed but the rejection itself did not.
+	if errs["c"] == nil || !strings.Contains(errs["c"].Error(), "重叠") {
 		t.Fatalf("overlapping hostname was admitted: %v", errs)
 	}
 	if !engine.Running("a") || !engine.Running("b") || engine.Running("c") {
 		t.Fatal("rejecting one site disturbed the others")
+	}
+}
+
+// TestEngineSharesAddressWithAPlaintextOwner is stage one's coverage for the injection point stage two (and the
+// console, see cmd/rpop.runController) needs: an engine built with WithRegistry shares its registry with
+// something else entirely outside the engine — here a plain http.Handler standing in for the console — and a
+// site on the same address, given a hostname, routes correctly alongside it: the site's own hostname reaches
+// the site, and everything else falls through to the owner, exactly as internal/sharedport's dispatchPlain
+// documents.
+func TestEngineSharesAddressWithAPlaintextOwner(t *testing.T) {
+	registry := sharedport.NewRegistry()
+	engine := New(zap.NewNop(), WithRegistry(registry))
+	t.Cleanup(engine.StopAll)
+	port := freePort(t)
+	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	owner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "owner") })
+	if err := registry.PutPlaintextOwner(address, owner, nil); err != nil {
+		t.Fatalf("PutPlaintextOwner: %v", err)
+	}
+	t.Cleanup(func() { registry.RemovePlaintextOwner(address) })
+
+	site := plainSite("a", port, textUpstream(t, "site").URL)
+	site.Hostnames = []string{"site.test"}
+	mustApply(t, engine, site)
+
+	if got := get(t, port, "site.test"); got != "site" {
+		t.Fatalf("site.test routed to %q, want the site", got)
+	}
+	if got := get(t, port, "owner.test"); got != "owner" {
+		t.Fatalf("owner.test routed to %q, want the owner", got)
+	}
+}
+
+// TestEngineRejectsHostnamelessSiteSharingAnOwnersAddress mirrors
+// TestSharedListenerRejectsOverlappingHostnames's "hostname required to share" case, but for sharing with an
+// owner (the console) rather than with another site — internal/sharedport.Registry.PutSite enforces this the
+// same way in both directions, and the engine must surface that error rather than somehow admitting the site.
+func TestEngineRejectsHostnamelessSiteSharingAnOwnersAddress(t *testing.T) {
+	registry := sharedport.NewRegistry()
+	engine := New(zap.NewNop(), WithRegistry(registry))
+	t.Cleanup(engine.StopAll)
+	port := freePort(t)
+	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	if err := registry.PutPlaintextOwner(address, http.NotFoundHandler(), nil); err != nil {
+		t.Fatalf("PutPlaintextOwner: %v", err)
+	}
+	t.Cleanup(func() { registry.RemovePlaintextOwner(address) })
+
+	errs := engine.Apply([]snapshot.Site{plainSite("a", port, textUpstream(t, "a").URL)})
+	if errs["a"] == nil || !strings.Contains(errs["a"].Error(), "hostname") {
+		t.Fatalf("expected a hostname-required error, got %v", errs)
 	}
 }
 
@@ -191,9 +245,10 @@ func TestSharedListenerRejectsOverlappingHostnames(t *testing.T) {
 // The first Apply below is what actually binds portA/portB for the first time; freePort only proves a port was
 // free at the moment it probed it (bind, note the number, close), so on a busy machine something else can grab
 // that exact ephemeral port in the gap before this test gets around to binding it - a classic bind-then-later-
-// use TOCTOU race in the test helper, not a listener-swap bug in the dataplane: Engine.install/shutdownGroup
-// already close a retired listener synchronously (http.Server.Shutdown closes its listener as its first,
-// synchronous step, see internal/dataplane/listeners.go) before any site tries to rebind that same address.
+// use TOCTOU race in the test helper, not a listener-swap bug in the dataplane: Engine.install retires a site's
+// old address through internal/sharedport.Registry.RemoveSite, which closes the real listener synchronously
+// once nothing is left registered on it (see that package's port.teardown), before any site tries to rebind
+// that same address.
 // Retrying with a freshly probed pair of ports on that rare failure is simpler and more reliable than trying to
 // eliminate the race in freePort itself.
 func TestSitesCanTradeListenersInOneApply(t *testing.T) {

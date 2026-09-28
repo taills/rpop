@@ -14,6 +14,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/rpop-project/rpop/internal/sharedport"
 	"github.com/rpop-project/rpop/internal/snapshot"
 )
 
@@ -24,7 +25,12 @@ type Engine struct {
 	opMu      sync.Mutex
 	mu        sync.Mutex
 	runs      map[string]*running
-	listeners map[string]*listenerGroup
+	listeners map[string]*addressGroup
+	// registry binds every site's listener; a private one (the default) means nothing outside this engine can
+	// ever share one of its addresses. WithRegistry injects a shared one instead — the console's, in an
+	// all-in-one/controller process's embedded local node (see cmd/rpop.runController), and, from stage two
+	// onward, a node's own relay port.
+	registry *sharedport.Registry
 	// leaving holds, during Apply, the sites that move to another listener; admission on their old listener
 	// ignores them so sites can trade listeners in one snapshot.
 	leaving map[string]bool
@@ -45,9 +51,26 @@ type running struct {
 	certificateKey string
 }
 
+// Option configures an Engine at construction time.
+type Option func(*Engine)
+
+// WithRegistry makes the engine bind every site's listener through registry instead of a private one it creates
+// for itself. Sites behave identically either way; sharing a registry only means something else registered on
+// it (the console's plaintext owner, or a node's relay TLS owner) may end up on the same address as one of this
+// engine's sites, per internal/sharedport's admission rules.
+func WithRegistry(registry *sharedport.Registry) Option {
+	return func(e *Engine) { e.registry = registry }
+}
+
 // New creates an idle engine. Access logs go to the logger until SetAccessLogWriter provides a destination.
-func New(log *zap.Logger) *Engine {
-	e := &Engine{log: log, runs: make(map[string]*running), listeners: make(map[string]*listenerGroup), activeProbe: true}
+func New(log *zap.Logger, opts ...Option) *Engine {
+	e := &Engine{
+		log: log, runs: make(map[string]*running), listeners: make(map[string]*addressGroup),
+		activeProbe: true, registry: sharedport.NewRegistry(),
+	}
+	for _, opt := range opts {
+		opt(e)
+	}
 	e.logs = newLogQueue(log, func(siteID string) { e.metricsFor(siteID).dropLog() })
 	return e
 }
@@ -256,8 +279,11 @@ func (e *Engine) install(site snapshot.Site, route *siteRuntime, runtimeKey, cer
 	previous := e.runs[site.ID]
 	group := e.listeners[address]
 	if group != nil && group.tlsEnabled != site.TLS {
-		// A bound listener cannot switch between HTTP and TLS; release it first when this site is its only user.
-		if previous == nil || previous.groupKey != address || group.siteCount() != 1 {
+		// A shared address cannot mix a plaintext and a TLS site (sharedport's registry would happily let a TLS
+		// *owner* share this address with a plaintext site, since it tells them apart by their first byte before
+		// either is reached — but two *sites* disagreeing on the mode has never been supported, and still isn't).
+		// Release it first when this site is its only user.
+		if previous == nil || previous.groupKey != address || len(group.siteIDs) != 1 {
 			e.mu.Unlock()
 			return fmt.Errorf("listener %s is already serving the other HTTP/TLS mode", address)
 		}
@@ -267,38 +293,38 @@ func (e *Engine) install(site snapshot.Site, route *siteRuntime, runtimeKey, cer
 		previous, group = nil, nil
 	}
 	newGroup := group == nil
-	if newGroup {
-		var err error
-		if group, err = e.bindGroup(address, site.TLS); err != nil {
-			e.mu.Unlock()
-			return err
-		}
+	siteRoute := sharedport.SiteRoute{
+		ID: site.ID, Hostnames: route.hostnames, TLS: site.TLS, Certificate: route.certificate.Load, Handler: route.handler,
 	}
-	if err := group.admit(site.ID, route.hostnames, e.leaving); err != nil {
+	// A brand-new address can never fail admission here (no owner, no other site yet to conflict with), so there
+	// is nothing to unwind on error the way a direct net.Listen would have needed: PutSite only just bound the
+	// address's listener when this call is what makes newGroup true, and it stays bound, owned by nothing, only
+	// while admission is still being decided inside the same call — never past a failed return.
+	if err := e.registry.PutSite(address, siteRoute, e.leaving); err != nil {
 		e.mu.Unlock()
-		if newGroup {
-			_ = group.listener.Close()
-		}
 		return err
 	}
 	if newGroup {
+		group = &addressGroup{tlsEnabled: site.TLS, siteIDs: make(map[string]bool)}
 		e.listeners[address] = group
 	}
-	group.put(route)
-	var retired *listenerGroup
+	group.siteIDs[site.ID] = true
+	var retiredAddress string
 	if previous != nil && previous.groupKey != address {
-		if old := e.listeners[previous.groupKey]; old != nil && old.remove(previous.route) {
-			delete(e.listeners, previous.groupKey)
-			retired = old
+		if old := e.listeners[previous.groupKey]; old != nil {
+			delete(old.siteIDs, site.ID)
+			if len(old.siteIDs) == 0 {
+				delete(e.listeners, previous.groupKey)
+			}
 		}
+		retiredAddress = previous.groupKey
 	}
 	e.runs[site.ID] = &running{groupKey: address, route: route, spec: site, runtimeKey: runtimeKey, certificateKey: certificateKey}
 	e.mu.Unlock()
-	if newGroup {
-		go e.serveGroup(group)
-	}
-	if retired != nil {
-		e.shutdownGroup(retired)
+	if retiredAddress != "" {
+		// Synchronous, like the direct net.Listen this replaced: once RemoveSite returns, a site can rebind the
+		// retired address immediately if the snapshot moves it right back (see TestSitesCanTradeListenersInOneApply).
+		e.registry.RemoveSite(retiredAddress, site.ID)
 	}
 	if previous != nil {
 		previous.route.release()
@@ -315,15 +341,14 @@ func (e *Engine) stopLocked(id string) {
 		return
 	}
 	delete(e.runs, id)
-	group := e.listeners[run.groupKey]
-	retire := group != nil && group.remove(run.route)
-	if retire {
-		delete(e.listeners, run.groupKey)
+	if group := e.listeners[run.groupKey]; group != nil {
+		delete(group.siteIDs, id)
+		if len(group.siteIDs) == 0 {
+			delete(e.listeners, run.groupKey)
+		}
 	}
 	e.mu.Unlock()
-	if retire {
-		e.shutdownGroup(group)
-	}
+	e.registry.RemoveSite(run.groupKey, id)
 	run.route.release()
 	e.log.Info("site stopped", zap.String("site_id", id), zap.String("address", run.groupKey))
 }
