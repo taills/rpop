@@ -15,7 +15,7 @@ import NodeCard from '@/components/NodeCard.jsx'
 import { nodeNeedsAttention } from '@/nodeHealth'
 import { nodeMatchesQuery } from '@/nodeCard'
 import { useToast } from '@/stores/toast'
-import { useBusyAction } from '../busyAction.js'
+import { canStartBusyAction, useBusyAction } from '../busyAction.js'
 import './NodesPage.css'
 
 // NodesPage lists every known node (embedded + registered) with its online/sync/link/path/log health, and owns
@@ -81,7 +81,12 @@ export default function NodesPage() {
   // actions: NodeCard already reads `busy` with the same `${node.id}:token` / `${node.id}:delete` keys it did
   // before, so switching the source of `busy` to the hook needed no change there, only a synchronous reentrancy
   // guard here for the fast-double-click case a `disabled` attribute alone can't catch (see busyAction.js).
+  // Both also bail out before window.confirm (rather than only inside run()) when another row's action is
+  // already in flight: otherwise the confirm dialog pops up as if the click would do something, and only after
+  // the operator answers it does run() silently drop the call — confusing, since nothing ever explains why
+  // (see SitesPage.jsx's remove()/save() for the same canStartBusyAction-before-confirm pattern).
   async function regenerateToken(node) {
+    if (!canStartBusyAction(busy)) return
     if (!window.confirm(`确定为节点“${node.name}”重新生成 join token？旧 token 将立即失效。`)) return
     await run(`${node.id}:token`, async () => {
       try {
@@ -95,6 +100,7 @@ export default function NodesPage() {
   }
 
   async function remove(node) {
+    if (!canStartBusyAction(busy)) return
     if (!window.confirm(`确定删除节点“${node.name}”？`)) return
     await run(`${node.id}:delete`, async () => {
       try {

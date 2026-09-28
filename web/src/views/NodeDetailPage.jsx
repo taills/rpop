@@ -21,7 +21,7 @@ import TimeCell from '@/components/TimeCell.jsx'
 import { ClockSkewSummary, ProtocolHealthSummary } from '@/components/NodeHealthSummary.jsx'
 import '@/components/NodeHealthBlocks.css'
 import { useToast } from '@/stores/toast'
-import { useBusyAction } from '../busyAction.js'
+import { canStartBusyAction, useBusyAction } from '../busyAction.js'
 import './NodeDetailPage.css'
 
 // NodeDetailPage shows one node's full health: basic info, overlay link table, upstream path-failover table and
@@ -78,10 +78,17 @@ export default function NodeDetailPage() {
 
   // regenerateToken/remove use useBusyAction's synchronous ref instead of a plain `busy` boolean: a fast
   // double-click on "重置 token"/"删除" could otherwise fire the request twice before React re-renders the
-  // disabled buttons below (see busyAction.js).
+  // disabled buttons below (see busyAction.js). They use distinct keys ('token'/'delete', matching NodesPage's
+  // per-row `${node.id}:token`/`${node.id}:delete` keys) rather than the default single key both used to share
+  // — with a shared key, regenerating the token made the delete button light up as loading too (and vice
+  // versa), since both buttons read the exact same `busy === true` check. Each also bails out before
+  // window.confirm when the other is already running, instead of only inside run(): otherwise the confirm
+  // dialog shows as if the click would do something, and run()'s lock only silently drops it after the operator
+  // already answered (see SitesPage.jsx's canStartBusyAction-before-confirm pattern).
   async function regenerateToken() {
+    if (!canStartBusyAction(busy)) return
     if (!window.confirm(`确定为节点“${node.name}”重新生成 join token？旧 token 将立即失效。`)) return
-    await run(async () => {
+    await run('token', async () => {
       try {
         const res = await api(`/nodes/${encodeURIComponent(id)}/token`, { method: 'POST' })
         await refresh()
@@ -93,8 +100,9 @@ export default function NodeDetailPage() {
   }
 
   async function remove() {
+    if (!canStartBusyAction(busy)) return
     if (!window.confirm(`确定删除节点“${node.name}”？`)) return
-    await run(async () => {
+    await run('delete', async () => {
       try {
         await api(`/nodes/${encodeURIComponent(id)}`, { method: 'DELETE' })
         toast.success('节点已删除')
@@ -147,8 +155,8 @@ export default function NodeDetailPage() {
               actions={!node.embedded && (
                 <div className="row-actions">
                   <UiButton size="sm" variant="outline" disabled={Boolean(busy)} onClick={() => setEditing(true)}>编辑</UiButton>
-                  <UiButton size="sm" variant="outline" loading={Boolean(busy)} onClick={regenerateToken}>{node.registered ? '重置 token' : '生成 token'}</UiButton>
-                  <UiButton size="sm" variant="danger" loading={Boolean(busy)} onClick={remove}>删除</UiButton>
+                  <UiButton size="sm" variant="outline" disabled={Boolean(busy)} loading={busy === 'token'} onClick={regenerateToken}>{node.registered ? '重置 token' : '生成 token'}</UiButton>
+                  <UiButton size="sm" variant="danger" disabled={Boolean(busy)} loading={busy === 'delete'} onClick={remove}>删除</UiButton>
                 </div>
               )}
             />

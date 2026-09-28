@@ -91,10 +91,16 @@ export default function NodeCard({ node, busy, onDetail, onEdit, onToken, onDele
           ? <span className="ui-cell-dim">无需管理</span>
           : (
             <div className="row-actions">
-              <UiButton size="sm" variant="outline" onClick={() => onDetail(node)}>详情</UiButton>
-              <UiButton size="sm" variant="outline" onClick={() => onEdit(node)}>编辑</UiButton>
-              <UiButton size="sm" variant="outline" loading={busy === `${node.id}:token`} onClick={() => onToken(node)}>{node.registered ? '重置 token' : '生成 token'}</UiButton>
-              <UiButton size="sm" variant="danger" loading={busy === `${node.id}:delete`} onClick={() => onDelete(node)}>删除</UiButton>
+              {/* busy is NodesPage's single shared useBusyAction lock, so it can hold another row's key while
+                  this one is idle — every button here must disable on ANY busy (not just a key match for this
+                  row), or a click on an already-doomed button silently drops through the hook's single-slot
+                  guard instead of visibly refusing to start (see NodesPage.jsx's regenerateToken/remove, which
+                  now also check the lock before showing their confirm dialog for the same reason). Only the
+                  button whose own key matches shows the loading state. */}
+              <UiButton size="sm" variant="outline" disabled={Boolean(busy)} onClick={() => onDetail(node)}>详情</UiButton>
+              <UiButton size="sm" variant="outline" disabled={Boolean(busy)} onClick={() => onEdit(node)}>编辑</UiButton>
+              <UiButton size="sm" variant="outline" disabled={Boolean(busy)} loading={busy === `${node.id}:token`} onClick={() => onToken(node)}>{node.registered ? '重置 token' : '生成 token'}</UiButton>
+              <UiButton size="sm" variant="danger" disabled={Boolean(busy)} loading={busy === `${node.id}:delete`} onClick={() => onDelete(node)}>删除</UiButton>
             </div>
           )}
       </footer>
