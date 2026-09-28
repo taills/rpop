@@ -40,6 +40,7 @@ RUN apk --no-cache add ca-certificates tzdata && \
     echo "Asia/Shanghai" > /etc/timezone
 WORKDIR /app
 COPY --from=builder /out/rpop /app/rpop
+COPY LICENSE /app/LICENSE
 # SQLite 配置库与应用/访问日志需挂卷持久化
 VOLUME ["/app/data", "/app/logs"]
 # RPOP_ADDR 为管理控制台监听地址（host 网络下可改为 127.0.0.1:<端口>）；健康检查跟随该地址。

@@ -261,3 +261,7 @@ The first route sends `/api/users` to `http://10.0.0.5:8080/v1/users` (path pref
 - The custom `dialAddress` is applied in direct mode; custom destination resolution through an upstream proxy requires an explicit policy and is not silently implemented.
 - File-adapter search scans active and archived local log files. S3 search uses the selected date prefix and a delimiter-based listing of direct objects to retain compatibility with earlier unsplit layouts; broad or mode-mixed time ranges can still require more key enumeration, so prefer ClickHouse for large searchable log volumes. ClickHouse searches the configured base table and its date/hour tables.
 - The separate zap diagnostic file currently does not rotate; configure external rotation for `rpop.log` if needed.
+
+## License
+
+rpop is released under the [MIT License](LICENSE).

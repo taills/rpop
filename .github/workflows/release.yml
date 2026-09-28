@@ -84,8 +84,8 @@ jobs:
         run: |
           file out/rpop
           mkdir -p dist
-          cp README.md out/
-          tar -czf "dist/rpop_${VERSION}_linux_${{ matrix.arch }}.tar.gz" -C out rpop README.md
+          cp README.md LICENSE out/
+          tar -czf "dist/rpop_${VERSION}_linux_${{ matrix.arch }}.tar.gz" -C out rpop README.md LICENSE
       - uses: actions/upload-artifact@v7
         with:
           name: dist-linux-${{ matrix.arch }}
@@ -127,8 +127,8 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist
-          cp README.md out/
-          tar -czf "dist/rpop_${VERSION}_darwin_${{ matrix.arch }}.tar.gz" -C out rpop README.md
+          cp README.md LICENSE out/
+          tar -czf "dist/rpop_${VERSION}_darwin_${{ matrix.arch }}.tar.gz" -C out rpop README.md LICENSE
       - uses: actions/upload-artifact@v7
         with:
           name: dist-darwin-${{ matrix.arch }}
@@ -178,8 +178,8 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item README.md out/
-          Compress-Archive -Path out/rpop.exe, out/README.md -DestinationPath "dist/rpop_$($env:VERSION)_windows_amd64.zip"
+          Copy-Item README.md, LICENSE out/
+          Compress-Archive -Path out/rpop.exe, out/README.md, out/LICENSE -DestinationPath "dist/rpop_$($env:VERSION)_windows_amd64.zip"
       - uses: actions/upload-artifact@v7
         with:
           name: dist-windows-amd64
