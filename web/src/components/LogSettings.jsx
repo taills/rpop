@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useToast } from '../stores/toast.js'
 import { UiAlert, UiButton, UiCard, UiPageHeader } from '@/components/ui'
+import { useBusyAction } from '../busyAction.js'
 import '../Logs.css'
 
 const blankConfig = { adapter: 'file', file: { rotation: 'day', maxSizeBytes: 1073741824, compress: true, keepFiles: 30 }, clickhouse: { url: '', database: 'default', table: 'access_logs', splitMode: 'none', username: '', password: '' }, elasticsearch: { url: '', index: 'rpop-access-logs', splitMode: 'none', authType: 'none', username: '', password: '', apiKey: '' }, s3: { endpoint: '', region: 'us-east-1', bucket: '', prefix: 'rpop/access', splitMode: 'hour', accessKeyId: '', secretAccessKey: '', sessionToken: '', forcePathStyle: true } }
@@ -36,7 +37,8 @@ export default function LogSettings({ api, onChange }) {
   const [s3CredentialsSaved, setS3CredentialsSaved] = useState(false)
   const [elasticsearchCredentialsSaved, setElasticsearchCredentialsSaved] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
+  const { busy, isBusy, run } = useBusyAction()
+  const saving = isBusy('save')
   const [error, setError] = useState('')
 
   async function loadAdapters() {
@@ -60,29 +62,37 @@ export default function LogSettings({ api, onChange }) {
   function closeEditor() { setEditing(null); setError('') }
 
   async function save(event) {
-    event.preventDefault(); setSaving(true); setError('')
-    try {
-      const size = parseSize(maxSizeText)
-      if (config.adapter === 'file' && size === null) throw new Error('大小上限请输入如 1G、512MiB 或 1073741824 的正数')
-      const payload = { name: name.trim(), config: config.adapter === 'file' ? { ...config, file: { ...config.file, maxSizeBytes: size } } : config }
-      const path = editing.id ? `/logging/adapters/${encodeURIComponent(editing.id)}` : '/logging/adapters'
-      const data = await api(path, { method: editing.id ? 'PUT' : 'POST', body: JSON.stringify(payload) })
-      const savedId = editing.id || data.savedAdapterId
-      const saved = (data.adapters || []).find(item => item.id === savedId)
-      setAdapters(data.adapters || [])
-      setEditing(null)
-      toast.success(saved ? `“${saved.name}”已保存` : '日志适配器已保存')
-      await onChange?.()
-    } catch (e) { setError(e.message) } finally { setSaving(false) }
+    event.preventDefault()
+    await run('save', async () => {
+      setError('')
+      try {
+        const size = parseSize(maxSizeText)
+        if (config.adapter === 'file' && size === null) throw new Error('大小上限请输入如 1G、512MiB 或 1073741824 的正数')
+        const payload = { name: name.trim(), config: config.adapter === 'file' ? { ...config, file: { ...config.file, maxSizeBytes: size } } : config }
+        const path = editing.id ? `/logging/adapters/${encodeURIComponent(editing.id)}` : '/logging/adapters'
+        const data = await api(path, { method: editing.id ? 'PUT' : 'POST', body: JSON.stringify(payload) })
+        const savedId = editing.id || data.savedAdapterId
+        const saved = (data.adapters || []).find(item => item.id === savedId)
+        setAdapters(data.adapters || [])
+        setEditing(null)
+        toast.success(saved ? `“${saved.name}”已保存` : '日志适配器已保存')
+        await onChange?.()
+      } catch (e) { setError(e.message) }
+    })
   }
 
+  // remove is keyed per adapter id so the busy row can show its own "删除中…" state; it still shares the
+  // hook's single lock with save() above, so editing/deleting any adapter while another mutation is in flight
+  // is blocked rather than firing a second overlapping /logging/adapters request.
   async function remove(adapter) {
     if (!window.confirm(`删除日志适配器“${adapter.name}”？已绑定站点的适配器不能删除。`)) return
-    setError('')
-    try {
-      const data = await api(`/logging/adapters/${encodeURIComponent(adapter.id)}`, { method: 'DELETE' })
-      setAdapters(data.adapters || []); toast.success(`“${adapter.name}”已删除`); await onChange?.()
-    } catch (e) { toast.error(e.message) }
+    await run(adapter.id, async () => {
+      setError('')
+      try {
+        const data = await api(`/logging/adapters/${encodeURIComponent(adapter.id)}`, { method: 'DELETE' })
+        setAdapters(data.adapters || []); toast.success(`“${adapter.name}”已删除`); await onChange?.()
+      } catch (e) { toast.error(e.message) }
+    })
   }
 
   if (loading) return <div className="ui-page"><p>正在读取日志配置…</p></div>
@@ -91,14 +101,14 @@ export default function LogSettings({ api, onChange }) {
       eyebrow="LOG STORAGE"
       title="日志适配器"
       sub="可以配置多个同类型适配器；每个站点独立选择一个目标。"
-      actions={<UiButton variant="primary" icon="plus" onClick={startCreate}>添加适配器</UiButton>}
+      actions={<UiButton variant="primary" icon="plus" disabled={Boolean(busy)} onClick={startCreate}>添加适配器</UiButton>}
     />
     {error && <UiAlert type="error">{error}</UiAlert>}
     <UiCard title="适配器列表" icon="database" count={adapters.length || null}>
       <div className="pad">
         {!adapters.length && <div className="adapter-empty">还没有日志适配器。添加一个后，站点才能启用访问日志。</div>}
         <div className="adapter-list">
-          {adapters.map(adapter => <article className="adapter-card" key={adapter.id}><div className="adapter-card-icon">{adapterIcon(adapter.config.adapter)}</div><div className="adapter-card-info"><strong>{adapter.name}</strong><span>{adapterLabel[adapter.config.adapter] || adapter.config.adapter} · ID: {adapter.id}</span></div><span className="adapter-type">{adapter.config.adapter}</span><div className="adapter-actions"><button className="secondary" onClick={() => startEdit(adapter)}>编辑</button><button className="secondary danger-action" onClick={() => remove(adapter)}>删除</button></div></article>)}
+          {adapters.map(adapter => <article className="adapter-card" key={adapter.id}><div className="adapter-card-icon">{adapterIcon(adapter.config.adapter)}</div><div className="adapter-card-info"><strong>{adapter.name}</strong><span>{adapterLabel[adapter.config.adapter] || adapter.config.adapter} · ID: {adapter.id}</span></div><span className="adapter-type">{adapter.config.adapter}</span><div className="adapter-actions"><button className="secondary" disabled={Boolean(busy)} onClick={() => startEdit(adapter)}>编辑</button><button className="secondary danger-action" disabled={Boolean(busy)} aria-busy={isBusy(adapter.id) || undefined} onClick={() => remove(adapter)}>{isBusy(adapter.id) ? '删除中…' : '删除'}</button></div></article>)}
         </div>
       </div>
     </UiCard>
@@ -147,7 +157,7 @@ export default function LogSettings({ api, onChange }) {
           <label className="log-check"><input type="checkbox" checked={config.s3.forcePathStyle} onChange={e => patch('s3', 'forcePathStyle', e.target.checked)}/> 使用 Path-style URL（MinIO 常用）</label>
         </>}
         <div className="log-settings-warning">存储凭证保存在 SQLite 中且未加密。请保护数据库和备份文件；更新时密钥留空会保留已有值。</div>
-        <div className="log-editor-actions"><button type="button" className="secondary" onClick={closeEditor}>取消</button><button className="primary" disabled={saving}>{saving ? '保存中…' : '保存适配器'}</button></div>
+        <div className="log-editor-actions"><button type="button" className="secondary" disabled={saving} onClick={closeEditor}>取消</button><button className="primary" disabled={saving} aria-busy={saving || undefined}>{saving ? '保存中…' : '保存适配器'}</button></div>
       </form>
       </div>
     </UiCard>}

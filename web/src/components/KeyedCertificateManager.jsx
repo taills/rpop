@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useBusyAction } from '../busyAction.js'
 
 const MAX_KEYED_CERTIFICATES = 64
 
@@ -61,25 +62,28 @@ export default function KeyedCertificateManager({ kind, certificates, loaded, lo
   const [editingID, setEditingID] = useState(null)
   const [confirmDeleteID, setConfirmDeleteID] = useState(null)
   const [query, setQuery] = useState('')
-  const [saving, setSaving] = useState(false)
+  // save() is the single entry point submitDraft/remove both funnel through, so guarding it once here with
+  // useBusyAction's synchronous ref covers a fast double-click on "保存证书" and on "确认删除" alike — a plain
+  // `saving` state check would still leave the same one-tick window busyAction.js's doc comment warns about.
+  const { busy: savingKey, run } = useBusyAction()
+  const saving = Boolean(savingKey)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
 
   async function save(nextCertificates, successMessage) {
-    setSaving(true)
-    setError('')
-    setMessage('')
-    try {
-      await persist(nextCertificates)
-      setDraft(null)
-      setEditingID(null)
-      setConfirmDeleteID(null)
-      setMessage(successMessage)
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setSaving(false)
-    }
+    await run(async () => {
+      setError('')
+      setMessage('')
+      try {
+        await persist(nextCertificates)
+        setDraft(null)
+        setEditingID(null)
+        setConfirmDeleteID(null)
+        setMessage(successMessage)
+      } catch (err) {
+        setError(err.message)
+      }
+    })
   }
 
   async function submitDraft(event) {
@@ -135,7 +139,7 @@ export default function KeyedCertificateManager({ kind, certificates, loaded, lo
     {loaded && certificates.length === 0 && !draft && <div className="ca-empty-state"><strong>尚未添加 {kind.noun}</strong><span>{kind.emptyText}</span></div>}
     {certificates.length > 0 && <label className="ca-search">搜索 {kind.noun}<input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="按名称、域名、主题或指纹搜索" autoComplete="off"/></label>}
     {draft && <form className="ca-editor" onSubmit={submitDraft}>
-      <div className="ca-editor-heading"><h4>{editingID ? `编辑 ${kind.noun}` : `添加 ${kind.noun}`}</h4><button type="button" className="icon-button" aria-label="关闭证书编辑器" onClick={closeEditor}>×</button></div>
+      <div className="ca-editor-heading"><h4>{editingID ? `编辑 ${kind.noun}` : `添加 ${kind.noun}`}</h4><button type="button" className="icon-button" aria-label="关闭证书编辑器" disabled={saving} onClick={closeEditor}>×</button></div>
       <label>证书名称<input required maxLength="128" value={draft.name} onChange={event => setDraft(current => ({ ...current, name: event.target.value }))} placeholder={kind.namePlaceholder}/></label>
       <label>证书 PEM（可附带中间证书）
         <textarea required rows="8" value={draft.certificatePem} onChange={event => setDraft(current => ({ ...current, certificatePem: event.target.value }))} placeholder={'-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----'} spellCheck="false" autoCapitalize="off" autoComplete="off"/>

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import TimezoneSelect from './TimezoneSelect.jsx'
 import KeyedCertificateManager, { CLIENT_CERTIFICATE_KIND, SERVER_CERTIFICATE_KIND } from './KeyedCertificateManager.jsx'
 import { UiPageHeader } from '@/components/ui'
+import { useBusyAction } from '../busyAction.js'
 
 function cleanRootCertificate(certificate) {
   return {
@@ -22,19 +23,28 @@ export default function SystemSettings({ api, onChange }) {
   const [activeTab, setActiveTab] = useState('general')
   const [settingsError, setSettingsError] = useState('')
   const [settingsMessage, setSettingsMessage] = useState('')
-  const [savingTimeZone, setSavingTimeZone] = useState(false)
   const [certificateError, setCertificateError] = useState('')
   const [certificateMessage, setCertificateMessage] = useState('')
-  const [savingCertificate, setSavingCertificate] = useState(false)
   const [editingCertificateID, setEditingCertificateID] = useState(null)
   const [certificateDraft, setCertificateDraft] = useState(null)
   const [confirmDeleteID, setConfirmDeleteID] = useState(null)
   const [certificateQuery, setCertificateQuery] = useState('')
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
-  const [savingPassword, setSavingPassword] = useState(false)
   const [passwordError, setPasswordError] = useState('')
   const [passwordMessage, setPasswordMessage] = useState('')
+  // This page's four independent-looking forms (timezone, node deployment defaults, admin password, CA
+  // certificates) all PUT the same /api/settings resource except the password change, and each one that does
+  // resends whatever it is not itself changing from its last-saved snapshot (see nodeSettingsFields() below) —
+  // so two of them actually in flight at once could race and have the slower one's stale snapshot clobber the
+  // faster one's just-saved field. One shared useBusyAction lock (rather than four separate booleans) makes
+  // that impossible instead of just discouraging it, at the minor cost of not letting an operator save the
+  // timezone and change their password in the same instant.
+  const { busy: settingsBusy, run: runSettingsAction } = useBusyAction()
+  const savingTimeZone = settingsBusy === 'timezone'
+  const savingCertificate = settingsBusy === 'certificate'
+  const savingNodeSettings = settingsBusy === 'nodeSettings'
+  const savingPassword = settingsBusy === 'password'
   // nodeControllerUrl/nodeImage feed the node onboarding guide (see NodeBootstrapGuide.jsx); saved* mirrors
   // savedTimeZone's role below: every PUT to /api/settings must resend the CURRENTLY SAVED value of every
   // plain-string field it is not itself changing (see the nodeSettingsFields() calls throughout this file), or
@@ -45,7 +55,6 @@ export default function SystemSettings({ api, onChange }) {
   const [savedNodeControllerUrl, setSavedNodeControllerUrl] = useState('')
   const [nodeImage, setNodeImage] = useState('')
   const [savedNodeImage, setSavedNodeImage] = useState('')
-  const [savingNodeSettings, setSavingNodeSettings] = useState(false)
   const [nodeSettingsError, setNodeSettingsError] = useState('')
   const [nodeSettingsMessage, setNodeSettingsMessage] = useState('')
 
@@ -86,55 +95,53 @@ export default function SystemSettings({ api, onChange }) {
   // clientCertificates/serverCertificates are omitted unless they change: the server keeps the stored lists and their write-only private keys.
   async function saveTimeZone(event) {
     event.preventDefault()
-    setSavingTimeZone(true)
-    setSettingsError('')
-    setSettingsMessage('')
-    try {
-      const settings = await api('/settings', {
-        method: 'PUT',
-        body: JSON.stringify({ timeZone, rootCertificates: rootCertificates.map(cleanRootCertificate), ...nodeSettingsFields() }),
-      })
-      const zone = settings.timeZone || 'UTC'
-      setTimeZone(zone)
-      setSavedTimeZone(zone)
-      applyNodeSettings(settings)
-      applyCertificateLists(settings)
-      setSettingsMessage('系统时区已保存。')
-      onChange?.()
-    } catch (err) {
-      setSettingsError(err.message)
-    } finally {
-      setSavingTimeZone(false)
-    }
+    await runSettingsAction('timezone', async () => {
+      setSettingsError('')
+      setSettingsMessage('')
+      try {
+        const settings = await api('/settings', {
+          method: 'PUT',
+          body: JSON.stringify({ timeZone, rootCertificates: rootCertificates.map(cleanRootCertificate), ...nodeSettingsFields() }),
+        })
+        const zone = settings.timeZone || 'UTC'
+        setTimeZone(zone)
+        setSavedTimeZone(zone)
+        applyNodeSettings(settings)
+        applyCertificateLists(settings)
+        setSettingsMessage('系统时区已保存。')
+        onChange?.()
+      } catch (err) {
+        setSettingsError(err.message)
+      }
+    })
   }
 
   async function persistRootCertificates(nextCertificates, successMessage) {
-    setSavingCertificate(true)
-    setCertificateError('')
-    setCertificateMessage('')
-    try {
-      const settings = await api('/settings', {
-        method: 'PUT',
-        body: JSON.stringify({
-          timeZone: savedTimeZone,
-          rootCertificates: nextCertificates.map(cleanRootCertificate),
-          ...nodeSettingsFields(),
-        }),
-      })
-      applyNodeSettings(settings)
-      applyCertificateLists(settings)
-      setSavedTimeZone(settings.timeZone || 'UTC')
-      setSettingsLoaded(true)
-      setCertificateDraft(null)
-      setEditingCertificateID(null)
-      setConfirmDeleteID(null)
-      setCertificateMessage(successMessage)
-      onChange?.()
-    } catch (err) {
-      setCertificateError(err.message)
-    } finally {
-      setSavingCertificate(false)
-    }
+    await runSettingsAction('certificate', async () => {
+      setCertificateError('')
+      setCertificateMessage('')
+      try {
+        const settings = await api('/settings', {
+          method: 'PUT',
+          body: JSON.stringify({
+            timeZone: savedTimeZone,
+            rootCertificates: nextCertificates.map(cleanRootCertificate),
+            ...nodeSettingsFields(),
+          }),
+        })
+        applyNodeSettings(settings)
+        applyCertificateLists(settings)
+        setSavedTimeZone(settings.timeZone || 'UTC')
+        setSettingsLoaded(true)
+        setCertificateDraft(null)
+        setEditingCertificateID(null)
+        setConfirmDeleteID(null)
+        setCertificateMessage(successMessage)
+        onChange?.()
+      } catch (err) {
+        setCertificateError(err.message)
+      }
+    })
   }
 
   async function persistKeyedCertificates(field, nextCertificates) {
@@ -155,29 +162,28 @@ export default function SystemSettings({ api, onChange }) {
 
   async function saveNodeSettings(event) {
     event.preventDefault()
-    setSavingNodeSettings(true)
-    setNodeSettingsError('')
-    setNodeSettingsMessage('')
-    try {
-      const settings = await api('/settings', {
-        method: 'PUT',
-        body: JSON.stringify({
-          timeZone: savedTimeZone,
-          rootCertificates: rootCertificates.map(cleanRootCertificate),
-          nodeControllerUrl: nodeControllerUrl.trim(),
-          nodeImage: nodeImage.trim(),
-        }),
-      })
-      applyNodeSettings(settings)
-      applyCertificateLists(settings)
-      setSavedTimeZone(settings.timeZone || 'UTC')
-      setNodeSettingsMessage('节点部署默认值已保存。')
-      onChange?.()
-    } catch (err) {
-      setNodeSettingsError(err.message)
-    } finally {
-      setSavingNodeSettings(false)
-    }
+    await runSettingsAction('nodeSettings', async () => {
+      setNodeSettingsError('')
+      setNodeSettingsMessage('')
+      try {
+        const settings = await api('/settings', {
+          method: 'PUT',
+          body: JSON.stringify({
+            timeZone: savedTimeZone,
+            rootCertificates: rootCertificates.map(cleanRootCertificate),
+            nodeControllerUrl: nodeControllerUrl.trim(),
+            nodeImage: nodeImage.trim(),
+          }),
+        })
+        applyNodeSettings(settings)
+        applyCertificateLists(settings)
+        setSavedTimeZone(settings.timeZone || 'UTC')
+        setNodeSettingsMessage('节点部署默认值已保存。')
+        onChange?.()
+      } catch (err) {
+        setNodeSettingsError(err.message)
+      }
+    })
   }
 
   async function saveRootCertificate(event) {
@@ -219,22 +225,21 @@ export default function SystemSettings({ api, onChange }) {
 
   async function changePassword(event) {
     event.preventDefault()
-    setSavingPassword(true)
-    setPasswordError('')
-    setPasswordMessage('')
-    try {
-      await api('/auth/password', {
-        method: 'PUT',
-        body: JSON.stringify({ currentPassword, newPassword }),
-      })
-      setCurrentPassword('')
-      setNewPassword('')
-      setPasswordMessage('管理密码已更新，其他登录会话已失效。')
-    } catch (err) {
-      setPasswordError(err.message)
-    } finally {
-      setSavingPassword(false)
-    }
+    await runSettingsAction('password', async () => {
+      setPasswordError('')
+      setPasswordMessage('')
+      try {
+        await api('/auth/password', {
+          method: 'PUT',
+          body: JSON.stringify({ currentPassword, newPassword }),
+        })
+        setCurrentPassword('')
+        setNewPassword('')
+        setPasswordMessage('管理密码已更新，其他登录会话已失效。')
+      } catch (err) {
+        setPasswordError(err.message)
+      }
+    })
   }
 
   const canManageSettings = settingsLoaded && !loading
@@ -268,7 +273,7 @@ export default function SystemSettings({ api, onChange }) {
             <span>通过搜索过滤 IANA 时区并从列表中选择；不能输入列表以外的值。默认 UTC。</span>
           </label>
           {settingsMessage && <div className="log-success settings-message wide">{settingsMessage}</div>}
-          <button className="primary" disabled={!canManageSettings || savingTimeZone || timeZone === savedTimeZone}>{savingTimeZone ? '保存中…' : '保存时区'}</button>
+          <button className="primary" disabled={!canManageSettings || savingTimeZone || timeZone === savedTimeZone} aria-busy={savingTimeZone || undefined}>{savingTimeZone ? '保存中…' : '保存时区'}</button>
         </form>}
       </section>
 
@@ -286,7 +291,7 @@ export default function SystemSettings({ api, onChange }) {
             <span>节点接入向导里 docker run / docker-compose recipe 使用的镜像名，不能包含空白字符。留空则默认为 rpop:&lt;控制器版本&gt;。</span>
           </label>
           {nodeSettingsMessage && <div className="log-success settings-message wide">{nodeSettingsMessage}</div>}
-          <button className="primary" disabled={!canManageSettings || savingNodeSettings || (nodeControllerUrl === savedNodeControllerUrl && nodeImage === savedNodeImage)}>{savingNodeSettings ? '保存中…' : '保存节点部署默认值'}</button>
+          <button className="primary" disabled={!canManageSettings || savingNodeSettings || (nodeControllerUrl === savedNodeControllerUrl && nodeImage === savedNodeImage)} aria-busy={savingNodeSettings || undefined}>{savingNodeSettings ? '保存中…' : '保存节点部署默认值'}</button>
         </form>}
       </section>
 
@@ -299,7 +304,7 @@ export default function SystemSettings({ api, onChange }) {
         <form className="settings-form" onSubmit={changePassword}>
           <label>当前密码<input type="password" required autoComplete="current-password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)}/></label>
           <label>新密码<input type="password" required minLength="12" autoComplete="new-password" value={newPassword} onChange={event => setNewPassword(event.target.value)}/></label>
-          <button className="primary" disabled={savingPassword}>{savingPassword ? '更新中…' : '更新管理密码'}</button>
+          <button className="primary" disabled={savingPassword} aria-busy={savingPassword || undefined}>{savingPassword ? '更新中…' : '更新管理密码'}</button>
         </form>
       </section>
     </div>}
@@ -316,11 +321,11 @@ export default function SystemSettings({ api, onChange }) {
       {settingsLoaded && rootCertificates.length === 0 && !certificateDraft && <div className="ca-empty-state"><strong>尚未添加系统级 CA 根证书</strong><span>添加证书后，可在站点的 HTTPS 上游配置中选择一个或多个信任根。</span></div>}
       {rootCertificates.length > 0 && <label className="ca-search">搜索根证书<input type="search" value={certificateQuery} onChange={event => setCertificateQuery(event.target.value)} placeholder="按证书名称或 SHA-256 指纹搜索" autoComplete="off"/></label>}
       {certificateDraft && <form className="ca-editor" onSubmit={saveRootCertificate}>
-        <div className="ca-editor-heading"><h4>{editingCertificateID ? '编辑 CA 根证书' : '添加 CA 根证书'}</h4><button type="button" className="icon-button" aria-label="关闭证书编辑器" onClick={cancelCertificateEditor}>×</button></div>
+        <div className="ca-editor-heading"><h4>{editingCertificateID ? '编辑 CA 根证书' : '添加 CA 根证书'}</h4><button type="button" className="icon-button" aria-label="关闭证书编辑器" disabled={savingCertificate} onClick={cancelCertificateEditor}>×</button></div>
         <label>证书名称<input required maxLength="128" value={certificateDraft.name} onChange={event => setCertificateDraft(current => ({ ...current, name: event.target.value }))} placeholder="例如：公司内部根 CA"/></label>
         <label>CA 根证书 PEM<textarea required rows="8" value={certificateDraft.pem} onChange={event => setCertificateDraft(current => ({ ...current, pem: event.target.value }))} placeholder={'-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----'} spellCheck="false" autoCapitalize="off" autoComplete="off"/></label>
         <p className="ca-editor-note">只接受单张有效的 X.509 CA 证书。证书被站点引用时不能删除或替换其内容；请先在相关站点取消选择。</p>
-        <div className="ca-editor-actions"><button type="button" className="secondary" onClick={cancelCertificateEditor} disabled={savingCertificate}>取消</button><button className="primary" disabled={savingCertificate}>{savingCertificate ? '保存中…' : '保存证书'}</button></div>
+        <div className="ca-editor-actions"><button type="button" className="secondary" onClick={cancelCertificateEditor} disabled={savingCertificate}>取消</button><button className="primary" disabled={savingCertificate} aria-busy={savingCertificate || undefined}>{savingCertificate ? '保存中…' : '保存证书'}</button></div>
       </form>}
       {settingsLoaded && rootCertificates.length > 0 && visibleRootCertificates.length === 0 && <div className="ca-empty-state">没有匹配的根证书。</div>}
       {settingsLoaded && visibleRootCertificates.length > 0 && <div className="ca-record-list">
