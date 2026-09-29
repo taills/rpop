@@ -1,0 +1,28 @@
+# Publishes deploy/DOCKERHUB.md as the Docker Hub overview of ${DOCKERHUB_USERNAME}/rpop whenever it changes on main.
+# Uses the same DOCKERHUB_USERNAME variable and DOCKERHUB_TOKEN secret as docker.yml, but updating a repository
+# description needs a token with read/write/delete scope.
+name: dockerhub-description
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - deploy/DOCKERHUB.md
+      - .github/workflows/dockerhub-description.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ vars.DOCKERHUB_USERNAME }}/rpop
+          short-description: Multi-site reverse proxy with a web console, multi-node overlay, and SOCKS5/HTTPS upstream paths
+          readme-filepath: deploy/DOCKERHUB.md
