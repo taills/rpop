@@ -1,5 +1,4 @@
 .git
-.gitlab-ci.yml
 Dockerfile*
 .dockerignore
 .playwright-mcp

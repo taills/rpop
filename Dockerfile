@@ -15,7 +15,7 @@ FROM ${DOCKER_REGISTRY_MIRROR}/library/golang:1.26-alpine AS builder
 # 默认走国内 Go 模块代理；GitHub Actions 通过 --build-arg GOPROXY=https://proxy.golang.org,direct 覆盖
 ARG GOPROXY=https://goproxy.cn,direct
 RUN apk add --no-cache build-base
-ENV CGO_ENABLED=1 GOOS=linux GOPROXY=${GOPROXY} GOPRIVATE=gitlab.towere.cc
+ENV CGO_ENABLED=1 GOOS=linux GOPROXY=${GOPROXY}
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

@@ -39,7 +39,7 @@ docker run -d --name rpop -p 127.0.0.1:8080:8080 -v rpop-data:/app/data -v rpop-
 
 `.github/workflows/release.yml` 构建这些归档文件。go-sqlite3 需要 CGO，因此每个平台都在能为其编译 C 代码的 runner 上构建：linux 使用 `Dockerfile` 的 `binary` 目标，在原生的 amd64/arm64 runner 上构建（与镜像所用的同一份静态 musl 二进制文件），macOS 使用带 `-arch` 参数的 clang，windows 使用来自 MSYS2 的 MinGW-w64 gcc。Pull request 和推送到 `main` 分支会运行相同的构建，并将归档文件保留为工作流产物。`.github/workflows/docker.yml` 在原生 runner 上构建每个镜像平台，按 digest 推送，再合并成清单列表（manifest list）；它需要仓库变量 `DOCKERHUB_USERNAME` 和密钥 `DOCKERHUB_TOKEN`（一个具有读写权限的 Docker Hub access token）。`.github/workflows/dockerhub-description.yml` 会在 `deploy/DOCKERHUB.md` 于 `main` 分支上发生变化时，将其发布为 Docker Hub 的概览说明；更新仓库描述需要该 token 具备读/写/删除权限。这两个工作流都传入了 `--build-arg NPM_REGISTRY=https://registry.npmjs.org` 和 `--build-arg GOPROXY=https://proxy.golang.org,direct`，覆盖了 `Dockerfile` 默认使用的中国镜像源。
 
-`.gitlab-ci.yml` 在 runner 自身的架构上原生构建，并在 `main`、`dev` 分支和标签上推送到私有 registry（标签只打版本号 tag，分支还会额外打 `latest`）；它不负责部署。所需的 CI/CD 变量：`DOCKER_REGISTRY_HOST`、`DOCKER_REGISTRY_USERNAME`、`DOCKER_REGISTRY_PASSWORD`（已脱敏）以及 `DOCKER_REGISTRY_MIRROR`（基础镜像的镜像源前缀，需要能提供 `library/node:22-alpine`、`library/golang:1.26-alpine` 和 `library/alpine:latest`）。
+构建参数 `DOCKER_REGISTRY_MIRROR`（默认 `docker.io`）指定 Dockerfile 拉取基础镜像（`library/node:22-alpine`、`library/golang:1.26-alpine`、`library/alpine:latest`）所用的镜像仓库，便于通过镜像加速源构建。
 
 ## 部署模式
 
