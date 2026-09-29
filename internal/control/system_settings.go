@@ -44,8 +44,9 @@ type systemSettings struct {
 	// Empty means "let the console guess it from the browser's own hostname and the southbound port instead."
 	NodeControllerURL string `json:"nodeControllerUrl"`
 	// NodeImage is the Docker image the guide's docker-run and docker-compose recipes use for new nodes, e.g.
-	// "registry.example.com/rpop:1.4.0". Empty means "default to rpop:<controller version>" (the console applies
-	// that default, not this settings layer, so the stored value and the API response both keep "" visible).
+	// "registry.example.com/rpop:1.4.0". Empty means "default to the nil2026/rpop Docker Hub tag of the controller
+	// version" (the console applies that default in web/src/nodeBootstrap.js, not this settings layer, so the stored
+	// value and the API response both keep "" visible).
 	NodeImage string `json:"nodeImage"`
 }
 

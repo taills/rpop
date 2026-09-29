@@ -65,10 +65,19 @@ export function relayPortFromAddress(relayAddress) {
   return port >= 1 && port <= 65535 ? port : null
 }
 
+// DOCKER_HUB_IMAGE is the public image CI publishes (.github/workflows/docker.yml).
+export const DOCKER_HUB_IMAGE = 'nil2026/rpop'
+
 // defaultNodeImage is the fallback image name (system setting nodeImage empty) — see system_settings.go's
-// NodeImage doc comment, which this mirrors on the frontend.
+// NodeImage doc comment, which this mirrors on the frontend. It picks the Docker Hub tag CI publishes for the
+// controller's own build: a release version drops its "v" (v0.1.0 -> 0.1.0), a main build (edge-<sha>) maps
+// to edge, and anything else (dev, a branch name, build metadata) falls back to latest.
 export function defaultNodeImage(version) {
-  return `rpop:${version || 'dev'}`
+  const v = String(version || '')
+  const release = v.match(/^v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/)
+  if (release) return `${DOCKER_HUB_IMAGE}:${release[1]}`
+  if (v.startsWith('edge-')) return `${DOCKER_HUB_IMAGE}:edge`
+  return `${DOCKER_HUB_IMAGE}:latest`
 }
 
 // nodeCommandLine is the plain "run it directly" recipe (guide tab 1): a single, readable multi-line command.

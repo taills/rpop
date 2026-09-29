@@ -73,10 +73,19 @@ test('relayPortFromAddress reads the trailing port, including bracketed IPv6 hos
   assert.equal(relayPortFromAddress('host:70000'), null)
 })
 
-test('defaultNodeImage builds rpop:<version>, falling back to "dev"', () => {
-  assert.equal(defaultNodeImage('1.4.0'), 'rpop:1.4.0')
-  assert.equal(defaultNodeImage(''), 'rpop:dev')
-  assert.equal(defaultNodeImage(undefined), 'rpop:dev')
+test('defaultNodeImage picks the Docker Hub tag matching the controller version', () => {
+  assert.equal(defaultNodeImage('v0.1.0'), 'nil2026/rpop:0.1.0')
+  assert.equal(defaultNodeImage('1.4.0'), 'nil2026/rpop:1.4.0')
+  assert.equal(defaultNodeImage('v1.2.0-rc.1'), 'nil2026/rpop:1.2.0-rc.1')
+  assert.equal(defaultNodeImage('edge-fd6de86'), 'nil2026/rpop:edge')
+})
+
+test('defaultNodeImage falls back to latest for builds without a published tag', () => {
+  assert.equal(defaultNodeImage('dev'), 'nil2026/rpop:latest')
+  assert.equal(defaultNodeImage('main'), 'nil2026/rpop:latest')
+  assert.equal(defaultNodeImage('v1.2.3+build.7'), 'nil2026/rpop:latest')
+  assert.equal(defaultNodeImage(''), 'nil2026/rpop:latest')
+  assert.equal(defaultNodeImage(undefined), 'nil2026/rpop:latest')
 })
 
 test('nodeCommandLine contains every required flag, with defaults when relayListen is unset', () => {

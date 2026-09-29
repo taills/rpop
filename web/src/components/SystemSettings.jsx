@@ -304,7 +304,7 @@ export default function SystemSettings({ api, onChange }) {
           </label>
           <label className="wide">节点镜像
             <input value={nodeImage} onChange={event => setNodeImage(event.target.value)} disabled={!canManageSettings || anySettingsBusy} placeholder="registry.example.com/rpop:1.4.0"/>
-            <span>节点接入向导里 docker run / docker-compose recipe 使用的镜像名，不能包含空白字符。留空则默认为 rpop:&lt;控制器版本&gt;。</span>
+            <span>节点接入向导里 docker run / docker-compose recipe 使用的镜像名，不能包含空白字符。留空则默认为 Docker Hub 上与控制器版本对应的 nil2026/rpop 镜像（如 nil2026/rpop:0.1.0），没有对应版本标签的构建使用 latest。</span>
           </label>
           {nodeSettingsMessage && <div className="log-success settings-message wide">{nodeSettingsMessage}</div>}
           <button className="primary" disabled={!canManageSettings || anySettingsBusy || (nodeControllerUrl === savedNodeControllerUrl && nodeImage === savedNodeImage)} aria-busy={savingNodeSettings || undefined}>{savingNodeSettings ? '保存中…' : '保存节点部署默认值'}</button>
