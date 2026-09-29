@@ -1,5 +1,7 @@
 # rpop — Reverse Proxy over Proxy
 
+English | [简体中文](README.zh-CN.md)
+
 Go-based multi-site reverse proxy. Every site has an independent listener and upstream transport, with SQLite as the source of truth for configuration and secret material.
 
 ## Development
@@ -77,7 +79,7 @@ Minimal `docker-compose.yml` (see `deploy/docker-compose.node.example.yml`/`depl
 ```yaml
 services:
   rpop-node:
-    image: rpop:1.4.0
+    image: nil2026/rpop:latest
     restart: unless-stopped
     network_mode: host
     environment:

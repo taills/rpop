@@ -1,4 +1,4 @@
-# rpop — 代理之上的反向代理
+# rpop — Reverse Proxy over Proxy
 
 [English](README.md) | 简体中文
 
@@ -170,6 +170,7 @@ rpop -mode node -controller https://controller.example.com:7443 -join-token <joi
 - 站点配置和二进制密钥（`site_secrets`）都存储在 SQLite 中；数据库和日志目录以受限的目录权限创建。
 - 支持按站点启动、停止、重启和重新加载；标记为 `autoStart: true` 的站点会在进程启动时自动启动。监听地址、端口和 TLS 模式相同的站点会共用一个监听器，并按 `config.hostnames` 路由；对 HTTPS 而言，由 SNI 选择证书、由 HTTP Host 选择站点（Host 不匹配时回退到 SNI）。HTTPS 监听器支持 HTTP/2（WebSocket 仍使用 HTTP/1.1）。同一监听器上的重新加载会原子地替换站点：包括 SSE 流和 WebSocket 在内的进行中请求会在旧版本上完成，应用失败的配置不会影响正在运行的版本继续提供服务。
 - 每个上游都有自己独立的传输通道，支持 HTTP/HTTPS、HTTP(S) 代理、SOCKS5/SOCKS5H、按站点选择的系统 CA 根证书、旧版自定义 CA Bundle、可选的双向 TLS（mTLS）Client 证书（可以是系统集中管理的 Client 证书，也可以是站点专属的证书/私钥引用）、跳过证书校验、自定义 server name/SNI，以及直连模式下的拨号地址覆盖。
+- 转发的响应在每次从上游读到数据后都会立即 flush 给客户端，无论是 SSE、chunked 还是上游写得很慢的定长响应，流式响应都不会因为等待写缓冲区填满而被积压；多跳 `paths` 的中继也以同样方式逐块 flush，因此每一跳都保持这一行为。
 - 类似 Caddy 的请求路由（`config.routes`）按路径和 Header 把请求分发给不同的上游。路径默认精确匹配，除非以 `*` 结尾，此时变为前缀匹配（`/api/*` 匹配 `/api/x` 但不匹配 `/api`；`/api*` 则同时匹配 `/api` 和 `/apix`）；匹配不区分大小写，且基于清理过的路径（已解析 `..` 和 `//`）。Header 条件支持精确匹配、`prefix*`、`*suffix` 或 `*contains*`（区分大小写；同一个 Header 的多个值之间是 OR，不同 Header 之间是 AND），`values` 为空时要求该 Header 存在，或用 `absent: true` 要求该 Header 不存在；`Host` 匹配的是请求的主机名。与 Caddy 的 `handle` 一样，最具体的规则获胜：路径更长的优先、精确匹配优先于前缀匹配、Header 条件更多的优先，最后按配置顺序。`stripPrefix` 会先去掉匹配到的前缀（对应 Caddy 的 `handle_path`），再拼接上上游 URL 自身的路径。未命中任何规则的请求会转发给默认上游 `upstreams[0]`。
 - 站点编辑器可以管理任意数量的上游（可以指定默认上游，增删上游时会自动重新映射相关路由）和路由规则，并内置了路由模拟器：输入 URL、方法和 Header，即可看到命中了哪条规则、其他规则为何未命中，以及重写前后的路径。它通过 `POST /api/routes/simulate`，用处理实际流量的同一套服务端代码来评估尚未保存的配置。
 - 多跳的 `paths`（见下文）有专门的编辑器，以有序的节点/代理跳数列表展示每条候选路由；路由模拟器的响应还会渲染出命中上游的完整候选路径、每一跳的实时健康状况，以及当前引擎会选择哪条路径。
