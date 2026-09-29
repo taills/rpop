@@ -81,6 +81,13 @@ func newUpstreamTarget(upstream snapshot.Upstream, dialer PathDialer, logTunnelE
 			decision, _ := pr.In.Context().Value(routeDecisionKey{}).(routing.Decision)
 			routing.Apply(pr, u, decision)
 		},
+		// FlushInterval: -1 flushes to the client after every read from the upstream. Without it,
+		// ReverseProxy only auto-flushes text/event-stream and chunked (ContentLength == -1) responses; a
+		// response with a declared Content-Length, however slowly the upstream writes it, would otherwise sit
+		// in the server's write buffer (4 KiB for HTTP/1, the HTTP/2 write buffer for h2) until it filled or
+		// the handler returned. The overlay's own relays already forward every chunk this way (see
+		// overlay.copyFlushing), so this keeps both hops of a request behaving the same.
+		FlushInterval: -1,
 	}
 	return upstreamTarget{label: u.Redacted(), proxy: proxy, transports: transports, failover: failover}, nil
 }

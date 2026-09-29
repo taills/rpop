@@ -172,6 +172,66 @@ func TestPathsStreamServerSentEventsWithoutBuffering(t *testing.T) {
 	}
 }
 
+// TestPathsStreamFixedContentLengthWithoutBuffering covers a response with a declared Content-Length going
+// through the paths/failover transport: unlike the SSE case above, net/http's ReverseProxy does not treat this
+// shape as streaming on its own (see proxy.go's FlushInterval), so its bytes used to sit in the server's write
+// buffer until it filled or the handler returned.
+func TestPathsStreamFixedContentLengthWithoutBuffering(t *testing.T) {
+	engine := newTestEngine(t)
+	engine.SetPathDialer(&fakePaths{})
+	ack := make(chan struct{})
+	first, second := "first-chunk-bytes", "second-chunk-bytes"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(first)+len(second)))
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, first)
+		w.(http.Flusher).Flush()
+		select {
+		case <-ack:
+		case <-r.Context().Done():
+			return
+		case <-time.After(6 * time.Second):
+			return
+		}
+		io.WriteString(w, second)
+	}))
+	defer upstream.Close()
+	site := pathSite(t, engine, upstream, "down", "good")
+	response, err := http.Get(site.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.ContentLength != int64(len(first)+len(second)) {
+		t.Fatalf("Content-Length = %d, want a fixed length response", response.ContentLength)
+	}
+	buf := make([]byte, len(first))
+	read := make(chan error, 1)
+	go func() {
+		_, err := io.ReadFull(response.Body, buf)
+		read <- err
+	}()
+	select {
+	case err := <-read:
+		if err != nil {
+			t.Fatalf("reading first chunk: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("first chunk was buffered")
+	}
+	if string(buf) != first {
+		t.Fatalf("first chunk = %q, want %q", buf, first)
+	}
+	close(ack)
+	rest, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(rest) != second {
+		t.Fatalf("second chunk = %q, want %q", rest, second)
+	}
+}
+
 // hangingPaths never connects the path labelled "hang" until the dial is abandoned.
 type hangingPaths struct{ fakePaths }
 

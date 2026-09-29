@@ -56,6 +56,64 @@ func lockstepUpstream(t *testing.T, contentType string, count int, ack <-chan st
 	return server
 }
 
+// fixedLengthLockstepUpstream serves one response whose Content-Length is fixed up front from the total size of
+// chunks: unlike lockstepUpstream's SSE and chunked bodies, a declared Content-Length does not make net/http's
+// ReverseProxy treat the response as streaming (Content-Type text/event-stream or ContentLength == -1), so this
+// is the shape that used to sit in the proxy's write buffer until it filled or the response ended. Each chunk is
+// written and flushed in turn, waiting for an acknowledgement on ack before the next one (except the last).
+func fixedLengthLockstepUpstream(t *testing.T, chunks []string, ack <-chan struct{}) *httptest.Server {
+	t.Helper()
+	total := 0
+	for _, chunk := range chunks {
+		total += len(chunk)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(total))
+		w.WriteHeader(http.StatusOK)
+		controller := http.NewResponseController(w)
+		for i, chunk := range chunks {
+			io.WriteString(w, chunk)
+			if err := controller.Flush(); err != nil {
+				return
+			}
+			if i == len(chunks)-1 {
+				return
+			}
+			select {
+			case <-ack:
+			case <-r.Context().Done():
+				return
+			case <-time.After(2 * streamStepTimeout):
+				return
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// awaitBytes reads exactly n bytes from body within streamStepTimeout, or fails the test; it proves the proxy
+// delivered them without waiting for the rest of a fixed Content-Length response to arrive.
+func awaitBytes(t *testing.T, body io.Reader, n int) []byte {
+	t.Helper()
+	buf := make([]byte, n)
+	done := make(chan error, 1)
+	go func() {
+		_, err := io.ReadFull(body, buf)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("reading %d bytes: %v", n, err)
+		}
+		return buf
+	case <-time.After(streamStepTimeout):
+		t.Fatalf("%d bytes were not delivered within %s; the proxy is buffering a fixed Content-Length response", n, streamStepTimeout)
+		return nil
+	}
+}
+
 type streamingSite struct {
 	control *Control
 	port    int
@@ -64,6 +122,15 @@ type streamingSite struct {
 // startStreamingSite runs one site on a real loopback listener with access logging and body capture enabled,
 // which is the configuration most likely to interfere with streaming.
 func startStreamingSite(t *testing.T, upstreamURL string, withTLS bool) streamingSite {
+	t.Helper()
+	return startStreamingSiteWithAccessLog(t, upstreamURL, withTLS, store.AccessLogConfig{AdapterID: "default", IncludeBodies: true, MaxBodyBytes: 256})
+}
+
+// startStreamingSiteWithAccessLog is startStreamingSite generalized over the site's access log settings, so a
+// test can compare a plain proxy against one with body capture enabled: capture tees every response byte through
+// bodyCapture (see observe.go) on its way to the client, the configuration most likely to interfere with
+// streaming.
+func startStreamingSiteWithAccessLog(t *testing.T, upstreamURL string, withTLS bool, accessLog store.AccessLogConfig) streamingSite {
 	t.Helper()
 	s, _ := openSystemCATestStore(t)
 	c, err := NewWithLogDir(s, zap.NewNop(), t.TempDir())
@@ -74,7 +141,7 @@ func startStreamingSite(t *testing.T, upstreamURL string, withTLS bool) streamin
 	port := freeLoopbackPort(t)
 	site := store.Site{ID: "stream", Name: "stream", Config: store.Config{
 		ListenAddress: "127.0.0.1", ListenPort: port, Upstreams: []store.Upstream{{URL: upstreamURL}},
-		AccessLog: store.AccessLogConfig{AdapterID: "default", IncludeBodies: true, MaxBodyBytes: 256},
+		AccessLog: accessLog,
 	}}
 	if withTLS {
 		certServer := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
@@ -181,6 +248,63 @@ func TestChunkedNDJSONStreamIsNotBuffered(t *testing.T) {
 	}
 }
 
+// TestFixedContentLengthResponseIsNotBufferedOverHTTP1 covers the case lockstepUpstream's SSE and chunked bodies
+// do not: a response with a declared Content-Length, which net/http's ReverseProxy does not treat as streaming
+// on its own (see proxy.go's FlushInterval), so its bytes used to sit in the server's write buffer until it
+// filled or the handler returned.
+func TestFixedContentLengthResponseIsNotBufferedOverHTTP1(t *testing.T) {
+	first, second := "first-chunk-bytes", "second-chunk-bytes"
+	ack := make(chan struct{})
+	upstream := fixedLengthLockstepUpstream(t, []string{first, second}, ack)
+	site := startStreamingSiteWithAccessLog(t, upstream.URL, false, store.AccessLogConfig{})
+
+	response, err := http.Get(site.url("http"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.ContentLength != int64(len(first)+len(second)) {
+		t.Fatalf("Content-Length = %d, want a fixed length response", response.ContentLength)
+	}
+	if got := awaitBytes(t, response.Body, len(first)); string(got) != first {
+		t.Fatalf("first chunk = %q, want %q", got, first)
+	}
+	ack <- struct{}{}
+	if got := awaitBytes(t, response.Body, len(second)); string(got) != second {
+		t.Fatalf("second chunk = %q, want %q", got, second)
+	}
+}
+
+// TestFixedContentLengthResponseWithAccessLogBodyCaptureIsNotBuffered is
+// TestFixedContentLengthResponseIsNotBufferedOverHTTP1 with response body capture enabled: bodyCapture (see
+// observe.go's observedResponseWriter) tees every write on its way to the client and must not add buffering of
+// its own.
+func TestFixedContentLengthResponseWithAccessLogBodyCaptureIsNotBuffered(t *testing.T) {
+	first, second := "first-chunk-bytes", "second-chunk-bytes"
+	ack := make(chan struct{})
+	upstream := fixedLengthLockstepUpstream(t, []string{first, second}, ack)
+	site := startStreamingSiteWithAccessLog(t, upstream.URL, false, store.AccessLogConfig{AdapterID: "default", IncludeBodies: true, MaxBodyBytes: 256})
+
+	response, err := http.Get(site.url("http"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.ContentLength != int64(len(first)+len(second)) {
+		t.Fatalf("Content-Length = %d, want a fixed length response", response.ContentLength)
+	}
+	if got := awaitBytes(t, response.Body, len(first)); string(got) != first {
+		t.Fatalf("first chunk = %q, want %q", got, first)
+	}
+	ack <- struct{}{}
+	if got := awaitBytes(t, response.Body, len(second)); string(got) != second {
+		t.Fatalf("second chunk = %q, want %q", got, second)
+	}
+	if err := site.control.DrainAccessLogs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // websocketEchoUpstream accepts an HTTP/1.1 Upgrade and echoes every line back until the peer closes.
 func websocketEchoUpstream(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -284,6 +408,36 @@ func TestTLSListenerServesHTTP2AndStreamsSSE(t *testing.T) {
 		if i < events-1 {
 			ack <- struct{}{}
 		}
+	}
+}
+
+// TestTLSListenerStreamsFixedContentLengthOverHTTP2 is TestFixedContentLengthResponseIsNotBufferedOverHTTP1 over
+// the HTTPS listener negotiating HTTP/2, with access log body capture enabled (startStreamingSite's default).
+func TestTLSListenerStreamsFixedContentLengthOverHTTP2(t *testing.T) {
+	first, second := "first-chunk-bytes", "second-chunk-bytes"
+	ack := make(chan struct{})
+	upstream := fixedLengthLockstepUpstream(t, []string{first, second}, ack)
+	site := startStreamingSite(t, upstream.URL, true)
+
+	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, ForceAttemptHTTP2: true}
+	defer transport.CloseIdleConnections()
+	response, err := (&http.Client{Transport: transport}).Get(site.url("https"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.ProtoMajor != 2 {
+		t.Fatalf("TLS site listener negotiated %s, want HTTP/2", response.Proto)
+	}
+	if response.ContentLength != int64(len(first)+len(second)) {
+		t.Fatalf("Content-Length = %d, want a fixed length response", response.ContentLength)
+	}
+	if got := awaitBytes(t, response.Body, len(first)); string(got) != first {
+		t.Fatalf("first chunk = %q, want %q", got, first)
+	}
+	ack <- struct{}{}
+	if got := awaitBytes(t, response.Body, len(second)); string(got) != second {
+		t.Fatalf("second chunk = %q, want %q", got, second)
 	}
 }
 
