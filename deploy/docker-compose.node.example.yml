@@ -1,18 +1,19 @@
 # rpop 节点（node 模式）部署示例。用法：
 #   cp deploy/docker-compose.node.example.yml docker-compose.yml
-#   cp deploy/.env.node.example .env        # 填入实际的 RPOP_IMAGE / RPOP_CONTROLLER / RPOP_JOIN_TOKEN
+#   cp deploy/.env.node.example .env        # 填入实际的 RPOP_CONTROLLER / RPOP_JOIN_TOKEN
 #   docker compose up -d
 #
 # 更方便的做法：在控制台“节点管理”新建节点后，join token 弹窗里的接入向导会直接根据当前控制器地址
 # 生成这两个文件的完整内容（含真实的 controller 地址与一次性 token），可直接复制使用，不需要手改本文件。
 #
-# 内网环境请把 RPOP_IMAGE 替换为私有镜像源地址。
+# 镜像默认使用 Docker Hub 上的 nil2026/rpop:latest；应与控制器同版本，可在 .env 用 RPOP_IMAGE 固定版本，
+# 内网环境则设为私有镜像源地址。
 
 name: rpop-node
 
 services:
   rpop-node:
-    image: ${RPOP_IMAGE:?在 .env 中设置 RPOP_IMAGE}
+    image: ${RPOP_IMAGE:-nil2026/rpop:latest}
     container_name: rpop-node
     restart: unless-stopped
     # host 网络下节点监听的中继端口、以及之后在此节点上运行的每个站点端口都无需单独映射。

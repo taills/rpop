@@ -1,6 +1,6 @@
 # rpop 部署示例。用法：
 #   cp deploy/docker-compose.example.yml docker-compose.yml
-#   cp deploy/.env.example .env        # 按实际修改镜像地址与各项口令
+#   cp deploy/.env.example .env        # 按实际修改各项口令
 #   docker compose up -d
 #
 # RustFS（S3 兼容）、ClickHouse、Elasticsearch 均为可选的访问日志存储，默认不启动：
@@ -9,13 +9,14 @@
 #   - 确定不用的服务可直接删除对应 service 与 volume；rpop 本身不依赖它们启动。
 # 启动后在 rpop 控制台「日志适配器」中添加适配器，连接地址使用下方的服务名（见各服务注释）。
 #
-# 内网环境请把各 image 前缀替换为私有镜像源。
+# rpop 镜像默认使用 Docker Hub 上的 nil2026/rpop:latest，可在 .env 用 RPOP_IMAGE 固定版本或改为私有镜像源；
+# 内网环境请把其余各 image 前缀也替换为私有镜像源。
 
 name: rpop
 
 services:
   rpop:
-    image: ${RPOP_IMAGE:?在 .env 中设置 RPOP_IMAGE}
+    image: ${RPOP_IMAGE:-nil2026/rpop:latest}
     container_name: rpop
     restart: unless-stopped
     environment:
